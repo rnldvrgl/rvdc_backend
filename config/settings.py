@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "django_filters",
     "corsheaders",
+    "rest_framework_simplejwt.token_blacklist",
     "authentication",
     "users",
 ]
@@ -156,6 +157,11 @@ REST_FRAMEWORK = {
     #     "rest_framework.filters.SearchFilter",
     #     "rest_framework.filters.OrderingFilter",
     # ],
+}
+
+SIMPLE_JWT = {
+    "BLACKLIST_AFTER_ROTATION": True,
+    "ROTATE_REFRESH_TOKENS": True,
 }
 
 CORS_ALLOWED_ORIGINS = [
