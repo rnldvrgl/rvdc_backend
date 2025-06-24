@@ -15,7 +15,8 @@ class CustomUser(AbstractUser):
     address = models.TextField(null=True, blank=True)
     contact_number = models.CharField(max_length=15, null=True, blank=True)
     profile_image = models.ImageField(
-        upload_to="profile_images/", null=True, blank=True
+        upload_to="profile_images/",
+        default="profile_image/default_image.jpg",
     )
 
     def __str__(self):
