@@ -1,7 +1,8 @@
-from rest_framework import generics, permissions
+from rest_framework import generics, permissions, filters
 from rest_framework.exceptions import NotFound
 from users.models import CustomUser
 from users.api.serializers import UserSerializer
+from django_filters.rest_framework import DjangoFilterBackend
 
 
 # List all users (admin only)
@@ -9,6 +10,10 @@ class UserListView(generics.ListAPIView):
     queryset = CustomUser.all_objects.all()
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAdminUser]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+
+    filterset_fields = ["username", "contact_number", "first_name", "last_name", "role"]
+    search_fields = ["username", "contact_number", "first_name", "last_name"]
 
 
 # Admin: view, update, or soft delete any specific user
