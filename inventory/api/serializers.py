@@ -15,9 +15,12 @@ class StallSerializer(serializers.ModelSerializer):
 
 
 class StockSerializer(serializers.ModelSerializer):
+    item = ItemSerializer(read_only=True)
+    stall = StallSerializer(read_only=True)
+
     class Meta:
         model = Stock
-        fields = "__all__"
+        fields = ["id", "quantity", "item", "stall", "created_at", "updated_at"]
 
 
 class ProductCategorySerializer(serializers.ModelSerializer):
