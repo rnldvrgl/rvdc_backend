@@ -1,0 +1,54 @@
+from rest_framework import generics, permissions
+from rest_framework.exceptions import NotFound
+from users.models import CustomUser
+from users.api.serializers import UserSerializer
+
+
+# List all users (admin only)
+class UserListView(generics.ListAPIView):
+    queryset = CustomUser.all_objects.all()
+    serializer_class = UserSerializer
+    permission_classes = [permissions.IsAdminUser]
+
+
+# Admin: view, update, or soft delete any specific user
+class AdminUserDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = CustomUser.all_objects.all()
+    serializer_class = UserSerializer
+    permission_classes = [permissions.IsAdminUser]
+
+    def get_object(self):
+        try:
+            user = self.queryset.get(pk=self.kwargs["pk"])
+            if user.is_deleted:
+                raise NotFound(
+                    detail="User not found."
+                )  # Prevent accessing soft-deleted users
+            return user
+        except CustomUser.DoesNotExist:
+            raise NotFound(detail="User not found.")
+
+    def perform_destroy(self, instance):
+        instance.is_deleted = True
+        instance.save()
+
+    def get_serializer_context(self):
+        return {"request": self.request}
+
+
+# Authenticated user: view, update, or soft delete own profile
+class MyProfileView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = UserSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        if self.request.user.is_deleted:
+            raise NotFound(detail="User not found.")
+        return self.request.user
+
+    def perform_destroy(self, instance):
+        instance.is_deleted = True
+        instance.save()
+
+    def get_serializer_context(self):
+        return {"request": self.request}

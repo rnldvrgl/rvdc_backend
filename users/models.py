@@ -1,6 +1,11 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
-from django.contrib.auth.models import User
+from django.contrib.auth.models import UserManager
+
+
+class ActiveUserManager(UserManager):
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
 
 
 class CustomUser(AbstractUser):
@@ -18,6 +23,14 @@ class CustomUser(AbstractUser):
         upload_to="profile_images/",
         default="profile_image/default_image.jpg",
     )
+    is_deleted = models.BooleanField(default=False)
+
+    objects = ActiveUserManager()
+    all_objects = UserManager()
 
     def __str__(self):
         return self.username
+
+    def delete(self, *args, **kwargs):
+        self.is_deleted = True
+        self.save()
