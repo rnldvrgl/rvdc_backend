@@ -165,8 +165,30 @@ class StockRoomStockDetailView(generics.RetrieveUpdateAPIView):
     filterset_fields = ["item__name"]
     search_fields = ["item__name", "quantity"]
 
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        log_activity(
+            user=self.request.user,
+            instance=instance,
+            action="Updated StockRoomStock",
+            note=f"Updated details for Stock Room Item {instance.item.name}.",
+        )
+
 
 class StockTransferCreateView(generics.CreateAPIView):
     queryset = StockTransfer.objects.all()
     serializer_class = StockTransferSerializer
     permission_classes = [permissions.IsAdminUser]
+
+    def perform_create(self, serializer):
+        transfer = serializer.save(transferred_by=self.request.user)
+
+        log_activity(
+            user=self.request.user,
+            instance=transfer,
+            action="Transferred Stock",
+            note=(
+                f"Transferred {transfer.quantity} {transfer.item.unit_of_measure} of "
+                f"{transfer.item.name} to {transfer.to_stall.name}."
+            ),
+        )
