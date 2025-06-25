@@ -10,6 +10,7 @@ from inventory.api.serializers import (
 )
 from utils.mixins import LogCreateMixin, LogUpdateMixin, LogSoftDeleteMixin
 from rest_framework.response import Response
+from utils.logger import log_activity
 
 
 class ItemListCreateView(LogCreateMixin, generics.ListCreateAPIView):
@@ -57,25 +58,37 @@ class StockListCreateView(LogCreateMixin, generics.ListCreateAPIView):
     search_fields = ["item__name", "stall__name"]
 
     def get_serializer_class(self):
-        if self.request.method == "GET":
-            return StockReadSerializer
-        return StockWriteSerializer
+        return (
+            StockReadSerializer
+            if self.request.method == "GET"
+            else StockWriteSerializer
+        )
 
     def create(self, request, *args, **kwargs):
-        item = request.data.get("item")
-        stall = request.data.get("stall")
-        quantity = int(request.data.get("quantity", 0))
+        item_id = request.data.get("item")
+        stall_id = request.data.get("stall")
+        quantity_to_add = int(request.data.get("quantity", 0))
 
         existing_stock = Stock.objects.filter(
-            item_id=item, stall_id=stall, is_deleted=False
+            item_id=item_id, stall_id=stall_id, is_deleted=False
         ).first()
 
         if existing_stock:
-            existing_stock.quantity += quantity
+            existing_stock.quantity += quantity_to_add
             existing_stock.save()
-            read_serializer = StockReadSerializer(existing_stock)
-            return Response(read_serializer.data, status=status.HTTP_200_OK)
 
+            # Optional logging
+            log_activity(
+                user=request.user,
+                instance=existing_stock,
+                action="Updated Stock",
+                note=f"Added {quantity_to_add} to stock for Item {item_id} at Stall {stall_id}.",
+            )
+
+            serializer = StockReadSerializer(existing_stock)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # No existing stock — create new
         return super().create(request, *args, **kwargs)
 
 
