@@ -20,3 +20,6 @@ class ClientDetailView(
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ["full_name", "phone"]
+    search_fields = ["full_name", "phone", "province", "city", "barangay", "address"]

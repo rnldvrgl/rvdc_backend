@@ -14,13 +14,19 @@ class StallSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class StockSerializer(serializers.ModelSerializer):
-    item = ItemSerializer(read_only=True)
-    stall = StallSerializer(read_only=True)
+class StockReadSerializer(serializers.ModelSerializer):
+    item = ItemSerializer()
+    stall = StallSerializer()
 
     class Meta:
         model = Stock
         fields = ["id", "quantity", "item", "stall", "created_at", "updated_at"]
+
+
+class StockWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Stock
+        fields = ["id", "quantity", "item", "stall"]
 
 
 class ProductCategorySerializer(serializers.ModelSerializer):
