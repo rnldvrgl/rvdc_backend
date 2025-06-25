@@ -1,4 +1,5 @@
 from django.db import models
+from users.models import CustomUser
 import uuid
 
 UNIT_CHOICES = [
@@ -69,6 +70,7 @@ class Stock(models.Model):
     item = models.ForeignKey(Item, on_delete=models.CASCADE)
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField(default=0)
+    low_stock_threshold = models.PositiveIntegerField(default=0)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -76,5 +78,38 @@ class Stock(models.Model):
     class Meta:
         unique_together = ("item", "stall")
 
+    def is_low_stock(self):
+        return self.quantity <= self.low_stock_threshold
+
     def __str__(self):
         return f"{self.item.name} @ {self.stall.name} - {self.quantity} {self.item.unit_of_measure}"
+
+
+class StockRoomStock(models.Model):
+    item = models.OneToOneField(Item, on_delete=models.CASCADE)
+    quantity = models.PositiveIntegerField(default=0)
+    low_stock_threshold = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def is_low_stock(self):
+        return self.quantity <= self.low_stock_threshold
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["item"], name="unique_item_stockroom")
+        ]
+
+    def __str__(self):
+        return f"{self.item.name} - {self.quantity} {self.item.unit_of_measure}"
+
+
+class StockTransfer(models.Model):
+    item = models.ForeignKey(Item, on_delete=models.CASCADE)
+    quantity = models.PositiveIntegerField()
+    to_stall = models.ForeignKey(Stall, on_delete=models.CASCADE)
+    transferred_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
+    transfer_date = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.quantity} {self.item.unit_of_measure} of {self.item.name} → {self.to_stall.name}"

@@ -1,12 +1,21 @@
 from rest_framework import generics, permissions, filters, status
 from django_filters.rest_framework import DjangoFilterBackend
-from inventory.models import Item, Stall, Stock, ProductCategory
+from inventory.models import (
+    Item,
+    Stall,
+    Stock,
+    ProductCategory,
+    StockRoomStock,
+    StockTransfer,
+)
 from inventory.api.serializers import (
     ItemSerializer,
     StallSerializer,
     ProductCategorySerializer,
     StockWriteSerializer,
     StockReadSerializer,
+    StockRoomStockSerializer,
+    StockTransferSerializer,
 )
 from utils.mixins import LogCreateMixin, LogUpdateMixin, LogSoftDeleteMixin
 from rest_framework.response import Response
@@ -114,3 +123,50 @@ class ProductCategoryListCreateView(LogCreateMixin, generics.ListCreateAPIView):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["name"]
     search_fields = ["name"]
+
+
+class StockRoomStockListCreateView(LogCreateMixin, generics.ListCreateAPIView):
+    queryset = StockRoomStock.objects.all()
+    serializer_class = StockRoomStockSerializer
+    permission_classes = [permissions.IsAdminUser]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ["item__name"]
+    search_fields = ["item__name"]
+
+    def create(self, request, *args, **kwargs):
+        item_id = request.data.get("item")
+        quantity_to_add = int(request.data.get("quantity", 0))
+
+        existing_stock = StockRoomStock.objects.filter(item_id=item_id).first()
+
+        if existing_stock:
+            existing_stock.quantity += quantity_to_add
+            existing_stock.save()
+
+            log_activity(
+                user=request.user,
+                instance=existing_stock,
+                action="Updated StockRoomStock",
+                note=f"Added {quantity_to_add} to stock room for Item {item_id}.",
+            )
+
+            serializer = StockRoomStockSerializer(existing_stock)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # No existing stock — create new
+        return super().create(request, *args, **kwargs)
+
+
+class StockRoomStockDetailView(generics.RetrieveUpdateAPIView):
+    queryset = StockRoomStock.objects.all()
+    serializer_class = StockRoomStockSerializer
+    permission_classes = [permissions.IsAdminUser]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ["item__name"]
+    search_fields = ["item__name", "quantity"]
+
+
+class StockTransferCreateView(generics.CreateAPIView):
+    queryset = StockTransfer.objects.all()
+    serializer_class = StockTransferSerializer
+    permission_classes = [permissions.IsAdminUser]
