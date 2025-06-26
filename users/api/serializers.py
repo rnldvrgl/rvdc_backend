@@ -17,6 +17,7 @@ class UserSerializer(serializers.ModelSerializer):
             "contact_number",
             "profile_image",
             "is_active",
+            "assigned_stall",
         ]
         read_only_fields = ("id",)
 

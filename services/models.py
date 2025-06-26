@@ -1,9 +1,8 @@
-from django.db import models
+from django.db import models, transaction
 from users.models import CustomUser
-from clients.models import Client
 from utils.logger import log_activity
-from inventory.models import Stock
-from django.db import transaction
+from clients.models import Client
+from sales.models import SalesTransaction
 
 SERVICE_TYPES = [
     ("installation", "Installation"),
@@ -37,6 +36,19 @@ APPLIANCE_TYPES = [
     ("freezer", "Freezer"),
 ]
 
+PAYMENT_METHODS = [
+    ("cash", "Cash"),
+    ("gcash", "GCash"),
+    ("bank_transfer", "Bank Transfer"),
+    ("card", "Credit/Debit Card"),
+]
+
+PAYMENT_STATUS = [
+    ("unpaid", "Unpaid"),
+    ("partial", "Partially Paid"),
+    ("paid", "Fully Paid"),
+]
+
 
 class ServiceRequest(models.Model):
     client = models.ForeignKey(Client, on_delete=models.CASCADE)
@@ -52,6 +64,25 @@ class ServiceRequest(models.Model):
     remarks = models.TextField(blank=True, null=True)
     date_received = models.DateTimeField(auto_now_add=True)
     date_completed = models.DateTimeField(blank=True, null=True)
+    total_payment = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    payment_method = models.CharField(
+        max_length=20, choices=PAYMENT_METHODS, blank=True, null=True
+    )
+    payment_status = models.CharField(
+        max_length=20, choices=PAYMENT_STATUS, default="unpaid"
+    )
+    payment_date = models.DateTimeField(blank=True, null=True)
+    final_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    sales_transaction = models.OneToOneField(
+        "sales.SalesTransaction",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="service_request",
+    )
+    sales_transaction = models.OneToOneField(
+        SalesTransaction, on_delete=models.SET_NULL, null=True, blank=True
+    )
 
     def __str__(self):
         return (
@@ -59,6 +90,8 @@ class ServiceRequest(models.Model):
         )
 
     def save(self, *args, **kwargs):
+        user = kwargs.pop("user", None)
+
         if self.pk:
             original = ServiceRequest.objects.get(pk=self.pk)
             changes = []
@@ -78,9 +111,7 @@ class ServiceRequest(models.Model):
 
             for change in changes:
                 log_activity(
-                    user=(
-                        self.technicians.first() if self.technicians.exists() else None
-                    ),
+                    user=user,
                     instance=self,
                     action="updated service request",
                     note=change,
@@ -119,8 +150,10 @@ class ServiceRequestItem(models.Model):
     deducted_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
+        from inventory.models import Stock
 
         if not self.pk:
+            # First-time creation: Deduct stock
             with transaction.atomic():
                 stock = (
                     Stock.objects.select_for_update()
@@ -133,20 +166,50 @@ class ServiceRequestItem(models.Model):
                     .first()
                 )
 
-                if stock:
-                    stock.quantity -= self.quantity_used
-                    stock.save()
-
-                    log_activity(
-                        user=self.deducted_by,
-                        instance=self,
-                        action="deducted item",
-                        note=f"Deducted {self.quantity_used} {self.item.unit_of_measure} of {self.item.name} from {self.deducted_from_stall.name}",
+                if not stock:
+                    raise ValueError(
+                        "Insufficient stock or invalid stall for deduction."
                     )
-                else:
-                    raise ValueError("Insufficient stock or invalid stall")
+
+                stock.quantity -= self.quantity_used
+                stock.save()
+                super().save(*args, **kwargs)
+
+                log_activity(
+                    user=self.deducted_by,
+                    instance=self,
+                    action="deducted item",
+                    note=f"Deducted {self.quantity_used} {self.item.unit_of_measure} of {self.item.name} from {self.deducted_from_stall.name}",
+                )
+                return
 
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from inventory.models import Stock
+
+        with transaction.atomic():
+            try:
+                stock = Stock.objects.select_for_update().get(
+                    item=self.item,
+                    stall=self.deducted_from_stall,
+                    is_deleted=False,
+                )
+                stock.quantity += self.quantity_used
+                stock.save()
+            except Stock.DoesNotExist:
+                raise ValueError(
+                    f"Cannot restore stock: Stock for item '{self.item}' in stall '{self.deducted_from_stall}' does not exist."
+                )
+
+            log_activity(
+                user=self.deducted_by,
+                instance=self,
+                action="restored item",
+                note=f"Restored {self.quantity_used} {self.item.unit_of_measure} of {self.item.name} to {self.deducted_from_stall.name} (due to item deletion)",
+            )
+
+        super().delete(*args, **kwargs)
 
     def __str__(self):
         return (

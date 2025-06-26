@@ -1,6 +1,7 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.contrib.auth.models import UserManager
+from inventory.models import Stall
 
 
 class ActiveUserManager(UserManager):
@@ -18,7 +19,9 @@ class CustomUser(AbstractUser):
     username = models.CharField(max_length=150, unique=True, blank=True, null=True)
     email = models.EmailField(blank=True, null=True)
     password = models.CharField(max_length=128, blank=True)
-
+    assigned_stall = models.ForeignKey(
+        Stall, null=True, blank=True, on_delete=models.SET_NULL
+    )
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
     birthday = models.DateField(null=True, blank=True)
     address = models.TextField(null=True, blank=True)

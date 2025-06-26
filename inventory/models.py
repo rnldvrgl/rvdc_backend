@@ -1,5 +1,5 @@
 from django.db import models
-from users.models import CustomUser
+from django.conf import settings
 import uuid
 
 UNIT_CHOICES = [
@@ -108,7 +108,9 @@ class StockTransfer(models.Model):
     item = models.ForeignKey(Item, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField()
     to_stall = models.ForeignKey(Stall, on_delete=models.CASCADE)
-    transferred_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
+    transferred_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True
+    )
     transfer_date = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

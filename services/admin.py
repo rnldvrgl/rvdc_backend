@@ -10,7 +10,6 @@ class ServiceRequestItemInline(admin.TabularInline):
     extra = 1
 
 
-# ✅ Custom form to show technician names instead of IDs
 class ServiceRequestForm(forms.ModelForm):
     technicians = forms.ModelMultipleChoiceField(
         queryset=CustomUser.objects.all(),
@@ -18,12 +17,7 @@ class ServiceRequestForm(forms.ModelForm):
         label="Technicians",
         required=False,
     )
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.fields["technicians"].label_from_instance = (
-            lambda obj: obj.get_full_name() or obj.username
-        )
+    technicians.label_from_instance = lambda obj: obj.get_full_name() or obj.username
 
     class Meta:
         model = ServiceRequest
@@ -58,6 +52,10 @@ class ServiceRequestAdmin(admin.ModelAdmin):
         )
 
     get_technicians.short_description = "Technicians"
+
+    def save_model(self, request, obj, form, change):
+        obj.save(user=request.user)
+        super().save_model(request, obj, form, change)
 
 
 # ✅ Admin for ServiceStep
