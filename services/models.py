@@ -1,6 +1,9 @@
 from django.db import models
 from users.models import CustomUser
 from clients.models import Client
+from utils.logger import log_activity
+from inventory.models import Stock
+from django.db import transaction
 
 SERVICE_TYPES = [
     ("installation", "Installation"),
@@ -74,17 +77,41 @@ class ServiceRequestItem(models.Model):
     )
     item = models.ForeignKey("inventory.Item", on_delete=models.CASCADE)
     quantity_used = models.PositiveIntegerField()
+    deducted_from_stall = models.ForeignKey(
+        "inventory.Stall", on_delete=models.SET_NULL, null=True
+    )
+    deducted_by = models.ForeignKey(
+        CustomUser, on_delete=models.SET_NULL, null=True, related_name="item_deductions"
+    )
+    deducted_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
         if not self.pk:
-            from inventory.models import Stock
+            with transaction.atomic():
+                stock = (
+                    Stock.objects.select_for_update()
+                    .filter(
+                        item=self.item,
+                        stall=self.deducted_from_stall,
+                        quantity__gte=self.quantity_used,
+                        is_deleted=False,
+                    )
+                    .first()
+                )
 
-            stock = Stock.objects.filter(
-                item=self.item, quantity__gte=self.quantity_used, is_deleted=False
-            ).first()
-            if stock:
-                stock.quantity -= self.quantity_used
-                stock.save()
+                if stock:
+                    stock.quantity -= self.quantity_used
+                    stock.save()
+
+                    log_activity(
+                        user=self.deducted_by,
+                        instance=self,
+                        action="deducted item",
+                        note=f"Deducted {self.quantity_used} {self.item.unit_of_measure} of {self.item.name} from {self.deducted_from_stall.name}",
+                    )
+                else:
+                    raise ValueError("Insufficient stock or invalid stall")
+
         super().save(*args, **kwargs)
 
     def __str__(self):
