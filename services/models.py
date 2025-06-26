@@ -119,10 +119,9 @@ class ServiceRequestItem(models.Model):
     deducted_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
-        from inventory.models import Stock
 
         if not self.pk:
-            with models.transaction.atomic():
+            with transaction.atomic():
                 stock = (
                     Stock.objects.select_for_update()
                     .filter(

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from services.models import Client, ServiceRequest, ServiceStep, ServiceRequestItem
+from services.models import ServiceRequest, ServiceStep, ServiceRequestItem
 
 
 class ServiceRequestItemSerializer(serializers.ModelSerializer):
@@ -18,13 +18,31 @@ class ServiceStepSerializer(serializers.ModelSerializer):
 
 
 class ServiceRequestSerializer(serializers.ModelSerializer):
-    client_name = serializers.CharField(source="client.name", read_only=True)
-    technician_name = serializers.CharField(
-        source="technician.get_full_name", read_only=True
-    )
+    client_name = serializers.CharField(source="client.full_name", read_only=True)
+    technician_names = serializers.SerializerMethodField()
     used_items = ServiceRequestItemSerializer(many=True, read_only=True)
     steps = ServiceStepSerializer(many=True, read_only=True)
 
     class Meta:
         model = ServiceRequest
-        fields = "__all__"
+        fields = (
+            "id",
+            "client",
+            "client_name",
+            "technicians",
+            "technician_names",
+            "appliance_type",
+            "brand",
+            "unit_type",
+            "service_type",
+            "previous_service_type",
+            "status",
+            "remarks",
+            "date_received",
+            "date_completed",
+            "used_items",
+            "steps",
+        )
+
+    def get_technician_names(self, obj):
+        return [t.get_full_name() or t.username for t in obj.technicians.all()]

@@ -1,9 +1,41 @@
 from django.contrib import admin
+from django import forms
+from users.models import CustomUser
 from .models import ServiceRequest, ServiceStep, ServiceRequestItem
 
 
+# ✅ Inline for used items
+class ServiceRequestItemInline(admin.TabularInline):
+    model = ServiceRequestItem
+    extra = 1
+
+
+# ✅ Custom form to show technician names instead of IDs
+class ServiceRequestForm(forms.ModelForm):
+    technicians = forms.ModelMultipleChoiceField(
+        queryset=CustomUser.objects.all(),
+        widget=forms.SelectMultiple,
+        label="Technicians",
+        required=False,
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["technicians"].label_from_instance = (
+            lambda obj: obj.get_full_name() or obj.username
+        )
+
+    class Meta:
+        model = ServiceRequest
+        fields = "__all__"
+
+
+# ✅ Admin class for ServiceRequest
 @admin.register(ServiceRequest)
 class ServiceRequestAdmin(admin.ModelAdmin):
+    form = ServiceRequestForm  # use custom form
+    inlines = [ServiceRequestItemInline]
+
     list_display = (
         "id",
         "client",
@@ -28,6 +60,7 @@ class ServiceRequestAdmin(admin.ModelAdmin):
     get_technicians.short_description = "Technicians"
 
 
+# ✅ Admin for ServiceStep
 @admin.register(ServiceStep)
 class ServiceStepAdmin(admin.ModelAdmin):
     list_display = ("service_request", "service_type", "performed_on")
