@@ -12,13 +12,20 @@ class ServiceRequestAdmin(admin.ModelAdmin):
         "unit_type",
         "service_type",
         "status",
-        "technician",
+        "get_technicians",
         "date_received",
         "date_completed",
     )
-    list_filter = ("appliance_type", "service_type", "status", "technician")
+    list_filter = ("appliance_type", "service_type", "status", "technicians")
     search_fields = ("client__name", "brand", "unit_type")
     readonly_fields = ("date_received",)
+
+    def get_technicians(self, obj):
+        return ", ".join(
+            [t.get_full_name() or t.username for t in obj.technicians.all()]
+        )
+
+    get_technicians.short_description = "Technicians"
 
 
 @admin.register(ServiceStep)

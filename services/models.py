@@ -40,7 +40,7 @@ APPLIANCE_TYPES = [
 
 class ServiceRequest(models.Model):
     client = models.ForeignKey(Client, on_delete=models.CASCADE)
-    technician = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
+    technicians = models.ManyToManyField(CustomUser, related_name="service_requests")
     appliance_type = models.CharField(max_length=30, choices=APPLIANCE_TYPES)
     brand = models.CharField(max_length=100)
     unit_type = models.CharField(max_length=100)
@@ -57,6 +57,37 @@ class ServiceRequest(models.Model):
         return (
             f"{self.get_appliance_type_display()} ({self.brand}) - {self.service_type}"
         )
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            original = ServiceRequest.objects.get(pk=self.pk)
+            changes = []
+
+            if original.status != self.status:
+                changes.append(
+                    f"Status changed from '{original.status}' to '{self.status}'"
+                )
+            if original.service_type != self.service_type:
+                changes.append(
+                    f"Service type changed from '{original.service_type}' to '{self.service_type}'"
+                )
+            if original.previous_service_type != self.previous_service_type:
+                changes.append(
+                    f"Previous service type changed from '{original.previous_service_type}' to '{self.previous_service_type}'"
+                )
+
+            for change in changes:
+                log_activity(
+                    user=None,
+                    instance=self,
+                    action="updated service request",
+                    note=change,
+                )
+                ServiceStep.objects.create(
+                    service_request=self, service_type=self.service_type, notes=change
+                )
+
+        super().save(*args, **kwargs)
 
 
 class ServiceStep(models.Model):
@@ -86,8 +117,10 @@ class ServiceRequestItem(models.Model):
     deducted_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
+        from inventory.models import Stock
+
         if not self.pk:
-            with transaction.atomic():
+            with models.transaction.atomic():
                 stock = (
                     Stock.objects.select_for_update()
                     .filter(
