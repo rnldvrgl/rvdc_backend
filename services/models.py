@@ -78,7 +78,9 @@ class ServiceRequest(models.Model):
 
             for change in changes:
                 log_activity(
-                    user=None,
+                    user=(
+                        self.technicians.first() if self.technicians.exists() else None
+                    ),
                     instance=self,
                     action="updated service request",
                     note=change,
