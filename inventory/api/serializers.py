@@ -12,9 +12,11 @@ from rest_framework.exceptions import ValidationError
 
 
 class ItemSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source="category.name", read_only=True)
+
     class Meta:
         model = Item
-        exclude = ["created_at", "updated_at", "is_deleted"]
+        exclude = ["created_at", "updated_at", "is_deleted", "category"]
 
 
 class StallSerializer(serializers.ModelSerializer):
