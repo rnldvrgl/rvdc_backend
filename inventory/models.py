@@ -99,6 +99,7 @@ class StockRoomStock(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["item"], name="unique_item_stockroom")
         ]
+        ordering = ["item__name"]
 
     def __str__(self):
         return f"{self.item.name} - {self.quantity} {self.item.unit_of_measure}"

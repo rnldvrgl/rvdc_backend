@@ -10,6 +10,7 @@ class Expense(models.Model):
     description = models.TextField(blank=True)
     created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    is_deleted = models.BooleanField(default=False)
     source = models.CharField(
         max_length=20,
         choices=[("manual", "Manual"), ("transfer", "Transfer")],
