@@ -20,6 +20,8 @@ from inventory.api.serializers import (
 from utils.mixins import LogCreateMixin, LogUpdateMixin, LogSoftDeleteMixin
 from rest_framework.response import Response
 from utils.logger import log_activity
+from django.db.models import Q
+from expenses.models import ExpenseItem, Expense
 
 
 class ItemListCreateView(LogCreateMixin, generics.ListCreateAPIView):
@@ -65,6 +67,13 @@ class StockListCreateView(LogCreateMixin, generics.ListCreateAPIView):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["item__name", "stall__name"]
     search_fields = ["item__name", "stall__name"]
+
+    def get_queryset(self):
+        print(self.request.user)
+        user_stall = getattr(self.request.user, "assigned_stall", None)
+        if not user_stall:
+            return Stock.objects.none()
+        return Stock.objects.filter(stall=user_stall, is_deleted=False)
 
     def get_serializer_class(self):
         return (
@@ -178,17 +187,59 @@ class StockRoomStockDetailView(generics.RetrieveUpdateAPIView):
 class StockTransferCreateView(generics.CreateAPIView):
     queryset = StockTransfer.objects.all()
     serializer_class = StockTransferSerializer
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [permissions.IsAuthenticated]
 
     def perform_create(self, serializer):
         transfer = serializer.save(transferred_by=self.request.user)
-
-        log_activity(
-            user=self.request.user,
-            instance=transfer,
-            action="Transferred Stock",
-            note=(
-                f"Transferred {transfer.quantity} {transfer.item.unit_of_measure} of "
-                f"{transfer.item.name} to {transfer.to_stall.name}."
-            ),
+        expense = Expense.objects.create(
+            stall=transfer.to_stall,
+            description=f"Auto-generated from stock transfer by {transfer.from_stall or 'stock room'}",
+            created_by=self.request.user,
+            source="transfer",
         )
+
+        for item in transfer.items.all():
+            log_activity(
+                user=self.request.user,
+                instance=item,
+                action="Item Transferred",
+                note=f"Transferred {item.quantity} {item.item.unit_of_measure} of {item.item.name} "
+                f"from {'stock room' if not transfer.from_stall else transfer.from_stall.name} "
+                f"to {transfer.to_stall.name}.",
+            )
+
+            ExpenseItem.objects.create(
+                expense=expense,
+                item=item.item,
+                quantity=item.quantity,
+                total_price=item.item.srp * item.quantity,
+            )
+
+
+class StockTransferListRelatedToMyStallView(generics.ListAPIView):
+    serializer_class = StockTransferSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ["from_stall", "to_stall", "transfer_date"]
+    search_fields = ["from_stall__name", "to_stall__name", "transfer_date"]
+
+    def get_queryset(self):
+        user_stall = getattr(self.request.user, "assigned_stall", None)
+        direction = self.request.query_params.get("direction")
+        print(user_stall, direction)
+
+        if not user_stall:
+            return StockTransfer.objects.none()
+
+        if direction == "incoming":
+            return StockTransfer.objects.filter(to_stall=user_stall).order_by(
+                "-transfer_date"
+            )
+        elif direction == "outgoing":
+            return StockTransfer.objects.filter(from_stall=user_stall).order_by(
+                "-transfer_date"
+            )
+        else:
+            return StockTransfer.objects.filter(
+                Q(from_stall=user_stall) | Q(to_stall=user_stall)
+            ).order_by("-transfer_date")
