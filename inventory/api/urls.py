@@ -17,20 +17,22 @@ urlpatterns = [
     path("items/<int:pk>/", ItemDetailView.as_view(), name="item-detail"),
     path("stalls/", StallListCreateView.as_view(), name="stall-list-create"),
     path("stalls/<int:pk>/", StallDetailView.as_view(), name="stall-detail"),
-    path("stocks/", StockListCreateView.as_view(), name="stock-list-create"),
-    path("stocks/<int:pk>/", StockDetailView.as_view(), name="stock-detail"),
+    path("stocks/stall/", StockListCreateView.as_view(), name="stock-list-create"),
+    path("stocks/stall/<int:pk>/", StockDetailView.as_view(), name="stock-detail"),
     path(
         "categories/",
         ProductCategoryListCreateView.as_view(),
         name="category-list-create",
     ),
     path(
-        "stock-room/", StockRoomStockListCreateView.as_view(), name="stock-room-stock"
+        "stocks/management/",
+        StockRoomStockListCreateView.as_view(),
+        name="stock-room-stock",
     ),
     path(
-        "stock-room/<int:pk>/",
+        "stocks/management/<int:pk>/",
         StockRoomStockDetailView.as_view(),
         name="stockroom-stock-detail",
     ),
-    path("stock-transfer/", StockTransferCreateView.as_view(), name="stock-transfer"),
+    path("stocks/transfer/", StockTransferCreateView.as_view(), name="stock-transfer"),
 ]

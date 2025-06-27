@@ -183,12 +183,12 @@ class StockTransferCreateView(generics.CreateAPIView):
     def perform_create(self, serializer):
         transfer = serializer.save(transferred_by=self.request.user)
 
-        log_activity(
-            user=self.request.user,
-            instance=transfer,
-            action="Transferred Stock",
-            note=(
-                f"Transferred {transfer.quantity} {transfer.item.unit_of_measure} of "
-                f"{transfer.item.name} to {transfer.to_stall.name}."
-            ),
-        )
+        for item in transfer.items.all():
+            log_activity(
+                user=self.request.user,
+                instance=item,
+                action="Item Transferred",
+                note=f"Transferred {item.quantity} {item.item.unit_of_measure} of {item.item.name} "
+                f"from {'stock room' if not transfer.from_stall else transfer.from_stall.name} "
+                f"to {transfer.to_stall.name}.",
+            )

@@ -6,7 +6,9 @@ from inventory.models import (
     ProductCategory,
     StockRoomStock,
     StockTransfer,
+    StockTransferItem,
 )
+from rest_framework.exceptions import ValidationError
 
 
 class ItemSerializer(serializers.ModelSerializer):
@@ -76,36 +78,82 @@ class StockRoomStockSerializer(serializers.ModelSerializer):
         return obj.is_low_stock()
 
 
+class StockTransferItemSerializer(serializers.ModelSerializer):
+    item_name = serializers.CharField(source="item.name", read_only=True)
+
+    class Meta:
+        model = StockTransferItem
+        fields = ["item", "item_name", "quantity"]
+
+
 class StockTransferSerializer(serializers.ModelSerializer):
+    items = StockTransferItemSerializer(many=True)
+
     class Meta:
         model = StockTransfer
         fields = [
             "id",
-            "item",
-            "quantity",
+            "from_stall",
             "to_stall",
+            "technician",
             "transferred_by",
             "transfer_date",
+            "items",
         ]
         read_only_fields = ["transferred_by", "transfer_date"]
 
     def create(self, validated_data):
-        item = validated_data["item"]
-        quantity = validated_data["quantity"]
-        to_stall = validated_data["to_stall"]
-        user = self.context["request"].user
+        items_data = validated_data.pop("items")
+        from_stall = validated_data.get("from_stall")
 
-        # Decrease from stock room
-        stock_room_entry, _ = StockRoomStock.objects.get_or_create(item=item)
-        if stock_room_entry.quantity < quantity:
-            raise serializers.ValidationError("Insufficient stock in stock room.")
-        stock_room_entry.quantity -= quantity
-        stock_room_entry.save()
+        # Check all stock availability before creating the transfer
+        for item_data in items_data:
+            item = item_data["item"]
+            quantity = item_data["quantity"]
 
-        # Increase in stall stock
-        stock_entry, created = Stock.objects.get_or_create(item=item, stall=to_stall)
-        stock_entry.quantity += quantity
-        stock_entry.save()
+            if from_stall:
+                from_stock = Stock.objects.filter(
+                    stall=from_stall, item=item, is_deleted=False
+                ).first()
+                if not from_stock or from_stock.quantity < quantity:
+                    raise ValidationError(
+                        f"Not enough stock of {item.name} in stall '{from_stall.name}'."
+                    )
+            else:
+                room_stock = StockRoomStock.objects.filter(item=item).first()
+                if not room_stock or room_stock.quantity < quantity:
+                    raise ValidationError(
+                        f"Not enough stock of {item.name} in stock room."
+                    )
 
-        validated_data["transferred_by"] = user
-        return super().create(validated_data)
+        # Proceed with transfer
+        transfer = StockTransfer.objects.create(**validated_data)
+
+        for item_data in items_data:
+            StockTransferItem.objects.create(transfer=transfer, **item_data)
+            self._update_stock(item_data, transfer)
+
+        return transfer
+
+    def _update_stock(self, item_data, transfer):
+        item = item_data["item"]
+        quantity = item_data["quantity"]
+
+        if transfer.from_stall:
+            from_stock = Stock.objects.filter(
+                stall=transfer.from_stall, item=item, is_deleted=False
+            ).first()
+            if from_stock:
+                from_stock.quantity = max(from_stock.quantity - quantity, 0)
+                from_stock.save()
+        else:
+            room_stock = StockRoomStock.objects.filter(item=item).first()
+            if room_stock:
+                room_stock.quantity = max(room_stock.quantity - quantity, 0)
+                room_stock.save()
+
+        to_stock, _ = Stock.objects.get_or_create(
+            stall=transfer.to_stall, item=item, defaults={"quantity": 0}
+        )
+        to_stock.quantity += quantity
+        to_stock.save()

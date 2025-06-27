@@ -105,13 +105,38 @@ class StockRoomStock(models.Model):
 
 
 class StockTransfer(models.Model):
-    item = models.ForeignKey(Item, on_delete=models.CASCADE)
-    quantity = models.PositiveIntegerField()
-    to_stall = models.ForeignKey(Stall, on_delete=models.CASCADE)
+    from_stall = models.ForeignKey(
+        Stall,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="outgoing_transfers",
+    )
+    to_stall = models.ForeignKey(
+        Stall, on_delete=models.CASCADE, related_name="incoming_transfers"
+    )
+    technician = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="requested_transfers",
+    )
     transferred_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True
     )
     transfer_date = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.quantity} {self.item.unit_of_measure} of {self.item.name} → {self.to_stall.name}"
+        return f"Transfer to {self.to_stall.name} on {self.transfer_date.strftime('%Y-%m-%d')}"
+
+
+class StockTransferItem(models.Model):
+    transfer = models.ForeignKey(
+        StockTransfer, on_delete=models.CASCADE, related_name="items"
+    )
+    item = models.ForeignKey(Item, on_delete=models.CASCADE)
+    quantity = models.PositiveIntegerField()
+
+    def __str__(self):
+        return f"{self.quantity} {self.item.unit_of_measure} of {self.item.name}"

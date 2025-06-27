@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "logs",
     "sales",
     "services",
+    "expenses",
 ]
 
 MIDDLEWARE = [
