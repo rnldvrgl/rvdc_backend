@@ -37,7 +37,6 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
     total_price = serializers.SerializerMethodField()
 
     # display-only
-    stall_name = serializers.CharField(source="stall.name", read_only=True)
     sales_clerk_name = serializers.CharField(
         source="sales_clerk.username", read_only=True
     )
@@ -50,9 +49,6 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             "receipt_number",
             "sales_clerk_name",
             "client_name",
-            "stall_name",
-            "client",
-            "stall",
             "total_price",
             "total_payment",
             "items",
@@ -73,6 +69,14 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
 
     def get_total_price(self, obj):
         return sum(item.quantity * item.final_price for item in obj.items.all())
+
+    def query_set(self):
+        user_stall = getattr(self.request.user, "assigned_stall", None)
+        if user_stall:
+            return SalesTransaction.objects.filter(stall=user_stall).order_by(
+                "-created_at"
+            )
+        return SalesTransaction.objects.none()
 
     def create(self, validated_data):
         items_data = validated_data.pop("items")
