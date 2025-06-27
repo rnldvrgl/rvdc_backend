@@ -10,6 +10,7 @@ from inventory.api.views import (
     StockRoomStockListCreateView,
     StockRoomStockDetailView,
     StockTransferCreateView,
+    StockTransferListRelatedToMyStallView,
 )
 
 urlpatterns = [
@@ -35,4 +36,9 @@ urlpatterns = [
         name="stockroom-stock-detail",
     ),
     path("stocks/transfer/", StockTransferCreateView.as_view(), name="stock-transfer"),
+    path(
+        "stocks/transfers/",
+        StockTransferListRelatedToMyStallView.as_view(),
+        name="stock-transfers",
+    ),
 ]

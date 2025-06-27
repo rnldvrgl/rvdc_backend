@@ -14,18 +14,19 @@ from rest_framework.exceptions import ValidationError
 class ItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = Item
-        fields = "__all__"
+        exclude = ["created_at", "updated_at", "is_deleted"]
 
 
 class StallSerializer(serializers.ModelSerializer):
     class Meta:
         model = Stall
-        fields = "__all__"
+        exclude = ["created_at", "updated_at", "is_deleted"]
 
 
 class StockReadSerializer(serializers.ModelSerializer):
-    item = ItemSerializer()
-    stall = StallSerializer()
+    item_name = serializers.CharField(source="item.name", read_only=True)
+    item_sku = serializers.CharField(source="item.sku", read_only=True)
+    category_name = serializers.CharField(source="item.category.name", read_only=True)
     is_low_stock = serializers.SerializerMethodField()
 
     class Meta:
@@ -33,11 +34,10 @@ class StockReadSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "quantity",
-            "item",
-            "stall",
-            "created_at",
+            "item_name",
+            "item_sku",
+            "category_name",
             "updated_at",
-            "low_stock_threshold",
             "is_low_stock",
         ]
 
@@ -46,6 +46,7 @@ class StockReadSerializer(serializers.ModelSerializer):
 
 
 class StockWriteSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = Stock
         fields = ["id", "quantity", "item", "stall"]
