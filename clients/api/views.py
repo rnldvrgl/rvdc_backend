@@ -3,6 +3,7 @@ from clients.models import Client
 from clients.api.serializers import ClientSerializer
 from django_filters.rest_framework import DjangoFilterBackend
 from utils.mixins import LogCreateMixin, LogUpdateMixin, LogSoftDeleteMixin
+from rest_framework.exceptions import ValidationError
 
 
 class ClientListCreateView(LogCreateMixin, generics.ListCreateAPIView):
@@ -19,6 +20,22 @@ class ClientListCreateView(LogCreateMixin, generics.ListCreateAPIView):
         "barangay",
         "address",
     ]
+
+    def perform_create(self, serializer):
+        full_name = serializer.validated_data.get("full_name")
+        contact_number = serializer.validated_data.get("contact_number")
+
+        if Client.objects.filter(
+            full_name=full_name, contact_number=contact_number
+        ).exists():
+            raise ValidationError(
+                "A client with this full name and contact number already exists."
+            )
+
+        if Client.objects.filter(contact_number=contact_number).exists():
+            raise ValidationError("A client with this contact number already exists.")
+
+        serializer.save(created_by=self.request.user)
 
 
 class ClientDetailView(
