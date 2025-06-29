@@ -8,7 +8,7 @@ class ActiveClientManager(models.Manager):
 
 class Client(models.Model):
     full_name = models.CharField(max_length=100)
-    phone = models.CharField(max_length=15)
+    contact_number = models.CharField(max_length=15)
     province = models.CharField(max_length=50)
     city = models.CharField(max_length=50)
     barangay = models.CharField(max_length=50)
