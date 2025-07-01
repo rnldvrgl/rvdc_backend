@@ -28,7 +28,7 @@ class CustomUser(AbstractUser):
     contact_number = models.CharField(max_length=15, null=True, blank=True)
     profile_image = models.ImageField(
         upload_to="profile_images/",
-        default="profile_images/default_image.jpg",
+        default="images/default_image.jpg",
     )
     is_deleted = models.BooleanField(default=False)
 
