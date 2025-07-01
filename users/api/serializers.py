@@ -1,9 +1,11 @@
 from rest_framework import serializers
 from users.models import CustomUser
 from inventory.api.serializers import StallSerializer
+from drf_extra_fields.fields import Base64ImageField
 
 
 class UserSerializer(serializers.ModelSerializer):
+    profile_image = Base64ImageField(required=False, allow_null=True)
     current_password = serializers.CharField(write_only=True, required=False)
     new_password = serializers.CharField(write_only=True, required=False)
     assigned_stall = StallSerializer(read_only=True)
@@ -57,5 +59,9 @@ class UserSerializer(serializers.ModelSerializer):
                     {"current_password": "Current password is incorrect."}
                 )
             instance.set_password(new_password)
+
+        if "profile_image" in validated_data and validated_data["profile_image"] == "":
+            # set to default (or None to clear)
+            validated_data["profile_image"] = "profile_images/default_image.jpg"
 
         return super().update(instance, validated_data)
