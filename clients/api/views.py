@@ -35,7 +35,7 @@ class ClientListCreateView(LogCreateMixin, generics.ListCreateAPIView):
         if Client.objects.filter(contact_number=contact_number).exists():
             raise APIException("A client with this contact number already exists.")
 
-        serializer.save(created_by=self.request.user)
+        serializer.save()
 
 
 class ClientDetailView(
