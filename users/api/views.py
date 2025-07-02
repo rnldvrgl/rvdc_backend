@@ -1,7 +1,7 @@
 from rest_framework import generics, permissions, filters
 from rest_framework.exceptions import NotFound
 from users.models import CustomUser
-from users.api.serializers import UserSerializer
+from users.api.serializers import TechnicianSerializer, UserSerializer
 from django_filters.rest_framework import DjangoFilterBackend
 
 
@@ -41,7 +41,45 @@ class AdminUserDetailView(generics.RetrieveUpdateDestroyAPIView):
         return {"request": self.request}
 
 
-# Authenticated user: view, update, or soft delete own profile
+class TechnicianListView(generics.ListCreateAPIView):
+    serializer_class = TechnicianSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = CustomUser.objects.filter(role="technician", is_deleted=False)
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = [
+        "username",
+        "contact_number",
+        "first_name",
+        "last_name",
+        "email",
+        "address",
+        "province",
+        "city",
+        "barangay",
+    ]
+    search_fields = [
+        "username",
+        "contact_number",
+        "first_name",
+        "last_name",
+        "email",
+        "address",
+        "province",
+        "city",
+        "barangay",
+    ]
+
+
+class TechnicianDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = TechnicianSerializer
+    queryset = CustomUser.objects.filter(role="technician", is_deleted=False)
+    permission_classes = [permissions.IsAuthenticated]
+
+    def perform_destroy(self, instance):
+        instance.is_deleted = True
+        instance.save()
+
+
 class MyProfileView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]

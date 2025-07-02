@@ -4,6 +4,32 @@ from inventory.api.serializers import StallSerializer
 from drf_extra_fields.fields import Base64ImageField
 
 
+class TechnicianSerializer(serializers.ModelSerializer):
+    profile_image = Base64ImageField(required=False, allow_null=True)
+
+    class Meta:
+        model = CustomUser
+        fields = [
+            "id",
+            "email",
+            "first_name",
+            "last_name",
+            "role",
+            "birthday",
+            "address",
+            "province",
+            "city",
+            "barangay",
+            "contact_number",
+            "profile_image",
+            "is_active",
+            "sss_number",
+            "philhealth_number",
+            "basic_salary",
+        ]
+        read_only_fields = ("id",)
+
+
 class UserSerializer(serializers.ModelSerializer):
     profile_image = Base64ImageField(required=False, allow_null=True)
     current_password = serializers.CharField(write_only=True, required=False)
@@ -27,6 +53,9 @@ class UserSerializer(serializers.ModelSerializer):
             "assigned_stall",
             "current_password",
             "new_password",
+            "sss_number",
+            "philhealth_number",
+            "basic_salary",
         ]
         read_only_fields = ("id",)
 

@@ -18,10 +18,13 @@ class CustomUser(AbstractUser):
 
     username = models.CharField(max_length=150, unique=True, blank=True, null=True)
     email = models.EmailField(blank=True, null=True)
-    password = models.CharField(max_length=128, blank=True)
+    password = models.CharField(max_length=128, blank=True, null=True)
     assigned_stall = models.ForeignKey(
         Stall, null=True, blank=True, on_delete=models.SET_NULL
     )
+    province = models.CharField(max_length=50, blank=True, null=True)
+    city = models.CharField(max_length=50, blank=True, null=True)
+    barangay = models.CharField(max_length=50, blank=True, null=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
     birthday = models.DateField(null=True, blank=True)
     address = models.TextField(null=True, blank=True)
@@ -30,6 +33,10 @@ class CustomUser(AbstractUser):
         upload_to="profile_images/",
         default="images/default_image.jpg",
     )
+    sss_number = models.CharField(max_length=50, blank=True, null=True)
+    philhealth_number = models.CharField(max_length=50, blank=True, null=True)
+    tin_number = models.CharField(max_length=50, blank=True, null=True)
+    basic_salary = models.DecimalField(max_digits=10, decimal_places=2, null=True)
     is_deleted = models.BooleanField(default=False)
 
     USERNAME_FIELD = "username"
