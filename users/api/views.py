@@ -75,9 +75,15 @@ class TechnicianDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = CustomUser.objects.filter(role="technician", is_deleted=False)
     permission_classes = [permissions.IsAuthenticated]
 
+    def filter_queryset(self, queryset):
+        return queryset
+
     def perform_destroy(self, instance):
         instance.is_deleted = True
         instance.save()
+
+    def get_serializer_context(self):
+        return {"request": self.request}
 
 
 class MyProfileView(generics.RetrieveUpdateDestroyAPIView):
