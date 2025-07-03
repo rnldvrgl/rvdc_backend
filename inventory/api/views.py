@@ -131,14 +131,6 @@ class ProductCategoryListCreateView(LogCreateMixin, generics.ListCreateAPIView):
     filterset_fields = ["name"]
     search_fields = ["name"]
 
-    def perform_create(self, serializer):
-        name = serializer.validated_data.get("name")
-
-        if ProductCategory.objects.filter(name=name).exists():
-            raise APIException("A product category with this name already exists.")
-
-        serializer.save()
-
 
 class ProductCategoryDetailView(
     LogUpdateMixin, LogSoftDeleteMixin, generics.RetrieveUpdateDestroyAPIView
@@ -149,14 +141,6 @@ class ProductCategoryDetailView(
 
     def filter_queryset(self, queryset):
         return queryset
-
-    def perform_update(self, serializer):
-        name = serializer.validated_data.get("name")
-
-        if ProductCategory.objects.filter(name=name).exists():
-            raise APIException("A product category with this name already exists.")
-
-        serializer.save()
 
     def perform_destroy(self, instance):
         instance.is_deleted = True
