@@ -1,6 +1,7 @@
 from django.urls import path
 from inventory.api.views import (
     ProductCategoryListCreateView,
+    ProductCategoryDetailView,
     ItemListCreateView,
     ItemDetailView,
     StallListCreateView,
@@ -24,6 +25,11 @@ urlpatterns = [
         "categories/",
         ProductCategoryListCreateView.as_view(),
         name="category-list-create",
+    ),
+    path(
+        "categories/<int:pk>/",
+        ProductCategoryDetailView.as_view(),
+        name="category-detail",
     ),
     path(
         "stocks/management/",

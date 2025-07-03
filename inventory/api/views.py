@@ -22,6 +22,7 @@ from rest_framework.response import Response
 from utils.logger import log_activity
 from django.db.models import Q
 from expenses.models import ExpenseItem, Expense
+from rest_framework.exceptions import APIException
 
 
 class ItemListCreateView(LogCreateMixin, generics.ListCreateAPIView):
@@ -62,18 +63,17 @@ class StallDetailView(
 
 
 class StockListCreateView(LogCreateMixin, generics.ListCreateAPIView):
-    queryset = Stock.objects.filter(is_deleted=False)
+    queryset = Stock.objects.all()
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["item__name", "stall__name"]
     search_fields = ["item__name", "stall__name"]
 
     def get_queryset(self):
-        print(self.request.user)
         user_stall = getattr(self.request.user, "assigned_stall", None)
         if not user_stall:
             return Stock.objects.none()
-        return Stock.objects.filter(stall=user_stall, is_deleted=False)
+        return Stock.objects.filter(stall=user_stall)
 
     def get_serializer_class(self):
         return (
@@ -88,14 +88,13 @@ class StockListCreateView(LogCreateMixin, generics.ListCreateAPIView):
         quantity_to_add = int(request.data.get("quantity", 0))
 
         existing_stock = Stock.objects.filter(
-            item_id=item_id, stall_id=stall_id, is_deleted=False
+            item_id=item_id, stall_id=stall_id
         ).first()
 
         if existing_stock:
             existing_stock.quantity += quantity_to_add
             existing_stock.save()
 
-            # Optional logging
             log_activity(
                 user=request.user,
                 instance=existing_stock,
@@ -106,7 +105,6 @@ class StockListCreateView(LogCreateMixin, generics.ListCreateAPIView):
             serializer = StockReadSerializer(existing_stock)
             return Response(serializer.data, status=status.HTTP_200_OK)
 
-        # No existing stock — create new
         return super().create(request, *args, **kwargs)
 
 
@@ -132,6 +130,37 @@ class ProductCategoryListCreateView(LogCreateMixin, generics.ListCreateAPIView):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["name"]
     search_fields = ["name"]
+
+    def perform_create(self, serializer):
+        name = serializer.validated_data.get("name")
+
+        if ProductCategory.objects.filter(name=name).exists():
+            raise APIException("A product category with this name already exists.")
+
+        serializer.save()
+
+
+class ProductCategoryDetailView(
+    LogUpdateMixin, LogSoftDeleteMixin, generics.RetrieveUpdateDestroyAPIView
+):
+    queryset = ProductCategory.objects.all()
+    serializer_class = ProductCategorySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def filter_queryset(self, queryset):
+        return queryset
+
+    def perform_update(self, serializer):
+        name = serializer.validated_data.get("name")
+
+        if ProductCategory.objects.filter(name=name).exists():
+            raise APIException("A product category with this name already exists.")
+
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        instance.is_deleted = True
+        instance.save()
 
 
 class StockRoomStockListCreateView(LogCreateMixin, generics.ListCreateAPIView):

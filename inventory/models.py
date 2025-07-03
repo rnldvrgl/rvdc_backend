@@ -2,6 +2,18 @@ from django.db import models
 from django.conf import settings
 import uuid
 
+
+# ===========
+# Managers
+# ===========
+class ActiveManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+
+# ===========
+# Constants
+# ===========
 UNIT_CHOICES = [
     ("pcs", "Pieces"),
     ("ft", "Feet"),
@@ -11,11 +23,30 @@ UNIT_CHOICES = [
 ]
 
 
+# ===========
+# Models
+# ===========
+
+
 class ProductCategory(models.Model):
-    name = models.CharField(max_length=100, unique=True)
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True, null=True)
+    is_deleted = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = ActiveManager()
+    all_objects = models.Manager()
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["name"],
+                condition=models.Q(is_deleted=False),
+                name="unique_active_productcategory_name",
+            )
+        ]
 
     def __str__(self):
         return self.name
@@ -38,6 +69,9 @@ class Item(models.Model):
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    objects = ActiveManager()
+    all_objects = models.Manager()
 
     class Meta:
         ordering = ["name"]
@@ -62,6 +96,9 @@ class Stall(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    objects = ActiveManager()
+    all_objects = models.Manager()
+
     def __str__(self):
         return self.name
 
@@ -71,7 +108,6 @@ class Stock(models.Model):
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField(default=0)
     low_stock_threshold = models.PositiveIntegerField(default=0)
-    is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -1,4 +1,6 @@
+from django.db import transaction
 from rest_framework import serializers
+from rest_framework.exceptions import ValidationError
 from inventory.models import (
     Item,
     Stall,
@@ -8,7 +10,6 @@ from inventory.models import (
     StockTransfer,
     StockTransferItem,
 )
-from rest_framework.exceptions import ValidationError
 
 
 class ItemSerializer(serializers.ModelSerializer):
@@ -48,7 +49,6 @@ class StockReadSerializer(serializers.ModelSerializer):
 
 
 class StockWriteSerializer(serializers.ModelSerializer):
-
     class Meta:
         model = Stock
         fields = ["id", "quantity", "item", "stall"]
@@ -57,7 +57,18 @@ class StockWriteSerializer(serializers.ModelSerializer):
 class ProductCategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = ProductCategory
-        fields = ["id", "name"]
+        fields = ["id", "name", "created_at", "updated_at", "is_deleted", "description"]
+        read_only_fields = ["created_at", "updated_at"]
+
+    def validate_name(self, value):
+        qs = ProductCategory.objects.filter(name__iexact=value, is_deleted=False)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError(
+                "A product category with this name already exists."
+            )
+        return value
 
 
 class StockRoomStockSerializer(serializers.ModelSerializer):
@@ -76,6 +87,7 @@ class StockRoomStockSerializer(serializers.ModelSerializer):
             "updated_at",
             "is_low_stock",
         ]
+        read_only_fields = ["created_at", "updated_at"]
 
     def get_is_low_stock(self, obj):
         return obj.is_low_stock()
@@ -109,7 +121,7 @@ class StockTransferSerializer(serializers.ModelSerializer):
         items_data = validated_data.pop("items")
         from_stall = validated_data.get("from_stall")
 
-        # Check all stock availability before creating the transfer
+        # Check stock availability first
         for item_data in items_data:
             item = item_data["item"]
             quantity = item_data["quantity"]
@@ -129,12 +141,12 @@ class StockTransferSerializer(serializers.ModelSerializer):
                         f"Not enough stock of {item.name} in stock room."
                     )
 
-        # Proceed with transfer
-        transfer = StockTransfer.objects.create(**validated_data)
-
-        for item_data in items_data:
-            StockTransferItem.objects.create(transfer=transfer, **item_data)
-            self._update_stock(item_data, transfer)
+        # Use transaction to ensure atomicity
+        with transaction.atomic():
+            transfer = StockTransfer.objects.create(**validated_data)
+            for item_data in items_data:
+                StockTransferItem.objects.create(transfer=transfer, **item_data)
+                self._update_stock(item_data, transfer)
 
         return transfer
 
@@ -144,7 +156,7 @@ class StockTransferSerializer(serializers.ModelSerializer):
 
         if transfer.from_stall:
             from_stock = Stock.objects.filter(
-                stall=transfer.from_stall, item=item, is_deleted=False
+                stall=transfer.from_stall, item=item
             ).first()
             if from_stock:
                 from_stock.quantity = max(from_stock.quantity - quantity, 0)
