@@ -1,9 +1,8 @@
-from rest_framework import generics, permissions, filters
+from rest_framework import generics, permissions, filters, serializers
 from clients.models import Client
 from clients.api.serializers import ClientSerializer
 from django_filters.rest_framework import DjangoFilterBackend
 from utils.mixins import LogCreateMixin, LogUpdateMixin, LogSoftDeleteMixin
-from rest_framework.exceptions import APIException
 
 
 class ClientListCreateView(LogCreateMixin, generics.ListCreateAPIView):
@@ -28,12 +27,22 @@ class ClientListCreateView(LogCreateMixin, generics.ListCreateAPIView):
         if Client.objects.filter(
             full_name=full_name, contact_number=contact_number
         ).exists():
-            raise APIException(
-                "A client with this full name and contact number already exists."
+            raise serializers.ValidationError(
+                {
+                    "non_field_errors": [
+                        "A client with this full name and contact number already exists."
+                    ]
+                }
             )
 
         if Client.objects.filter(contact_number=contact_number).exists():
-            raise APIException("A client with this contact number already exists.")
+            raise serializers.ValidationError(
+                {
+                    "non_field_errors": [
+                        "A client with this contact number already exists."
+                    ]
+                }
+            )
 
         serializer.save()
 

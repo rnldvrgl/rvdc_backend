@@ -1,28 +1,39 @@
-from rest_framework import generics, permissions, filters, status
-from django_filters.rest_framework import DjangoFilterBackend
-from inventory.models import (
-    Item,
-    Stall,
-    Stock,
-    ProductCategory,
-    StockRoomStock,
-    StockTransfer,
-)
+from django.db import transaction
+from rest_framework import generics, status, filters
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from inventory.models import Stock, StockRoomStock, StockTransfer, Stall, Item
 from inventory.api.serializers import (
-    ItemSerializer,
-    StallSerializer,
-    ProductCategorySerializer,
-    StockWriteSerializer,
     StockReadSerializer,
+    StockWriteSerializer,
+    StockPatchSerializer,
     StockRoomStockSerializer,
     StockTransferSerializer,
+    StockAdjustSerializer,
+    ItemSerializer,
+    StallSerializer,
 )
-from utils.mixins import LogCreateMixin, LogUpdateMixin, LogSoftDeleteMixin
-from rest_framework.response import Response
+from utils.mixins import LogCreateMixin, LogSoftDeleteMixin, LogUpdateMixin
 from utils.logger import log_activity
-from django.db.models import Q
-from expenses.models import ExpenseItem, Expense
-from rest_framework.exceptions import APIException
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import permissions
+from inventory.models import ProductCategory
+from inventory.api.serializers import ProductCategorySerializer
+
+
+class ProductCategoryListCreateView(generics.ListCreateAPIView):
+    queryset = ProductCategory.objects.filter(is_deleted=False)
+    serializer_class = ProductCategorySerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ["name"]
+    search_fields = ["name"]
+
+
+class ProductCategoryDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = ProductCategory.objects.all()
+    serializer_class = ProductCategorySerializer
+    permission_classes = [permissions.IsAuthenticated]
 
 
 class ItemListCreateView(LogCreateMixin, generics.ListCreateAPIView):
@@ -62,197 +73,139 @@ class StallDetailView(
     permission_classes = [permissions.IsAuthenticated]
 
 
-class StockListCreateView(LogCreateMixin, generics.ListCreateAPIView):
-    queryset = Stock.objects.all()
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_fields = ["item__name", "stall__name"]
-    search_fields = ["item__name", "stall__name"]
+# ---------------------------
+# STOCK CRUD
+# ---------------------------
 
-    def get_queryset(self):
-        user_stall = getattr(self.request.user, "assigned_stall", None)
-        if not user_stall:
-            return Stock.objects.none()
-        return Stock.objects.filter(stall=user_stall)
+
+class StockListCreateView(generics.ListCreateAPIView):
+    queryset = Stock.objects.all()
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["item__name", "stall__name", "item__sku"]
+    ordering_fields = ["quantity", "updated_at"]
 
     def get_serializer_class(self):
-        return (
-            StockReadSerializer
-            if self.request.method == "GET"
-            else StockWriteSerializer
-        )
-
-    def create(self, request, *args, **kwargs):
-        item_id = request.data.get("item")
-        stall_id = request.data.get("stall")
-        quantity_to_add = int(request.data.get("quantity", 0))
-
-        existing_stock = Stock.objects.filter(
-            item_id=item_id, stall_id=stall_id
-        ).first()
-
-        if existing_stock:
-            existing_stock.quantity += quantity_to_add
-            existing_stock.save()
-
-            log_activity(
-                user=request.user,
-                instance=existing_stock,
-                action="Updated Stock",
-                note=f"Added {quantity_to_add} to stock for Item {item_id} at Stall {stall_id}.",
-            )
-
-            serializer = StockReadSerializer(existing_stock)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-
-        return super().create(request, *args, **kwargs)
+        if self.request.method == "POST":
+            return StockWriteSerializer
+        return StockReadSerializer
 
 
-class StockDetailView(
-    LogUpdateMixin, LogSoftDeleteMixin, generics.RetrieveUpdateDestroyAPIView
-):
+class StockDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Stock.objects.all()
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_fields = ["item__name", "stall__name"]
-    search_fields = ["item__name", "stall__name"]
+    lookup_field = "pk"
 
     def get_serializer_class(self):
-        if self.request.method == "GET":
-            return StockReadSerializer
-        return StockWriteSerializer
+        if self.request.method in ["PUT", "PATCH"]:
+            return StockPatchSerializer
+        return StockReadSerializer
 
 
-class ProductCategoryListCreateView(LogCreateMixin, generics.ListCreateAPIView):
-    queryset = ProductCategory.objects.all()
-    serializer_class = ProductCategorySerializer
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_fields = ["name"]
-    search_fields = ["name"]
+# ---------------------------
+# STOCK ROOM CRUD
+# ---------------------------
 
 
-class ProductCategoryDetailView(
-    LogUpdateMixin, LogSoftDeleteMixin, generics.RetrieveUpdateDestroyAPIView
-):
-    queryset = ProductCategory.objects.all()
-    serializer_class = ProductCategorySerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def filter_queryset(self, queryset):
-        return queryset
-
-    def perform_destroy(self, instance):
-        instance.is_deleted = True
-        instance.save()
-
-
-class StockRoomStockListCreateView(LogCreateMixin, generics.ListCreateAPIView):
+class StockRoomStockListCreateView(generics.ListCreateAPIView):
     queryset = StockRoomStock.objects.all()
     serializer_class = StockRoomStockSerializer
-    permission_classes = [permissions.IsAdminUser]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_fields = ["item__name"]
-    search_fields = ["item__name"]
-
-    def create(self, request, *args, **kwargs):
-        item_id = request.data.get("item")
-        quantity_to_add = int(request.data.get("quantity", 0))
-
-        existing_stock = StockRoomStock.objects.filter(item_id=item_id).first()
-
-        if existing_stock:
-            existing_stock.quantity += quantity_to_add
-            existing_stock.save()
-
-            log_activity(
-                user=request.user,
-                instance=existing_stock,
-                action="Updated StockRoomStock",
-                note=f"Added {quantity_to_add} to stock room for Item {item_id}.",
-            )
-
-            serializer = StockRoomStockSerializer(existing_stock)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-
-        # No existing stock — create new
-        return super().create(request, *args, **kwargs)
 
 
-class StockRoomStockDetailView(generics.RetrieveUpdateAPIView):
+class StockRoomStockDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = StockRoomStock.objects.all()
     serializer_class = StockRoomStockSerializer
-    permission_classes = [permissions.IsAdminUser]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_fields = ["item__name"]
-    search_fields = ["item__name", "quantity"]
+    lookup_field = "pk"
 
-    def perform_update(self, serializer):
-        instance = serializer.save()
-        log_activity(
-            user=self.request.user,
-            instance=instance,
-            action="Updated StockRoomStock",
-            note=f"Updated details for Stock Room Item {instance.item.name}.",
-        )
+
+# ---------------------------
+# STOCK TRANSFERS
+# ---------------------------
 
 
 class StockTransferCreateView(generics.CreateAPIView):
     queryset = StockTransfer.objects.all()
     serializer_class = StockTransferSerializer
-    permission_classes = [permissions.IsAuthenticated]
 
     def perform_create(self, serializer):
         transfer = serializer.save(transferred_by=self.request.user)
-        expense = Expense.objects.create(
-            stall=transfer.to_stall,
-            description=f"Auto-generated from stock transfer by {transfer.from_stall or 'stock room'}",
-            created_by=self.request.user,
-            source="transfer",
+        log_activity(
+            self.request.user,
+            f"Created transfer ID {transfer.id} from '{transfer.from_stall or 'Stock Room'}' to '{transfer.to_stall}'",
         )
-
-        for item in transfer.items.all():
-            log_activity(
-                user=self.request.user,
-                instance=item,
-                action="Item Transferred",
-                note=f"Transferred {item.quantity} {item.item.unit_of_measure} of {item.item.name} "
-                f"from {'stock room' if not transfer.from_stall else transfer.from_stall.name} "
-                f"to {transfer.to_stall.name}.",
-            )
-
-            ExpenseItem.objects.create(
-                expense=expense,
-                item=item.item,
-                quantity=item.quantity,
-                total_price=item.item.srp * item.quantity,
-            )
 
 
 class StockTransferListRelatedToMyStallView(generics.ListAPIView):
     serializer_class = StockTransferSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_fields = ["from_stall", "to_stall", "transfer_date"]
-    search_fields = ["from_stall__name", "to_stall__name", "transfer_date"]
 
     def get_queryset(self):
-        user_stall = getattr(self.request.user, "assigned_stall", None)
-        direction = self.request.query_params.get("direction")
-        print(user_stall, direction)
+        user_stall_ids = Stall.objects.filter().values_list("id", flat=True)
+        return StockTransfer.objects.filter(to_stall_id__in=user_stall_ids)
 
-        if not user_stall:
-            return StockTransfer.objects.none()
 
-        if direction == "incoming":
-            return StockTransfer.objects.filter(to_stall=user_stall).order_by(
-                "-transfer_date"
-            )
-        elif direction == "outgoing":
-            return StockTransfer.objects.filter(from_stall=user_stall).order_by(
-                "-transfer_date"
-            )
+# ---------------------------
+# ADJUST STOCK QUANTITY
+# ---------------------------
+
+
+class StockAdjustAPIView(APIView):
+    """
+    POST endpoint to adjust stock quantity at a stall.
+
+    {
+        "stock": 1,
+        "quantity": 10,
+        "action": "increase"
+    }
+    """
+
+    @transaction.atomic
+    def post(self, request, *args, **kwargs):
+        serializer = StockAdjustSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        stock = data["stock"]
+        original_quantity = stock.quantity
+
+        if data["action"] == "increase":
+            stock.quantity += data["quantity"]
+            log_msg = f"Increased '{stock.item.name}' at '{stock.stall.name}' from {original_quantity} to {stock.quantity}."
         else:
-            return StockTransfer.objects.filter(
-                Q(from_stall=user_stall) | Q(to_stall=user_stall)
-            ).order_by("-transfer_date")
+            stock.quantity = max(stock.quantity - data["quantity"], 0)
+            log_msg = f"Decreased '{stock.item.name}' at '{stock.stall.name}' from {original_quantity} to {stock.quantity}."
+
+        stock.save()
+        log_activity(request.user, log_msg)
+
+        return Response({"detail": log_msg}, status=status.HTTP_200_OK)
+
+
+# ---------------------------
+# SIMPLE CHOICES FOR FORMS
+# ---------------------------
+
+
+class ItemChoicesAPIView(generics.ListAPIView):
+    queryset = Item.objects.all()
+    serializer_class = ItemSerializer
+    pagination_class = None
+
+    def filter_queryset(self, queryset):
+        return queryset
+
+
+class StallChoicesAPIView(generics.ListAPIView):
+    queryset = Stall.objects.all()
+    serializer_class = StallSerializer
+    pagination_class = None
+
+    def filter_queryset(self, queryset):
+        return queryset
+
+
+class ProductCategoryChoicesAPIView(generics.ListAPIView):
+    queryset = ProductCategory.objects.all()
+    serializer_class = ProductCategorySerializer
+    pagination_class = None
+
+    def filter_queryset(self, queryset):
+        return queryset

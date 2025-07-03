@@ -1,7 +1,5 @@
 from django.urls import path
 from inventory.api.views import (
-    ProductCategoryListCreateView,
-    ProductCategoryDetailView,
     ItemListCreateView,
     ItemDetailView,
     StallListCreateView,
@@ -12,15 +10,15 @@ from inventory.api.views import (
     StockRoomStockDetailView,
     StockTransferCreateView,
     StockTransferListRelatedToMyStallView,
+    StockAdjustAPIView,
+    ItemChoicesAPIView,
+    StallChoicesAPIView,
+    ProductCategoryListCreateView,
+    ProductCategoryDetailView,
+    ProductCategoryChoicesAPIView,
 )
 
 urlpatterns = [
-    path("items/", ItemListCreateView.as_view(), name="item-list-create"),
-    path("items/<int:pk>/", ItemDetailView.as_view(), name="item-detail"),
-    path("stalls/", StallListCreateView.as_view(), name="stall-list-create"),
-    path("stalls/<int:pk>/", StallDetailView.as_view(), name="stall-detail"),
-    path("stocks/stall/", StockListCreateView.as_view(), name="stock-list-create"),
-    path("stocks/stall/<int:pk>/", StockDetailView.as_view(), name="stock-detail"),
     path(
         "categories/",
         ProductCategoryListCreateView.as_view(),
@@ -31,6 +29,12 @@ urlpatterns = [
         ProductCategoryDetailView.as_view(),
         name="category-detail",
     ),
+    path("items/", ItemListCreateView.as_view(), name="item-list-create"),
+    path("items/<int:pk>/", ItemDetailView.as_view(), name="item-detail"),
+    path("stalls/", StallListCreateView.as_view(), name="stall-list-create"),
+    path("stalls/<int:pk>/", StallDetailView.as_view(), name="stall-detail"),
+    path("stocks/stall/", StockListCreateView.as_view(), name="stock-list-create"),
+    path("stocks/stall/<int:pk>/", StockDetailView.as_view(), name="stock-detail"),
     path(
         "stocks/management/",
         StockRoomStockListCreateView.as_view(),
@@ -47,4 +51,12 @@ urlpatterns = [
         StockTransferListRelatedToMyStallView.as_view(),
         name="stock-transfers",
     ),
+    path("stocks/adjust/", StockAdjustAPIView.as_view(), name="stock-adjust"),
+    path(
+        "choices/categories/",
+        ProductCategoryChoicesAPIView.as_view(),
+        name="category-choices",
+    ),
+    path("choices/items/", ItemChoicesAPIView.as_view(), name="item-choices"),
+    path("choices/stalls/", StallChoicesAPIView.as_view(), name="stall-choices"),
 ]
