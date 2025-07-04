@@ -10,7 +10,7 @@ from authentication.api.serializers import (
 
 class LoginView(APIView):
     def post(self, request, format=None):
-        serializer = LoginSerializer(data=request.data)
+        serializer = LoginSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
         return Response(data, status=status.HTTP_200_OK)

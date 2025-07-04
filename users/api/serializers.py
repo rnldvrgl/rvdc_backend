@@ -59,6 +59,19 @@ class UserSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ("id",)
 
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        request = self.context.get("request")
+        if instance.profile_image and request:
+            rep["profile_image"] = request.build_absolute_uri(
+                instance.profile_image.url
+            )
+        elif instance.profile_image:
+            rep["profile_image"] = instance.profile_image.url
+        else:
+            rep["profile_image"] = None
+        return rep
+
     def update(self, instance, validated_data):
         request = self.context.get("request")
 

@@ -4,6 +4,7 @@ from utils.tokens import get_tokens_for_user
 from users.models import CustomUser
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
+from users.api.serializers import UserSerializer
 
 
 class LoginSerializer(serializers.Serializer):
@@ -18,16 +19,12 @@ class LoginSerializer(serializers.Serializer):
         if not user:
             raise serializers.ValidationError("Invalid credentials.")
 
-        # Generate tokens
         tokens = get_tokens_for_user(user)
 
+        user_data = UserSerializer(user, context=self.context).data
+
         return {
-            "user_id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "profile_image": user.profile_image.url if user.profile_image else None,
+            **user_data,
             "access": tokens["access"],
             "refresh": tokens["refresh"],
         }

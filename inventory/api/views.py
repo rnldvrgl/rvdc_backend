@@ -93,6 +93,20 @@ class StockListCreateView(generics.ListCreateAPIView):
             return StockWriteSerializer
         return StockReadSerializer
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if user.role == "admin":
+            return qs  # see all
+        elif user.role == "manager":
+            # show only stocks for manager's assigned stall
+            if user.assigned_stall:
+                return qs.filter(stall=user.assigned_stall)
+            else:
+                return qs.none()
+        else:
+            return qs.none()
+
 
 class StockDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Stock.objects.all()
