@@ -1,8 +1,16 @@
 from django.db import transaction
-from rest_framework import generics, status, filters
+from rest_framework import generics, status, filters, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from inventory.models import Stock, StockRoomStock, StockTransfer, Stall, Item
+from django_filters.rest_framework import DjangoFilterBackend
+from inventory.models import (
+    Stock,
+    StockRoomStock,
+    StockTransfer,
+    Stall,
+    Item,
+    ProductCategory,
+)
 from inventory.api.serializers import (
     StockReadSerializer,
     StockWriteSerializer,
@@ -12,41 +20,60 @@ from inventory.api.serializers import (
     StockAdjustSerializer,
     ItemSerializer,
     StallSerializer,
+    ProductCategorySerializer,
+    StockTransferItemSerializer,
+    StockRestockSerializer,
 )
 from utils.mixins import LogCreateMixin, LogSoftDeleteMixin, LogUpdateMixin
 from utils.logger import log_activity
-from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import permissions
-from inventory.models import ProductCategory
-from inventory.api.serializers import ProductCategorySerializer
+from utils.inventory import user_can_manage_stall
+from django.shortcuts import get_object_or_404
+
+
+# ---------------------------
+# PRODUCT CATEGORY
+# ---------------------------
 
 
 class ProductCategoryListCreateView(generics.ListCreateAPIView):
     queryset = ProductCategory.objects.filter(is_deleted=False)
     serializer_class = ProductCategorySerializer
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
     filterset_fields = ["name"]
     search_fields = ["name"]
+    ordering_fields = ["name"]
+    ordering = ["name"]
 
 
 class ProductCategoryDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = ProductCategory.objects.all()
+    queryset = ProductCategory.objects.filter(is_deleted=False)
     serializer_class = ProductCategorySerializer
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = None
 
-    def filter_queryset(self, queryset):
-        return queryset
+
+# ---------------------------
+# ITEM CRUD
+# ---------------------------
 
 
 class ItemListCreateView(LogCreateMixin, generics.ListCreateAPIView):
     queryset = Item.objects.filter(is_deleted=False)
     serializer_class = ItemSerializer
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
     filterset_fields = ["name", "sku", "category__name"]
     search_fields = ["name", "sku", "category__name"]
+    ordering_fields = ["name", "sku"]
+    ordering = ["name"]
 
 
 class ItemDetailView(
@@ -55,18 +82,30 @@ class ItemDetailView(
     queryset = Item.objects.all()
     serializer_class = ItemSerializer
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_fields = ["name", "sku", "category__name"]
-    search_fields = ["name", "sku", "category__name"]
+    filter_backends = None
+
+    def filter_queryset(self, queryset):
+        return queryset
+
+
+# ---------------------------
+# STALL CRUD
+# ---------------------------
 
 
 class StallListCreateView(LogCreateMixin, generics.ListCreateAPIView):
     queryset = Stall.objects.filter(is_deleted=False)
     serializer_class = StallSerializer
     permission_classes = [permissions.IsAdminUser]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
     filterset_fields = ["name", "location"]
     search_fields = ["name", "location"]
+    ordering_fields = ["name", "location"]
+    ordering = ["name"]
 
 
 class StallDetailView(
@@ -84,38 +123,50 @@ class StallDetailView(
 
 class StockListCreateView(generics.ListCreateAPIView):
     queryset = Stock.objects.all()
+    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["item__name", "stall__name", "item__sku"]
     ordering_fields = ["quantity", "updated_at"]
+    ordering = ["-updated_at"]
 
     def get_serializer_class(self):
-        if self.request.method == "POST":
-            return StockWriteSerializer
-        return StockReadSerializer
+        return (
+            StockWriteSerializer
+            if self.request.method == "POST"
+            else StockReadSerializer
+        )
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        queryset = super().get_queryset()
         user = self.request.user
         if user.role == "admin":
-            return qs  # see all
-        elif user.role == "manager":
-            # show only stocks for manager's assigned stall
-            if user.assigned_stall:
-                return qs.filter(stall=user.assigned_stall)
-            else:
-                return qs.none()
-        else:
-            return qs.none()
+            return queryset
+        elif user.role == "manager" and user.assigned_stall:
+            return queryset.filter(stall=user.assigned_stall)
+        return queryset.none()
 
 
 class StockDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Stock.objects.all()
     lookup_field = "pk"
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = None
 
     def get_serializer_class(self):
-        if self.request.method in ["PUT", "PATCH"]:
-            return StockPatchSerializer
-        return StockReadSerializer
+        return (
+            StockPatchSerializer
+            if self.request.method in ["PUT", "PATCH"]
+            else StockReadSerializer
+        )
+
+    def filter_queryset(self, queryset):
+        return queryset
+
+    def delete(self, request, *args, **kwargs):
+        stock = self.get_object()
+        stock.is_deleted = True
+        stock.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------
@@ -126,12 +177,18 @@ class StockDetailView(generics.RetrieveUpdateDestroyAPIView):
 class StockRoomStockListCreateView(generics.ListCreateAPIView):
     queryset = StockRoomStock.objects.all()
     serializer_class = StockRoomStockSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["item__name"]
+    ordering_fields = ["quantity", "updated_at"]
+    ordering = ["-updated_at"]
 
 
 class StockRoomStockDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = StockRoomStock.objects.all()
     serializer_class = StockRoomStockSerializer
     lookup_field = "pk"
+    permission_classes = [permissions.IsAuthenticated]
 
 
 # ---------------------------
@@ -142,6 +199,7 @@ class StockRoomStockDetailView(generics.RetrieveUpdateDestroyAPIView):
 class StockTransferCreateView(generics.CreateAPIView):
     queryset = StockTransfer.objects.all()
     serializer_class = StockTransferSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
     def perform_create(self, serializer):
         transfer = serializer.save(transferred_by=self.request.user)
@@ -153,27 +211,56 @@ class StockTransferCreateView(generics.CreateAPIView):
 
 class StockTransferListRelatedToMyStallView(generics.ListAPIView):
     serializer_class = StockTransferSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        user_stall_ids = Stall.objects.filter().values_list("id", flat=True)
+        user_stall_ids = Stall.objects.all().values_list("id", flat=True)
         return StockTransfer.objects.filter(to_stall_id__in=user_stall_ids)
 
 
 # ---------------------------
 # ADJUST STOCK QUANTITY
 # ---------------------------
+class StockRestockAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, stall_id, stock_id):
+        stock = get_object_or_404(Stock, pk=stock_id, stall_id=stall_id)
+        stall = stock.stall
+
+        # Check permissions based on user role and assigned stall
+        if not user_can_manage_stall(request.user, stall):
+            return Response(
+                {"detail": "You do not have permission to restock this stall."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Proceed with restocking
+        serializer = StockRestockSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        quantity = serializer.validated_data["quantity"]
+
+        original_quantity = stock.quantity
+        stock.quantity += quantity
+        stock.save()
+
+        log_activity(
+            request.user,
+            stock,
+            "restock",
+            f"Restocked '{stock.item.name}' at '{stock.stall.name}' "
+            f"from {original_quantity} to {stock.quantity}.",
+        )
+
+        return Response(
+            {"detail": f"Restocked successfully. New quantity: {stock.quantity}"},
+            status=status.HTTP_200_OK,
+        )
 
 
 class StockAdjustAPIView(APIView):
-    """
-    POST endpoint to adjust stock quantity at a stall.
-
-    {
-        "stock": 1,
-        "quantity": 10,
-        "action": "increase"
-    }
-    """
+    permission_classes = [permissions.IsAuthenticated]
 
     @transaction.atomic
     def post(self, request, *args, **kwargs):
@@ -198,32 +285,35 @@ class StockAdjustAPIView(APIView):
 
 
 # ---------------------------
-# SIMPLE CHOICES FOR FORMS
+# SIMPLE CHOICES FOR FORMS (no pagination)
 # ---------------------------
 
 
 class ItemChoicesAPIView(generics.ListAPIView):
-    queryset = Item.objects.all()
+    queryset = Item.objects.filter(is_deleted=False)
     serializer_class = ItemSerializer
     pagination_class = None
+    permission_classes = [permissions.IsAuthenticated]
 
     def filter_queryset(self, queryset):
         return queryset
 
 
 class StallChoicesAPIView(generics.ListAPIView):
-    queryset = Stall.objects.all()
+    queryset = Stall.objects.filter(is_deleted=False)
     serializer_class = StallSerializer
     pagination_class = None
+    permission_classes = [permissions.IsAuthenticated]
 
     def filter_queryset(self, queryset):
         return queryset
 
 
 class ProductCategoryChoicesAPIView(generics.ListAPIView):
-    queryset = ProductCategory.objects.all()
+    queryset = ProductCategory.objects.filter(is_deleted=False)
     serializer_class = ProductCategorySerializer
     pagination_class = None
+    permission_classes = [permissions.IsAuthenticated]
 
     def filter_queryset(self, queryset):
         return queryset

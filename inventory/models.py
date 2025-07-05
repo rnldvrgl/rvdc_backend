@@ -22,7 +22,6 @@ UNIT_CHOICES = [
     ("box", "Box"),
 ]
 
-
 # ===========
 # Models
 # ===========
@@ -105,17 +104,20 @@ class Stall(models.Model):
 
 class Stock(models.Model):
     item = models.ForeignKey(Item, on_delete=models.CASCADE)
+    low_stock_threshold = models.PositiveIntegerField(default=0)
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField(default=0)
-    low_stock_threshold = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    is_deleted = models.BooleanField(default=False)
 
-    class Meta:
-        unique_together = ("item", "stall")
-
-    def is_low_stock(self):
-        return self.quantity <= self.low_stock_threshold
+    def status(self):
+        if self.quantity == 0:
+            return "no_stock"
+        elif self.quantity <= self.low_stock_threshold:
+            return "low_stock"
+        else:
+            return "high_stock"
 
     def __str__(self):
         return f"{self.item.name} @ {self.stall.name} - {self.quantity} {self.item.unit_of_measure}"
@@ -177,3 +179,27 @@ class StockTransferItem(models.Model):
 
     def __str__(self):
         return f"{self.quantity} {self.item.unit_of_measure} of {self.item.name}"
+
+
+class StockMovement(models.Model):
+    SOURCE_CHOICES = [
+        ("stock_room", "Stock Room"),
+        ("bought", "Bought Outside"),
+        ("transfer", "Transfer From Another Stall"),
+    ]
+    item = models.ForeignKey(Item, on_delete=models.CASCADE)
+    stall = models.ForeignKey(Stall, on_delete=models.CASCADE)
+    quantity = models.IntegerField()
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES)
+    related_transfer = models.ForeignKey(
+        StockTransfer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="movements",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        direction = "added" if self.quantity > 0 else "removed"
+        return f"{abs(self.quantity)} {self.item.unit_of_measure} {self.item.name} {direction} in {self.stall.name} from {self.source}"

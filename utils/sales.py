@@ -4,7 +4,8 @@ from rest_framework.exceptions import NotFound
 
 from sales.models import SalesTransaction
 from utils.logger import log_activity
-from utils.inventory import deduct_inventory
+
+# from utils.inventory import deduct_inventory
 
 
 def void_sales_transaction(transaction_id: int, user, reason: str):
@@ -56,7 +57,7 @@ def unvoid_sales_transaction(transaction_id: int, user):
         for item in transaction.items.all()
     ]
 
-    deduct_inventory(inventory_data, transaction.stall)
+    # deduct_inventory(inventory_data, transaction.stall)
 
     transaction.voided = False
     transaction.voided_at = None

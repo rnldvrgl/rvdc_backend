@@ -1,3 +1,4 @@
+from rest_framework import generics, permissions
 from utils.logger import log_activity
 
 
@@ -8,7 +9,7 @@ class LogCreateMixin:
             user=self.request.user,
             instance=instance,
             action=f"Created {instance.__class__.__name__}",
-            note=f"{instance.__class__.__name__} created.",
+            note=f"{instance.__class__.__name__} created with ID {getattr(instance, 'id', 'N/A')}.",
         )
 
 
@@ -19,7 +20,7 @@ class LogUpdateMixin:
             user=self.request.user,
             instance=instance,
             action=f"Updated {instance.__class__.__name__}",
-            note=f"{instance.__class__.__name__} updated.",
+            note=f"{instance.__class__.__name__} updated with ID {getattr(instance, 'id', 'N/A')}.",
         )
 
 
@@ -31,5 +32,13 @@ class LogSoftDeleteMixin:
             user=self.request.user,
             instance=instance,
             action=f"Deleted {instance.__class__.__name__}",
-            note=f"{instance.__class__.__name__} marked as deleted.",
+            note=f"{instance.__class__.__name__} marked as deleted with ID {getattr(instance, 'id', 'N/A')}.",
         )
+
+
+class SimpleChoiceAPIView(generics.ListAPIView):
+    pagination_class = None
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return self.queryset

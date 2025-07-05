@@ -11,6 +11,10 @@ from inventory.models import (
     StockTransferItem,
 )
 from utils.logger import log_activity
+from utils.inventory import (
+    create_stall_with_initial_stocks,
+    create_item_with_initial_stock,
+)
 
 
 class StockPatchSerializer(serializers.ModelSerializer):
@@ -20,7 +24,12 @@ class StockPatchSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Stock
-        fields = ["quantity", "quantity_adjustment"]
+        fields = [
+            "quantity",
+            "quantity_adjustment",
+            "low_stock_threshold",
+            "is_deleted",
+        ]
 
     def validate(self, data):
         adj = data.get("quantity_adjustment")
@@ -49,30 +58,71 @@ class StockPatchSerializer(serializers.ModelSerializer):
         user = self.context["request"].user
         adj = validated_data.pop("quantity_adjustment", None)
         original_quantity = instance.quantity
+        original_threshold = instance.low_stock_threshold
+        original_is_deleted = instance.is_deleted
 
-        if adj:
-            if adj["action"] == "increase":
-                instance.quantity += adj["amount"]
-                log_activity(
-                    user,
-                    f"Incremented stock of '{instance.item.name}' by {adj['amount']} units.",
-                )
-            elif adj["action"] == "decrease":
-                instance.quantity = max(instance.quantity - adj["amount"], 0)
-                log_activity(
-                    user,
-                    f"Decremented stock of '{instance.item.name}' by {adj['amount']} units.",
-                )
-        else:
-            new_quantity = validated_data.get("quantity", instance.quantity)
-            instance.quantity = new_quantity
-            log_activity(
-                user,
-                f"Updated stock of '{instance.item.name}' from {original_quantity} to {new_quantity} units.",
-            )
+        with transaction.atomic():
+            # Handle quantity adjustment
+            if adj:
+                amount = adj["amount"]
+                if adj["action"] == "increase":
+                    instance.quantity += amount
+                    log_activity(
+                        user,
+                        instance,
+                        "increase_stock",
+                        f"Incremented stock of '{instance.item.name}' by {amount} units.",
+                    )
+                elif adj["action"] == "decrease":
+                    instance.quantity = max(instance.quantity - amount, 0)
+                    log_activity(
+                        user,
+                        instance,
+                        "decrease_stock",
+                        f"Decremented stock of '{instance.item.name}' by {amount} units.",
+                    )
+            # Direct quantity update
+            elif "quantity" in validated_data:
+                new_quantity = validated_data.get("quantity", instance.quantity)
+                if new_quantity != original_quantity:
+                    instance.quantity = new_quantity
+                    log_activity(
+                        user,
+                        instance,
+                        "update_stock",
+                        f"Updated stock of '{instance.item.name}' from {original_quantity} to {new_quantity} units.",
+                    )
 
-        instance.is_low_stock = instance.quantity <= instance.item.low_stock_threshold
-        instance.save()
+            # Threshold update
+            if "low_stock_threshold" in validated_data:
+                new_threshold = validated_data.get(
+                    "low_stock_threshold", instance.low_stock_threshold
+                )
+                if new_threshold != original_threshold:
+                    instance.low_stock_threshold = new_threshold
+                    log_activity(
+                        user,
+                        instance,
+                        "update_threshold",
+                        f"Updated low stock threshold for '{instance.item.name}' from {original_threshold} to {new_threshold}.",
+                    )
+
+            # Handle soft delete
+            if "is_deleted" in validated_data:
+                new_is_deleted = validated_data.get("is_deleted")
+                if new_is_deleted != original_is_deleted:
+                    instance.is_deleted = new_is_deleted
+                    action = "deleted_stock" if new_is_deleted else "restored_stock"
+                    log_activity(
+                        user,
+                        instance,
+                        action,
+                        f"{'Deleted' if new_is_deleted else 'Restored'} stock of '{instance.item.name}' at stall '{instance.stall.name}'.",
+                    )
+
+            instance.is_low_stock = instance.quantity <= instance.low_stock_threshold
+            instance.save()
+
         return instance
 
 
@@ -98,10 +148,16 @@ class ItemSerializer(serializers.ModelSerializer):
     category_id = serializers.PrimaryKeyRelatedField(
         source="category", queryset=ProductCategory.objects.all(), write_only=True
     )
+    display_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Item
         exclude = ["created_at", "updated_at", "is_deleted"]
+
+    def get_display_name(self, obj):
+        if obj.is_deleted:
+            return f"{obj.name} (Deleted)"
+        return obj.name
 
     def validate(self, data):
         category = data.get("category") or getattr(self.instance, "category", None)
@@ -124,39 +180,69 @@ class ItemSerializer(serializers.ModelSerializer):
             )
         return data
 
+    def create(self, validated_data):
+        user = self.context["request"].user
+        return create_item_with_initial_stock(validated_data, user)
+
 
 class StallSerializer(serializers.ModelSerializer):
     class Meta:
         model = Stall
-        exclude = ["created_at", "updated_at", "is_deleted"]
+        exclude = ["updated_at", "is_deleted"]
+
+    def create(self, validated_data):
+        user = self.context["request"].user
+        return create_stall_with_initial_stocks(validated_data, user)
 
 
 class StockReadSerializer(serializers.ModelSerializer):
-    item_name = serializers.CharField(source="item.name", read_only=True)
-    item_sku = serializers.CharField(source="item.sku", read_only=True)
-    category_name = serializers.CharField(source="item.category.name", read_only=True)
-    is_low_stock = serializers.SerializerMethodField()
+    item = ItemSerializer(read_only=True)
+    stall = StallSerializer(read_only=True)
+    status = serializers.SerializerMethodField()
 
     class Meta:
         model = Stock
         fields = [
             "id",
             "quantity",
-            "item_name",
-            "item_sku",
-            "category_name",
+            "low_stock_threshold",
+            "item",
             "updated_at",
-            "is_low_stock",
+            "status",
+            "stall",
         ]
 
-    def get_is_low_stock(self, obj):
-        return obj.is_low_stock()
+    def get_status(self, obj):
+        return obj.status()
 
 
 class StockWriteSerializer(serializers.ModelSerializer):
+    item_id = serializers.PrimaryKeyRelatedField(
+        queryset=Item.objects.all(), source="item"
+    )
+    stall_id = serializers.PrimaryKeyRelatedField(
+        queryset=Stall.objects.all(), source="stall"
+    )
+
     class Meta:
         model = Stock
-        fields = ["id", "quantity", "item", "stall"]
+        fields = ["id", "quantity", "item_id", "stall_id", "low_stock_threshold"]
+
+    def validate(self, data):
+        item = data.get("item")
+        stall = data.get("stall")
+        qs = Stock.objects.filter(item=item, stall=stall)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError(
+                {
+                    "non_field_errors": [
+                        f"Stock for item '{item.name}' and stall '{stall.name}' already exists. The combination of item and stall must be unique."
+                    ]
+                }
+            )
+        return data
 
 
 class StockRoomStockSerializer(serializers.ModelSerializer):
@@ -208,7 +294,6 @@ class StockTransferSerializer(serializers.ModelSerializer):
         items_data = validated_data.pop("items")
         from_stall = validated_data.get("from_stall")
 
-        # Validate available quantities
         for item_data in items_data:
             item = item_data["item"]
             qty = item_data["quantity"]
@@ -225,7 +310,6 @@ class StockTransferSerializer(serializers.ModelSerializer):
                         f"Not enough stock of {item.name} in stock room"
                     )
 
-        # Perform transfer atomically
         with transaction.atomic():
             transfer = StockTransfer.objects.create(**validated_data)
             for item_data in items_data:
@@ -247,9 +331,14 @@ class StockTransferSerializer(serializers.ModelSerializer):
             if room_stock:
                 room_stock.quantity = max(room_stock.quantity - qty, 0)
                 room_stock.save()
-        to_stock, _ = Stock.objects.get_or_create(
-            stall=transfer.to_stall, item=item, defaults={"quantity": 0}
+
+        to_stock, created = Stock.objects.get_or_create(
+            stall=transfer.to_stall,
+            item=item,
+            defaults={"quantity": 0, "type": "transferred"},
         )
+        if not created and to_stock.type != "transferred":
+            to_stock.type = "transferred"
         to_stock.quantity += qty
         to_stock.save()
 
@@ -263,20 +352,28 @@ class StockAdjustSerializer(serializers.Serializer):
     )
 
     def validate(self, data):
-        stall_id = data.get("stall_id")
-        item_id = data.get("item_id")
-        action = data.get("action")
-        quantity = data.get("quantity")
+        stall_id = data["stall_id"]
+        item_id = data["item_id"]
+        action = data["action"]
+        quantity = data["quantity"]
 
         stock = Stock.objects.filter(stall_id=stall_id, item_id=item_id).first()
         if not stock:
             raise serializers.ValidationError(
                 "Stock record not found for this stall and item."
             )
-
         if action == "decrease" and stock.quantity < quantity:
             raise serializers.ValidationError(
                 f"Not enough stock to decrease. Current: {stock.quantity}"
             )
         data["stock"] = stock
         return data
+
+
+class StockRestockSerializer(serializers.Serializer):
+    quantity = serializers.IntegerField()
+
+    def validate_quantity(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Quantity must be positive.")
+        return value

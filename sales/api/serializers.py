@@ -3,7 +3,8 @@ from sales.models import SalesTransaction, SalesItem
 from inventory.models import Item, Stall
 from clients.models import Client
 from utils.logger import log_activity
-from utils.inventory import deduct_inventory
+
+# from utils.inventory import deduct_inventory
 from django.core.exceptions import ValidationError
 
 
@@ -109,7 +110,8 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
         SalesItem.objects.bulk_create(sales_items)
 
         try:
-            deduct_inventory(inventory_data, stall)
+            pass
+            # deduct_inventory(inventory_data, stall)
         except ValidationError as e:
             raise serializers.ValidationError({"detail": str(e)})
 
