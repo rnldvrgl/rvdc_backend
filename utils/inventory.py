@@ -2,16 +2,36 @@ from django.db import transaction
 from inventory.models import Item, StockRoomStock, Stock, StockMovement, Stall
 
 
+def record_stock_movement(item, stall, qty, source, related_transfer=None):
+    """
+    Creates a StockMovement record. If stall is None, indicates stock room.
+    """
+    StockMovement.objects.create(
+        item=item,
+        stall=stall,
+        quantity=qty,
+        source=source,
+        related_transfer=related_transfer,
+    )
+
+
 def user_can_manage_stall(user, stall):
+    """
+    Checks if a user has permission to manage a stall.
+    """
     return user.role == "admin" or user.assigned_stall == stall
 
 
 @transaction.atomic
 def create_item_with_initial_stock(validated_data, user=None):
     """
-    validated_data: expects a dict with keys like
-    name, category, srp, size_or_spec, unit_of_measure, description,
-    initial_stock_quantity, low_stock_threshold
+    Creates an Item, initializes StockRoomStock with initial quantity,
+    logs StockMovement, and sets zero stock for all stalls.
+
+    validated_data: dict with keys:
+        - name, category, srp
+        - size_or_spec, unit_of_measure, description
+        - initial_stock_quantity, low_stock_threshold
     """
     item = Item.objects.create(
         name=validated_data["name"],
@@ -34,17 +54,16 @@ def create_item_with_initial_stock(validated_data, user=None):
 
     # Create StockMovement for initial stock
     if initial_stock_quantity > 0:
-        StockMovement.objects.create(
+        record_stock_movement(
             item=item,
-            stall=None,
-            quantity=initial_stock_quantity,
+            stall=None,  # None indicates stock room
+            qty=initial_stock_quantity,
             source="stock_room",
             related_transfer=None,
         )
 
     # Create zero Stock entries for each stall
-    stalls = Stall.objects.filter(is_deleted=False)
-    for stall in stalls:
+    for stall in Stall.objects.filter(is_deleted=False):
         Stock.objects.create(
             item=item,
             stall=stall,
@@ -56,10 +75,12 @@ def create_item_with_initial_stock(validated_data, user=None):
 
 
 @transaction.atomic
-def create_stall_with_initial_stocks(validated_data, user=None):
+def create_stall_with_initial_stocks(validated_data):
     """
-    validated_data: expects a dict with keys like
-    name, location, low_stock_threshold
+    Creates a Stall and sets up zero stock for all existing items.
+
+    validated_data: dict with keys:
+        - name, location, low_stock_threshold
     """
     low_stock_threshold = validated_data.get("low_stock_threshold", 0)
     stall = Stall.objects.create(

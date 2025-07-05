@@ -15,6 +15,8 @@ from utils.inventory import (
     create_stall_with_initial_stocks,
     create_item_with_initial_stock,
 )
+from utils.inventory import record_stock_movement
+from expenses.models import ExpenseItem, Expense
 
 
 class StockPatchSerializer(serializers.ModelSerializer):
@@ -67,6 +69,12 @@ class StockPatchSerializer(serializers.ModelSerializer):
                 amount = adj["amount"]
                 if adj["action"] == "increase":
                     instance.quantity += amount
+                    record_stock_movement(
+                        item=instance.item,
+                        stall=instance.stall,
+                        qty=amount,
+                        source="manual",
+                    )
                     log_activity(
                         user,
                         instance,
@@ -75,6 +83,12 @@ class StockPatchSerializer(serializers.ModelSerializer):
                     )
                 elif adj["action"] == "decrease":
                     instance.quantity = max(instance.quantity - amount, 0)
+                    record_stock_movement(
+                        item=instance.item,
+                        stall=instance.stall,
+                        qty=-amount,
+                        source="manual",
+                    )
                     log_activity(
                         user,
                         instance,
@@ -85,7 +99,14 @@ class StockPatchSerializer(serializers.ModelSerializer):
             elif "quantity" in validated_data:
                 new_quantity = validated_data.get("quantity", instance.quantity)
                 if new_quantity != original_quantity:
+                    diff = new_quantity - original_quantity
                     instance.quantity = new_quantity
+                    record_stock_movement(
+                        item=instance.item,
+                        stall=instance.stall,
+                        qty=diff,
+                        source="manual",
+                    )
                     log_activity(
                         user,
                         instance,
@@ -286,6 +307,7 @@ class StockTransferSerializer(serializers.ModelSerializer):
             "technician",
             "transferred_by",
             "transfer_date",
+            "is_expense",
             "items",
         ]
         read_only_fields = ["transferred_by", "transfer_date"]
@@ -312,13 +334,44 @@ class StockTransferSerializer(serializers.ModelSerializer):
 
         with transaction.atomic():
             transfer = StockTransfer.objects.create(**validated_data)
+            total_expense_price = 0
+            expense_items_data = []
+
             for item_data in items_data:
                 StockTransferItem.objects.create(transfer=transfer, **item_data)
                 self._adjust_stock(item_data, transfer)
+
+                # prepare expense items if needed
+                if transfer.is_expense:
+                    item = item_data["item"]
+                    qty = item_data["quantity"]
+                    item_total_price = item.srp * qty
+                    total_expense_price += item_total_price
+                    expense_items_data.append(
+                        {"item": item, "quantity": qty, "total_price": item_total_price}
+                    )
+
+            if transfer.is_expense:
+                expense = Expense.objects.create(
+                    stall=transfer.to_stall,
+                    total_price=total_expense_price,
+                    description=f"Stock transfer from {'Stock Room' if not from_stall else from_stall.name}",
+                    created_by=transfer.transferred_by,
+                    source="transfer",
+                )
+                for ei in expense_items_data:
+                    ExpenseItem.objects.create(
+                        expense=expense,
+                        item=ei["item"],
+                        quantity=ei["quantity"],
+                        total_price=ei["total_price"],
+                    )
+
         return transfer
 
     def _adjust_stock(self, item_data, transfer):
         item, qty = item_data["item"], item_data["quantity"]
+
         if transfer.from_stall:
             from_stock = Stock.objects.filter(
                 stall=transfer.from_stall, item=item
@@ -326,21 +379,40 @@ class StockTransferSerializer(serializers.ModelSerializer):
             if from_stock:
                 from_stock.quantity = max(from_stock.quantity - qty, 0)
                 from_stock.save()
+                record_stock_movement(
+                    item=item,
+                    stall=transfer.from_stall,
+                    qty=-qty,
+                    source="transfer",
+                    related_transfer=transfer,
+                )
         else:
             room_stock = StockRoomStock.objects.filter(item=item).first()
             if room_stock:
                 room_stock.quantity = max(room_stock.quantity - qty, 0)
                 room_stock.save()
+                record_stock_movement(
+                    item=item,
+                    stall=None,
+                    qty=-qty,
+                    source="transfer",
+                    related_transfer=transfer,
+                )
 
         to_stock, created = Stock.objects.get_or_create(
             stall=transfer.to_stall,
             item=item,
-            defaults={"quantity": 0, "type": "transferred"},
+            defaults={"quantity": 0},
         )
-        if not created and to_stock.type != "transferred":
-            to_stock.type = "transferred"
         to_stock.quantity += qty
         to_stock.save()
+        record_stock_movement(
+            item=item,
+            stall=transfer.to_stall,
+            qty=qty,
+            source="transfer",
+            related_transfer=transfer,
+        )
 
 
 class StockAdjustSerializer(serializers.Serializer):
