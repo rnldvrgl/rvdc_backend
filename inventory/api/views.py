@@ -27,7 +27,7 @@ from inventory.api.serializers import (
 )
 from utils.mixins import LogCreateMixin, LogSoftDeleteMixin, LogUpdateMixin
 from utils.logger import log_activity
-from utils.inventory import user_can_manage_stall
+from utils.inventory import user_can_manage_stall, record_stock_movement
 
 # ---------------------------
 # PRODUCT CATEGORY
@@ -161,7 +161,8 @@ class StockDetailView(generics.RetrieveUpdateDestroyAPIView):
         stock.is_deleted = True
         stock.save()
         return Response(
-            {"detail": "Deleted successfully."}, status=status.HTTP_204_NO_CONTENT
+            {"non_field_errors": "Deleted successfully."},
+            status=status.HTTP_204_NO_CONTENT,
         )
 
 
@@ -230,17 +231,62 @@ class StockRestockAPIView(APIView):
         stock = get_object_or_404(Stock, pk=stock_id)
         if not user_can_manage_stall(request.user, stock.stall):
             return Response(
-                {"detail": "You do not have permission to restock this stall."},
+                {
+                    "non_field_errors": [
+                        "You do not have permission to restock this stall."
+                    ]
+                },
                 status=status.HTTP_403_FORBIDDEN,
             )
+
         serializer = StockRestockSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         quantity = serializer.validated_data["quantity"]
 
+        # Get stock room stock for the item
+        try:
+            stock_room_stock = StockRoomStock.objects.get(item=stock.item)
+        except StockRoomStock.DoesNotExist:
+            return Response(
+                {"non_field_errors": ["No stock found in stock room for this item."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Check if enough in stock room
+        if stock_room_stock.quantity < quantity:
+            return Response(
+                {
+                    "non_field_errors": [
+                        f"Not enough stock in stock room. Available: {stock_room_stock.quantity}."
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Deduct from stock room
+        stock_room_stock.quantity -= quantity
+        stock_room_stock.save()
+
+        # Add to stall stock
         original_quantity = stock.quantity
         stock.quantity += quantity
         stock.save()
 
+        # Record stock movements
+        record_stock_movement(
+            item=stock.item,
+            stall=None,  # stock room
+            qty=-quantity,
+            source="restock_to_stall",
+        )
+        record_stock_movement(
+            item=stock.item,
+            stall=stock.stall,
+            qty=quantity,
+            source="restock_from_stock_room",
+        )
+
+        # Log activity
         log_activity(
             request.user,
             stock,
@@ -249,10 +295,15 @@ class StockRestockAPIView(APIView):
         )
 
         return Response(
-            {"detail": f"Restocked successfully. New quantity: {stock.quantity}"}
+            {
+                "non_field_errors": [
+                    f"Restocked successfully. New quantity: {stock.quantity}"
+                ]
+            }
         )
 
 
+# TODO: ADD ADJUSTING OF STOCK (ADMIN)
 class StockAdjustAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -274,7 +325,7 @@ class StockAdjustAPIView(APIView):
         stock.save()
         log_activity(request.user, log_msg)
 
-        return Response({"detail": log_msg})
+        return Response({"non_field_errors": [log_msg]})
 
 
 # ---------------------------

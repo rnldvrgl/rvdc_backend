@@ -115,7 +115,7 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             pass
             # deduct_inventory(inventory_data, stall)
         except ValidationError as e:
-            raise serializers.ValidationError({"detail": str(e)})
+            raise serializers.ValidationError({"non_field_errors": [str(e)]})
 
         log_activity(
             user=transaction.sales_clerk,

@@ -44,7 +44,7 @@ def create_item_with_initial_stock(validated_data, user=None):
     )
 
     initial_stock_quantity = validated_data.get("initial_stock_quantity", 0)
-    low_stock_threshold = validated_data.get("low_stock_threshold", 0)
+    low_stock_threshold = validated_data.get("low_stock_threshold", 5)
 
     # Create StockRoomStock with initial quantity
     StockRoomStock.objects.create(
