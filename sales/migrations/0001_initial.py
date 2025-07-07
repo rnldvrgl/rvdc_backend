@@ -10,35 +10,81 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('clients', '0001_initial'),
-        ('inventory', '0002_productcategory_alter_item_options_and_more'),
+        ("clients", "0001_initial"),
+        ("inventory", "0002_productcategory_alter_item_options_and_more"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='SalesTransaction',
+            name="SalesTransaction",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('total_payment', models.DecimalField(decimal_places=2, max_digits=10)),
-                ('voided', models.BooleanField(default=False)),
-                ('voided_at', models.DateTimeField(blank=True, null=True)),
-                ('void_reason', models.TextField(blank=True, null=True)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('client', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to='clients.client')),
-                ('sales_clerk', models.ForeignKey(null=True, on_delete=django.db.models.deletion.SET_NULL, to=settings.AUTH_USER_MODEL)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("total_payment", models.DecimalField(decimal_places=2, max_digits=10)),
+                ("voided", models.BooleanField(default=False)),
+                ("voided_at", models.DateTimeField(blank=True, null=True)),
+                ("void_reason", models.TextField(blank=True, null=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "client",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        to="clients.client",
+                    ),
+                ),
+                (
+                    "sales_clerk",
+                    models.ForeignKey(
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
         ),
         migrations.CreateModel(
-            name='SalesItem',
+            name="SalesItem",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('quantity', models.PositiveIntegerField()),
-                ('srp', models.DecimalField(decimal_places=2, max_digits=10)),
-                ('discount_amount', models.DecimalField(decimal_places=2, default=0.0, max_digits=10)),
-                ('final_price', models.DecimalField(decimal_places=2, max_digits=10)),
-                ('item', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='inventory.item')),
-                ('transaction', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='items', to='sales.salestransaction')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("quantity", models.PositiveIntegerField()),
+                ("retail_price", models.DecimalField(decimal_places=2, max_digits=10)),
+                (
+                    "discount_amount",
+                    models.DecimalField(decimal_places=2, default=0.0, max_digits=10),
+                ),
+                ("final_price", models.DecimalField(decimal_places=2, max_digits=10)),
+                (
+                    "item",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE, to="inventory.item"
+                    ),
+                ),
+                (
+                    "transaction",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="items",
+                        to="sales.salestransaction",
+                    ),
+                ),
             ],
         ),
     ]

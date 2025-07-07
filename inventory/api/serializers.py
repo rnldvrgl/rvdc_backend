@@ -341,7 +341,7 @@ class StockTransferSerializer(serializers.ModelSerializer):
                 if transfer.is_expense:
                     item = item_data["item"]
                     qty = item_data["quantity"]
-                    item_total_price = item.srp * qty
+                    item_total_price = item.retail_price * qty
                     total_expense_price += item_total_price
                     expense_items_data.append(
                         {"item": item, "quantity": qty, "total_price": item_total_price}

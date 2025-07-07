@@ -15,7 +15,9 @@ class SalesItemSerializer(serializers.ModelSerializer):
     item_name = serializers.CharField(source="item.name", read_only=True)
     item_unit = serializers.CharField(source="item.unit", read_only=True)  # Optional
 
-    srp = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    retail_price = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
+    )
     final_price = serializers.DecimalField(
         max_digits=10, decimal_places=2, read_only=True
     )
@@ -27,7 +29,7 @@ class SalesItemSerializer(serializers.ModelSerializer):
             "item_name",  # for display
             "item_unit",  # optional
             "quantity",
-            "srp",
+            "retail_price",
             "discount_amount",
             "final_price",
         ]
@@ -92,8 +94,8 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             item_instance = item_data["item"]
             quantity = item_data["quantity"]
             discount = item_data.get("discount_amount", 0)
-            srp = item_instance.srp
-            final_price = srp - discount
+            retail_price = item_instance.retail_price
+            final_price = retail_price - discount
 
             sales_items.append(
                 SalesItem(
@@ -101,7 +103,7 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
                     item=item_instance,
                     quantity=quantity,
                     discount_amount=discount,
-                    srp=srp,
+                    retail_price=retail_price,
                     final_price=final_price,
                 )
             )

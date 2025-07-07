@@ -28,6 +28,6 @@ class SalesItem(models.Model):
     )
     item = models.ForeignKey(Item, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField()
-    srp = models.DecimalField(max_digits=10, decimal_places=2)
+    retail_price = models.DecimalField(max_digits=10, decimal_places=2)
     discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     final_price = models.DecimalField(max_digits=10, decimal_places=2)

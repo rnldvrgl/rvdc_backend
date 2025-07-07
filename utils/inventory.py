@@ -29,13 +29,13 @@ def create_item_with_initial_stock(validated_data, user=None):
     logs StockMovement, and sets zero stock for all stalls.
 
     validated_data: dict with keys:
-        - name, category, srp
+        - name, category, retail_price
         - initial_stock_quantity, low_stock_threshold
     """
     item = Item.objects.create(
         name=validated_data["name"],
         category=validated_data["category"],
-        srp=validated_data["srp"],
+        retail_price=validated_data["retail_price"],
         unit_of_measure=validated_data.get("unit_of_measure", "pcs"),
         description=validated_data.get("description"),
     )

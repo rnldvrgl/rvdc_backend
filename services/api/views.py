@@ -83,8 +83,8 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
             ):
                 item = used_item.item
                 quantity = used_item.quantity_used
-                srp = item.srp
-                final_price = quantity * srp
+                retail_price = item.retail_price
+                final_price = quantity * retail_price
 
                 if used_item.deducted_from_stall != clerk_stall:
                     StockTransfer.objects.create(
@@ -98,7 +98,7 @@ class ServiceRequestViewSet(viewsets.ModelViewSet):
                     transaction=sales_tx,
                     item=item,
                     quantity=quantity,
-                    srp=srp,
+                    retail_price=retail_price,
                     final_price=final_price,
                 )
 

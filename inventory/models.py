@@ -62,7 +62,7 @@ class Item(models.Model):
     unit_of_measure = models.CharField(
         max_length=10, choices=UNIT_CHOICES, default="pcs"
     )
-    srp = models.DecimalField(max_digits=10, decimal_places=2)
+    retail_price = models.DecimalField(max_digits=10, decimal_places=2)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
