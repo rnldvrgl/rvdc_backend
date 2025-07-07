@@ -22,6 +22,7 @@ UNIT_CHOICES = [
     ("box", "Box"),
 ]
 
+
 # ===========
 # Models
 # ===========
@@ -58,13 +59,10 @@ class Item(models.Model):
         ProductCategory, on_delete=models.SET_NULL, null=True, blank=True
     )
     description = models.TextField(blank=True, null=True)
-    size_or_spec = models.CharField(max_length=50, blank=True, null=True)
     unit_of_measure = models.CharField(
-        max_length=10,
-        choices=UNIT_CHOICES,
-        default="pcs",
+        max_length=10, choices=UNIT_CHOICES, default="pcs"
     )
-    srp = models.DecimalField(max_digits=10, decimal_places=2)
+    retail_price = models.DecimalField(max_digits=10, decimal_places=2)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -85,7 +83,7 @@ class Item(models.Model):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.name} {self.size_or_spec or ''}".strip()
+        return self.name
 
 
 class Stall(models.Model):
@@ -127,11 +125,17 @@ class StockRoomStock(models.Model):
     item = models.OneToOneField(Item, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField(default=0)
     low_stock_threshold = models.PositiveIntegerField(default=0)
+    is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    def is_low_stock(self):
-        return self.quantity <= self.low_stock_threshold
+    def status(self):
+        if self.quantity == 0:
+            return "no_stock"
+        elif self.quantity <= self.low_stock_threshold:
+            return "low_stock"
+        else:
+            return "high_stock"
 
     class Meta:
         constraints = [
@@ -165,6 +169,10 @@ class StockTransfer(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True
     )
     transfer_date = models.DateTimeField(auto_now_add=True)
+    is_expense = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-transfer_date"]
 
     def __str__(self):
         return f"Transfer to {self.to_stall.name} on {self.transfer_date.strftime('%Y-%m-%d')}"
@@ -188,9 +196,9 @@ class StockMovement(models.Model):
         ("transfer", "Transfer From Another Stall"),
     ]
     item = models.ForeignKey(Item, on_delete=models.CASCADE)
-    stall = models.ForeignKey(Stall, on_delete=models.CASCADE)
+    stall = models.ForeignKey(Stall, on_delete=models.CASCADE, null=True, blank=True)
     quantity = models.IntegerField()
-    source = models.CharField(max_length=20, choices=SOURCE_CHOICES)
+    source = models.CharField(max_length=100, choices=SOURCE_CHOICES)
     related_transfer = models.ForeignKey(
         StockTransfer,
         on_delete=models.SET_NULL,

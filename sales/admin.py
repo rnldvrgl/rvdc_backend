@@ -5,7 +5,13 @@ from .models import SalesTransaction, SalesItem
 class SalesItemInline(admin.TabularInline):
     model = SalesItem
     extra = 0
-    readonly_fields = ("item", "quantity", "srp", "discount_amount", "final_price")
+    readonly_fields = (
+        "item",
+        "quantity",
+        "retail_price",
+        "discount_amount",
+        "final_price",
+    )
     can_delete = False
 
 
@@ -42,7 +48,7 @@ class SalesItemAdmin(admin.ModelAdmin):
         "transaction",
         "item",
         "quantity",
-        "srp",
+        "retail_price",
         "discount_amount",
         "final_price",
     )

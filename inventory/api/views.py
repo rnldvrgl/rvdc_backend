@@ -1,8 +1,10 @@
 from django.db import transaction
+from django.shortcuts import get_object_or_404
 from rest_framework import generics, status, filters, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
+
 from inventory.models import (
     Stock,
     StockRoomStock,
@@ -21,14 +23,11 @@ from inventory.api.serializers import (
     ItemSerializer,
     StallSerializer,
     ProductCategorySerializer,
-    StockTransferItemSerializer,
     StockRestockSerializer,
 )
 from utils.mixins import LogCreateMixin, LogSoftDeleteMixin, LogUpdateMixin
 from utils.logger import log_activity
-from utils.inventory import user_can_manage_stall
-from django.shortcuts import get_object_or_404
-
+from utils.inventory import user_can_manage_stall, record_stock_movement
 
 # ---------------------------
 # PRODUCT CATEGORY
@@ -82,10 +81,6 @@ class ItemDetailView(
     queryset = Item.objects.all()
     serializer_class = ItemSerializer
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = None
-
-    def filter_queryset(self, queryset):
-        return queryset
 
 
 # ---------------------------
@@ -122,9 +117,13 @@ class StallDetailView(
 
 
 class StockListCreateView(generics.ListCreateAPIView):
-    queryset = Stock.objects.all()
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_fields = ["stall", "item"]  # allows ?stall=ID or ?item=ID
     search_fields = ["item__name", "stall__name", "item__sku"]
     ordering_fields = ["quantity", "updated_at"]
     ordering = ["-updated_at"]
@@ -137,7 +136,7 @@ class StockListCreateView(generics.ListCreateAPIView):
         )
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = Stock.objects.all()
         user = self.request.user
         if user.role == "admin":
             return queryset
@@ -148,9 +147,7 @@ class StockListCreateView(generics.ListCreateAPIView):
 
 class StockDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Stock.objects.all()
-    lookup_field = "pk"
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = None
 
     def get_serializer_class(self):
         return (
@@ -159,18 +156,18 @@ class StockDetailView(generics.RetrieveUpdateDestroyAPIView):
             else StockReadSerializer
         )
 
-    def filter_queryset(self, queryset):
-        return queryset
-
     def delete(self, request, *args, **kwargs):
         stock = self.get_object()
         stock.is_deleted = True
         stock.save()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(
+            {"non_field_errors": "Deleted successfully."},
+            status=status.HTTP_204_NO_CONTENT,
+        )
 
 
 # ---------------------------
-# STOCK ROOM CRUD
+# STOCK ROOM
 # ---------------------------
 
 
@@ -186,9 +183,14 @@ class StockRoomStockListCreateView(generics.ListCreateAPIView):
 
 class StockRoomStockDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = StockRoomStock.objects.all()
-    serializer_class = StockRoomStockSerializer
-    lookup_field = "pk"
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_class(self):
+        return (
+            StockPatchSerializer
+            if self.request.method in ["PUT", "PATCH"]
+            else StockRoomStockSerializer
+        )
 
 
 # ---------------------------
@@ -214,60 +216,150 @@ class StockTransferListRelatedToMyStallView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        user_stall_ids = Stall.objects.all().values_list("id", flat=True)
-        return StockTransfer.objects.filter(to_stall_id__in=user_stall_ids)
+        user = self.request.user
+        if user.role == "admin":
+            return StockTransfer.objects.all()
+        elif user.role == "manager" and user.assigned_stall:
+            return StockTransfer.objects.filter(to_stall=user.assigned_stall)
+        return StockTransfer.objects.none()
 
 
 # ---------------------------
-# ADJUST STOCK QUANTITY
+# STOCK ADJUST / RESTOCK
 # ---------------------------
-class StockRestockAPIView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+class StockRoomRestockAPIView(APIView):
+    permission_classes = [permissions.IsAdminUser]
 
     @transaction.atomic
-    def post(self, request, stall_id, stock_id):
-        stock = get_object_or_404(Stock, pk=stock_id, stall_id=stall_id)
-        stall = stock.stall
+    def post(self, request, stock_id):
+        # Get stock room stock object
+        stock_room_stock = get_object_or_404(StockRoomStock, pk=stock_id)
 
-        # Check permissions based on user role and assigned stall
-        if not user_can_manage_stall(request.user, stall):
-            return Response(
-                {"detail": "You do not have permission to restock this stall."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        # Proceed with restocking
+        # Validate data
         serializer = StockRestockSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         quantity = serializer.validated_data["quantity"]
 
+        # Increase stock room quantity
+        original_quantity = stock_room_stock.quantity
+        stock_room_stock.quantity += quantity
+        stock_room_stock.save()
+
+        # Record stock movement
+        record_stock_movement(
+            item=stock_room_stock.item,
+            stall=None,  # None indicates stock room
+            qty=quantity,
+            source="restock_stock_room",
+        )
+
+        # Log activity
+        log_activity(
+            request.user,
+            stock_room_stock,
+            "restock_stock_room",
+            f"Restocked stock room for '{stock_room_stock.item.name}' "
+            f"from {original_quantity} to {stock_room_stock.quantity}.",
+        )
+
+        return Response(
+            {
+                "non_field_errors": [
+                    f"Stock room restocked successfully. New quantity: {stock_room_stock.quantity}."
+                ]
+            }
+        )
+
+
+class StockRestockAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    @transaction.atomic
+    def post(self, request, stock_id):
+        stock = get_object_or_404(Stock, pk=stock_id)
+        if not user_can_manage_stall(request.user, stock.stall):
+            return Response(
+                {
+                    "non_field_errors": [
+                        "You do not have permission to restock this stall."
+                    ]
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = StockRestockSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        quantity = serializer.validated_data["quantity"]
+
+        # Get stock room stock for the item
+        try:
+            stock_room_stock = StockRoomStock.objects.get(item=stock.item)
+        except StockRoomStock.DoesNotExist:
+            return Response(
+                {"non_field_errors": ["No stock found in stock room for this item."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Check if enough in stock room
+        if stock_room_stock.quantity < quantity:
+            return Response(
+                {
+                    "non_field_errors": [
+                        f"Not enough stock in stock room. Available: {stock_room_stock.quantity}."
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Deduct from stock room
+        stock_room_stock.quantity -= quantity
+        stock_room_stock.save()
+
+        # Add to stall stock
         original_quantity = stock.quantity
         stock.quantity += quantity
         stock.save()
 
+        # Record stock movements
+        record_stock_movement(
+            item=stock.item,
+            stall=None,  # stock room
+            qty=-quantity,
+            source="restock_to_stall",
+        )
+        record_stock_movement(
+            item=stock.item,
+            stall=stock.stall,
+            qty=quantity,
+            source="restock_from_stock_room",
+        )
+
+        # Log activity
         log_activity(
             request.user,
             stock,
             "restock",
-            f"Restocked '{stock.item.name}' at '{stock.stall.name}' "
-            f"from {original_quantity} to {stock.quantity}.",
+            f"Restocked '{stock.item.name}' at '{stock.stall.name}' from {original_quantity} to {stock.quantity}.",
         )
 
         return Response(
-            {"detail": f"Restocked successfully. New quantity: {stock.quantity}"},
-            status=status.HTTP_200_OK,
+            {
+                "non_field_errors": [
+                    f"Restocked successfully. New quantity: {stock.quantity}"
+                ]
+            }
         )
 
 
+# TODO: ADD ADJUSTING OF STOCK (ADMIN)
 class StockAdjustAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     @transaction.atomic
-    def post(self, request, *args, **kwargs):
+    def post(self, request):
         serializer = StockAdjustSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-
         stock = data["stock"]
         original_quantity = stock.quantity
 
@@ -281,11 +373,11 @@ class StockAdjustAPIView(APIView):
         stock.save()
         log_activity(request.user, log_msg)
 
-        return Response({"detail": log_msg}, status=status.HTTP_200_OK)
+        return Response({"non_field_errors": [log_msg]})
 
 
 # ---------------------------
-# SIMPLE CHOICES FOR FORMS (no pagination)
+# SIMPLE CHOICES
 # ---------------------------
 
 
@@ -295,9 +387,6 @@ class ItemChoicesAPIView(generics.ListAPIView):
     pagination_class = None
     permission_classes = [permissions.IsAuthenticated]
 
-    def filter_queryset(self, queryset):
-        return queryset
-
 
 class StallChoicesAPIView(generics.ListAPIView):
     queryset = Stall.objects.filter(is_deleted=False)
@@ -305,15 +394,9 @@ class StallChoicesAPIView(generics.ListAPIView):
     pagination_class = None
     permission_classes = [permissions.IsAuthenticated]
 
-    def filter_queryset(self, queryset):
-        return queryset
-
 
 class ProductCategoryChoicesAPIView(generics.ListAPIView):
     queryset = ProductCategory.objects.filter(is_deleted=False)
     serializer_class = ProductCategorySerializer
     pagination_class = None
     permission_classes = [permissions.IsAuthenticated]
-
-    def filter_queryset(self, queryset):
-        return queryset

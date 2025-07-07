@@ -34,9 +34,13 @@ class SalesTransactionViewSet(viewsets.ModelViewSet):
                 else:
                     instance = unvoid_sales_transaction(pk, request.user)
             except ValidationError as e:
-                return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {"non_field_errors": [str(e)]}, status=status.HTTP_400_BAD_REQUEST
+                )
             except NotFound as e:
-                return Response({"detail": str(e)}, status=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    {"non_field_errors": [str(e)]}, status=status.HTTP_404_NOT_FOUND
+                )
 
         serializer = self.get_serializer(instance)
         return Response(serializer.data)

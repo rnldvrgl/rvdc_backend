@@ -17,10 +17,13 @@ from inventory.api.views import (
     ProductCategoryChoicesAPIView,
     ProductCategoryListCreateView,
     ProductCategoryDetailView,
+    StockRoomRestockAPIView,
 )
 
 urlpatterns = [
-    # Product categories
+    # --------------------------------------
+    # PRODUCT CATEGORIES
+    # --------------------------------------
     path(
         "categories/",
         ProductCategoryListCreateView.as_view(),
@@ -31,45 +34,47 @@ urlpatterns = [
         ProductCategoryDetailView.as_view(),
         name="category_detail",
     ),
-    # Items
+    # --------------------------------------
+    # ITEMS
+    # --------------------------------------
     path("items/", ItemListCreateView.as_view(), name="item_list_create"),
     path("items/<int:pk>/", ItemDetailView.as_view(), name="item_detail"),
-    # Stalls
-    path(
-        "stalls/stocks/",
-        StockListCreateView.as_view(),
-        name="stall_stock_list_create_view",
-    ),
+    # --------------------------------------
+    # STALLS
+    # --------------------------------------
     path("stalls/", StallListCreateView.as_view(), name="stall_list_create"),
     path("stalls/<int:pk>/", StallDetailView.as_view(), name="stall_detail"),
-    # Stocks at stalls (nested)
+    # --------------------------------------
+    # STOCKS AT STALLS (flattened)
+    # --------------------------------------
+    path("stocks/", StockListCreateView.as_view(), name="stock_list_create"),
+    path("stocks/<int:pk>/", StockDetailView.as_view(), name="stock_detail"),
     path(
-        "stalls/<int:stall_id>/stocks/",
-        StockListCreateView.as_view(),
-        name="stock_list_create",
-    ),
-    path(
-        "stalls/<int:stall_id>/stocks/<int:pk>/",
-        StockDetailView.as_view(),
-        name="stock_detail",
-    ),
-    path(
-        "stalls/<int:stall_id>/stocks/<int:stock_id>/restock/",
+        "stocks/<int:stock_id>/restock/",
         StockRestockAPIView.as_view(),
         name="stock_restock",
     ),
-    # Stocks in stock room (management)
+    # --------------------------------------
+    # STOCK ROOM STOCKS (for management)
+    # --------------------------------------
     path(
-        "stocks/management/",
+        "stockroom/stocks/<int:stock_id>/restock/",
+        StockRoomRestockAPIView.as_view(),
+        name="stock_room_stock_restock",
+    ),
+    path(
+        "stockroom/stocks/",
         StockRoomStockListCreateView.as_view(),
         name="stock_room_stock_list_create",
     ),
     path(
-        "stocks/management/<int:pk>/",
+        "stockroom/stocks/<int:pk>/",
         StockRoomStockDetailView.as_view(),
         name="stock_room_stock_detail",
     ),
-    # Stock transfers & adjustments
+    # --------------------------------------
+    # STOCK TRANSFERS & ADJUSTMENTS
+    # --------------------------------------
     path(
         "stocks/transfer/",
         StockTransferCreateView.as_view(),
@@ -81,7 +86,9 @@ urlpatterns = [
         name="stock_transfer_list",
     ),
     path("stocks/adjust/", StockAdjustAPIView.as_view(), name="stock_adjust"),
-    # Dropdown choices (for forms)
+    # --------------------------------------
+    # SIMPLE DROPDOWN CHOICES
+    # --------------------------------------
     path(
         "choices/categories/",
         ProductCategoryChoicesAPIView.as_view(),

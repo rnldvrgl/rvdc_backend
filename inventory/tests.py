@@ -24,7 +24,7 @@ class InventoryTests(APITestCase):
         self.item = Item.objects.create(
             name="Laptop",
             sku="LP-100",
-            srp="1000.00",
+            retail_price="1000.00",
             category=self.category,
             unit_of_measure="unit",
         )
@@ -44,7 +44,7 @@ class InventoryTests(APITestCase):
             "name": "Projector",
             "sku": "PJ-001",
             "unit_of_measure": "pcs",
-            "srp": "500.00",
+            "retail_price": "500.00",
             "category": self.category.id,
         }
         response = self.client.post(url, data)
@@ -86,7 +86,7 @@ class InventoryTests(APITestCase):
             "name": "Updated Laptop",
             "sku": "LP-101",
             "unit_of_measure": "roll",
-            "srp": "1200.00",
+            "retail_price": "1200.00",
             "category": self.category.id,
         }
         response = self.client.put(url, data)
