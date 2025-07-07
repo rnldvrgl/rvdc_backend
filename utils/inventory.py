@@ -4,7 +4,10 @@ from inventory.models import Item, StockRoomStock, Stock, StockMovement, Stall
 
 def record_stock_movement(item, stall, qty, source, related_transfer=None):
     """
-    Creates a StockMovement record. If stall is None, indicates stock room.
+    Creates a StockMovement record.
+
+    - stall=None indicates the stock room.
+    - qty is the amount of stock added (positive) or removed (negative).
     """
     StockMovement.objects.create(
         item=item,
@@ -44,23 +47,23 @@ def create_item_with_initial_stock(validated_data, user=None):
     low_stock_threshold = validated_data.get("low_stock_threshold", 0)
 
     # Create StockRoomStock with initial quantity
-    stock_room_stock = StockRoomStock.objects.create(
+    StockRoomStock.objects.create(
         item=item,
         quantity=initial_stock_quantity,
         low_stock_threshold=low_stock_threshold,
     )
 
-    # Create StockMovement for initial stock
+    # Log StockMovement for initial stock only in stock room
     if initial_stock_quantity > 0:
         record_stock_movement(
             item=item,
             stall=None,  # None indicates stock room
             qty=initial_stock_quantity,
-            source="stock_room",
+            source="initial_stock",
             related_transfer=None,
         )
 
-    # Create zero Stock entries for each stall
+    # Create zero Stock entries for each stall (no stock movement needed)
     for stall in Stall.objects.filter(is_deleted=False):
         Stock.objects.create(
             item=item,
