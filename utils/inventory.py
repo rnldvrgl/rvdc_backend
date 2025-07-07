@@ -83,7 +83,7 @@ def create_stall_with_initial_stocks(validated_data):
     validated_data: dict with keys:
         - name, location, low_stock_threshold
     """
-    low_stock_threshold = validated_data.get("low_stock_threshold", 0)
+    low_stock_threshold = validated_data.get("low_stock_threshold", 5)
     stall = Stall.objects.create(
         name=validated_data["name"],
         location=validated_data["location"],

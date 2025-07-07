@@ -199,7 +199,7 @@ class ItemSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-        return create_item_with_initial_stock(validated_data, user)
+        return create_item_with_initial_stock(validated_data)
 
 
 class StallSerializer(serializers.ModelSerializer):
@@ -209,7 +209,7 @@ class StallSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-        return create_stall_with_initial_stocks(validated_data, user)
+        return create_stall_with_initial_stocks(validated_data)
 
 
 class StockReadSerializer(serializers.ModelSerializer):
