@@ -216,6 +216,8 @@ class StockReadSerializer(serializers.ModelSerializer):
     item = ItemSerializer(read_only=True)
     stall = StallSerializer(read_only=True)
     status = serializers.SerializerMethodField()
+    stock_room_quantity = serializers.SerializerMethodField()
+    stock_room_status = serializers.SerializerMethodField()
 
     class Meta:
         model = Stock
@@ -227,10 +229,24 @@ class StockReadSerializer(serializers.ModelSerializer):
             "updated_at",
             "status",
             "stall",
+            "stock_room_quantity",
+            "stock_room_status",
         ]
 
     def get_status(self, obj):
         return obj.status()
+
+    def get_stock_room_quantity(self, obj):
+        stock_room_stock = getattr(obj.item, "stockroomstock", None)
+        if stock_room_stock:
+            return stock_room_stock.quantity
+        return 0
+
+    def get_stock_room_status(self, obj):
+        stock_room_stock = getattr(obj.item, "stockroomstock", None)
+        if stock_room_stock:
+            return stock_room_stock.status()
+        return "no_stock"
 
 
 class StockWriteSerializer(serializers.ModelSerializer):
