@@ -17,6 +17,7 @@ from inventory.api.views import (
     ProductCategoryChoicesAPIView,
     ProductCategoryListCreateView,
     ProductCategoryDetailView,
+    StockRoomRestockAPIView,
 )
 
 urlpatterns = [
@@ -57,12 +58,17 @@ urlpatterns = [
     # STOCK ROOM STOCKS (for management)
     # --------------------------------------
     path(
-        "stocks/management/",
+        "stockroom/stocks/<int:stock_id>/restock/",
+        StockRoomRestockAPIView.as_view(),
+        name="stock_room_stock_restock",
+    ),
+    path(
+        "stockroom/stocks/",
         StockRoomStockListCreateView.as_view(),
         name="stock_room_stock_list_create",
     ),
     path(
-        "stocks/management/<int:pk>/",
+        "stockroom/stocks/<int:pk>/",
         StockRoomStockDetailView.as_view(),
         name="stock_room_stock_detail",
     ),

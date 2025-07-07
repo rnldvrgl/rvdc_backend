@@ -279,24 +279,23 @@ class StockWriteSerializer(serializers.ModelSerializer):
 
 
 class StockRoomStockSerializer(serializers.ModelSerializer):
-    item_name = serializers.CharField(source="item.name", read_only=True)
-    is_low_stock = serializers.SerializerMethodField()
+    item = ItemSerializer(read_only=True)
+    status = serializers.SerializerMethodField()
 
     class Meta:
         model = StockRoomStock
         fields = [
             "id",
             "item",
-            "item_name",
             "quantity",
             "low_stock_threshold",
             "created_at",
             "updated_at",
-            "is_low_stock",
+            "status",
         ]
 
-    def get_is_low_stock(self, obj):
-        return obj.is_low_stock()
+    def get_status(self, obj):
+        return obj.status()
 
 
 class StockTransferItemSerializer(serializers.ModelSerializer):

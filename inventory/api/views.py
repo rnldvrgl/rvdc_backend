@@ -183,8 +183,14 @@ class StockRoomStockListCreateView(generics.ListCreateAPIView):
 
 class StockRoomStockDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = StockRoomStock.objects.all()
-    serializer_class = StockRoomStockSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_class(self):
+        return (
+            StockPatchSerializer
+            if self.request.method in ["PUT", "PATCH"]
+            else StockRoomStockSerializer
+        )
 
 
 # ---------------------------
@@ -221,6 +227,48 @@ class StockTransferListRelatedToMyStallView(generics.ListAPIView):
 # ---------------------------
 # STOCK ADJUST / RESTOCK
 # ---------------------------
+class StockRoomRestockAPIView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    @transaction.atomic
+    def post(self, request, stock_id):
+        # Get stock room stock object
+        stock_room_stock = get_object_or_404(StockRoomStock, pk=stock_id)
+
+        # Validate data
+        serializer = StockRestockSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        quantity = serializer.validated_data["quantity"]
+
+        # Increase stock room quantity
+        original_quantity = stock_room_stock.quantity
+        stock_room_stock.quantity += quantity
+        stock_room_stock.save()
+
+        # Record stock movement
+        record_stock_movement(
+            item=stock_room_stock.item,
+            stall=None,  # None indicates stock room
+            qty=quantity,
+            source="restock_stock_room",
+        )
+
+        # Log activity
+        log_activity(
+            request.user,
+            stock_room_stock,
+            "restock_stock_room",
+            f"Restocked stock room for '{stock_room_stock.item.name}' "
+            f"from {original_quantity} to {stock_room_stock.quantity}.",
+        )
+
+        return Response(
+            {
+                "non_field_errors": [
+                    f"Stock room restocked successfully. New quantity: {stock_room_stock.quantity}."
+                ]
+            }
+        )
 
 
 class StockRestockAPIView(APIView):

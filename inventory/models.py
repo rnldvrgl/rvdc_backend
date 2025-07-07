@@ -125,6 +125,7 @@ class StockRoomStock(models.Model):
     item = models.OneToOneField(Item, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField(default=0)
     low_stock_threshold = models.PositiveIntegerField(default=0)
+    is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -195,9 +196,9 @@ class StockMovement(models.Model):
         ("transfer", "Transfer From Another Stall"),
     ]
     item = models.ForeignKey(Item, on_delete=models.CASCADE)
-    stall = models.ForeignKey(Stall, on_delete=models.CASCADE)
+    stall = models.ForeignKey(Stall, on_delete=models.CASCADE, null=True, blank=True)
     quantity = models.IntegerField()
-    source = models.CharField(max_length=20, choices=SOURCE_CHOICES)
+    source = models.CharField(max_length=100, choices=SOURCE_CHOICES)
     related_transfer = models.ForeignKey(
         StockTransfer,
         on_delete=models.SET_NULL,
