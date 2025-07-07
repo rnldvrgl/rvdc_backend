@@ -59,7 +59,6 @@ class Item(models.Model):
         ProductCategory, on_delete=models.SET_NULL, null=True, blank=True
     )
     description = models.TextField(blank=True, null=True)
-    size_or_spec = models.CharField(max_length=50, blank=True, null=True)
     unit_of_measure = models.CharField(
         max_length=10, choices=UNIT_CHOICES, default="pcs"
     )
@@ -84,7 +83,7 @@ class Item(models.Model):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.name} {self.size_or_spec or ''}".strip()
+        return self.name
 
 
 class Stall(models.Model):

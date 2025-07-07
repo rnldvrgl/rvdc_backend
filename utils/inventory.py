@@ -30,14 +30,12 @@ def create_item_with_initial_stock(validated_data, user=None):
 
     validated_data: dict with keys:
         - name, category, srp
-        - size_or_spec, unit_of_measure, description
         - initial_stock_quantity, low_stock_threshold
     """
     item = Item.objects.create(
         name=validated_data["name"],
         category=validated_data["category"],
         srp=validated_data["srp"],
-        size_or_spec=validated_data.get("size_or_spec"),
         unit_of_measure=validated_data.get("unit_of_measure", "pcs"),
         description=validated_data.get("description"),
     )

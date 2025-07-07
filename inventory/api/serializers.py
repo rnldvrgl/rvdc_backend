@@ -183,14 +183,10 @@ class ItemSerializer(serializers.ModelSerializer):
     def validate(self, data):
         category = data.get("category") or getattr(self.instance, "category", None)
         name = data.get("name") or getattr(self.instance, "name", None)
-        size_or_spec = data.get("size_or_spec") or getattr(
-            self.instance, "size_spec", None
-        )
 
         qs = Item.objects.filter(
             name__iexact=name,
             category=category,
-            size_or_spec=size_or_spec,
             is_deleted=False,
         )
         if self.instance:
