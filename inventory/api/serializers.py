@@ -318,15 +318,22 @@ class StockTransferSerializer(serializers.ModelSerializer):
             "technician",
             "transferred_by",
             "transfer_date",
-            "is_expense",
+            "is_finalized",
+            "finalized_at",
             "items",
         ]
-        read_only_fields = ["transferred_by", "transfer_date"]
+        read_only_fields = [
+            "transferred_by",
+            "transfer_date",
+            "is_finalized",
+            "finalized_at",
+        ]
 
     def create(self, validated_data):
         items_data = validated_data.pop("items")
         from_stall = validated_data.get("from_stall")
 
+        # check stocks
         for item_data in items_data:
             item = item_data["item"]
             qty = item_data["quantity"]
@@ -345,44 +352,14 @@ class StockTransferSerializer(serializers.ModelSerializer):
 
         with transaction.atomic():
             transfer = StockTransfer.objects.create(**validated_data)
-            total_expense_price = 0
-            expense_items_data = []
-
             for item_data in items_data:
                 StockTransferItem.objects.create(transfer=transfer, **item_data)
                 self._adjust_stock(item_data, transfer)
-
-                # prepare expense items if needed
-                if transfer.is_expense:
-                    item = item_data["item"]
-                    qty = item_data["quantity"]
-                    item_total_price = item.retail_price * qty
-                    total_expense_price += item_total_price
-                    expense_items_data.append(
-                        {"item": item, "quantity": qty, "total_price": item_total_price}
-                    )
-
-            if transfer.is_expense:
-                expense = Expense.objects.create(
-                    stall=transfer.to_stall,
-                    total_price=total_expense_price,
-                    description=f"Stock transfer from {'Stock Room' if not from_stall else from_stall.name}",
-                    created_by=transfer.transferred_by,
-                    source="transfer",
-                )
-                for ei in expense_items_data:
-                    ExpenseItem.objects.create(
-                        expense=expense,
-                        item=ei["item"],
-                        quantity=ei["quantity"],
-                        total_price=ei["total_price"],
-                    )
 
         return transfer
 
     def _adjust_stock(self, item_data, transfer):
         item, qty = item_data["item"], item_data["quantity"]
-
         if transfer.from_stall:
             from_stock = Stock.objects.filter(
                 stall=transfer.from_stall, item=item
@@ -411,9 +388,7 @@ class StockTransferSerializer(serializers.ModelSerializer):
                 )
 
         to_stock, created = Stock.objects.get_or_create(
-            stall=transfer.to_stall,
-            item=item,
-            defaults={"quantity": 0},
+            stall=transfer.to_stall, item=item, defaults={"quantity": 0}
         )
         to_stock.quantity += qty
         to_stock.save()

@@ -1,6 +1,8 @@
 from django.db import models
 from django.conf import settings
 import uuid
+from django.contrib.auth import get_user_model
+from django.utils import timezone
 
 
 # ===========
@@ -149,14 +151,14 @@ class StockRoomStock(models.Model):
 
 class StockTransfer(models.Model):
     from_stall = models.ForeignKey(
-        Stall,
+        "inventory.Stall",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         related_name="outgoing_transfers",
     )
     to_stall = models.ForeignKey(
-        Stall, on_delete=models.CASCADE, related_name="incoming_transfers"
+        "inventory.Stall", on_delete=models.CASCADE, related_name="incoming_transfers"
     )
     technician = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -169,13 +171,59 @@ class StockTransfer(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True
     )
     transfer_date = models.DateTimeField(auto_now_add=True)
-    is_expense = models.BooleanField(default=False)
+    is_finalized = models.BooleanField(default=False)
+    finalized_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-transfer_date"]
 
     def __str__(self):
         return f"Transfer to {self.to_stall.name} on {self.transfer_date.strftime('%Y-%m-%d')}"
+
+    def finalize(self, user):
+        from expenses.models import Expense, ExpenseItem  # <--- moved import here
+        from notifications.models import Notification
+
+        User = get_user_model()
+
+        if self.is_finalized:
+            return
+        self.is_finalized = True
+        self.finalized_at = timezone.now()
+        self.save()
+
+        total_price = 0
+        expense = Expense.objects.create(
+            stall=self.to_stall,
+            total_price=0,
+            description=f"Finalized stock transfer from {self.from_stall or 'Stock Room'}",
+            created_by=user,
+            source="transfer",
+            transfer=self,
+        )
+        for t_item in self.items.all():
+            item_total = t_item.item.retail_price * t_item.quantity
+            total_price += item_total
+            ExpenseItem.objects.create(
+                expense=expense,
+                item=t_item.item,
+                quantity=t_item.quantity,
+                total_price=item_total,
+            )
+        expense.total_price = total_price
+        expense.save()
+
+        manager_user = User.objects.filter(
+            assigned_stall=self.to_stall, role="manager"
+        ).first()
+
+        if manager_user:
+            Notification.objects.create(
+                user=manager_user,
+                type="expense_created",
+                data={"expense_id": expense.id},
+                message=f"New expense created from stock transfer finalized from {self.from_stall or 'Stock Room'}.",
+            )
 
 
 class StockTransferItem(models.Model):

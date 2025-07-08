@@ -2,12 +2,19 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.pagination import CursorPagination
 from notifications.models import Notification
 from notifications.api.serializers import NotificationSerializer
 
 
+class NotificationCursorPagination(CursorPagination):
+    page_size = 10
+    ordering = "-created_at"
+
+
 class NotificationViewSet(viewsets.ModelViewSet):
     queryset = Notification.objects.all()
+    pagination_class = NotificationCursorPagination
     serializer_class = NotificationSerializer
     permission_classes = [IsAuthenticated]
 

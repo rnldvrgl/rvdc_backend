@@ -1,15 +1,17 @@
 from django.db import models
-from inventory.models import Stall, Item, StockTransfer
-from users.models import CustomUser
 
 
 class Expense(models.Model):
-    stall = models.ForeignKey(Stall, on_delete=models.CASCADE, related_name="expenses")
+    stall = models.ForeignKey(
+        "inventory.Stall", on_delete=models.CASCADE, related_name="expenses"
+    )
     total_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     paid_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     paid_at = models.DateTimeField(null=True, blank=True)
     description = models.TextField(blank=True)
-    created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
+    created_by = models.ForeignKey(
+        "users.CustomUser", on_delete=models.SET_NULL, null=True
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     is_deleted = models.BooleanField(default=False)
     is_closed = models.BooleanField(default=False)
@@ -19,7 +21,7 @@ class Expense(models.Model):
         default="manual",
     )
     transfer = models.ForeignKey(
-        StockTransfer, on_delete=models.CASCADE, null=True, blank=True
+        "inventory.StockTransfer", on_delete=models.CASCADE, null=True, blank=True
     )
 
     def save(self, *args, **kwargs):
@@ -35,8 +37,10 @@ class Expense(models.Model):
 
 
 class ExpenseItem(models.Model):
-    expense = models.ForeignKey(Expense, on_delete=models.CASCADE, related_name="items")
-    item = models.ForeignKey(Item, on_delete=models.CASCADE)
+    expense = models.ForeignKey(
+        "expenses.Expense", on_delete=models.CASCADE, related_name="items"
+    )
+    item = models.ForeignKey("inventory.Item", on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField()
     total_price = models.DecimalField(max_digits=10, decimal_places=2)
 
