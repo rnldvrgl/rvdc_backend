@@ -4,6 +4,7 @@ from rest_framework import generics, status, filters, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
+from django.db.models import Q
 
 from inventory.models import (
     Stock,
@@ -207,20 +208,65 @@ class StockTransferCreateView(generics.CreateAPIView):
         transfer = serializer.save(transferred_by=self.request.user)
         log_activity(
             self.request.user,
+            transfer,
+            "Created Stock Transfer",
             f"Created transfer ID {transfer.id} from '{transfer.from_stall or 'Stock Room'}' to '{transfer.to_stall}'",
         )
+
+
+class StockTransferDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = StockTransfer.objects.all()
+    serializer_class = StockTransferSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+
+class StockTransferFinalizeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        transfer = get_object_or_404(StockTransfer, pk=pk)
+
+        if transfer.is_finalized:
+            return Response(
+                {"detail": "Already finalized."}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        transfer.finalize(user=request.user)
+        return Response({"detail": "Transfer finalized successfully."})
 
 
 class StockTransferListRelatedToMyStallView(generics.ListAPIView):
     serializer_class = StockTransferSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_fields = ["to_stall"]
+    search_fields = ["to_stall__name"]
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = StockTransfer.objects.all()
+
+        # Superusers see everything
+        if user.role == "admin":
+            return queryset
+
+        # Manager: show only outgoing transfers from their stall
+        if hasattr(user, "role") and user.role == "manager":
+            return queryset.filter(from_stall=user.assigned_stall)
+
+        # Otherwise, show transfers directly involving the user
+        return queryset.filter(Q(technician=user) | Q(transferred_by=user))
 
     def get_queryset(self):
         user = self.request.user
         if user.role == "admin":
             return StockTransfer.objects.all()
         elif user.role == "manager" and user.assigned_stall:
-            return StockTransfer.objects.filter(to_stall=user.assigned_stall)
+            return StockTransfer.objects.filter(from_stall=user.assigned_stall)
         return StockTransfer.objects.none()
 
 

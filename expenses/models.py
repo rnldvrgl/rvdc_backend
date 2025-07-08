@@ -27,12 +27,6 @@ class Expense(models.Model):
     def save(self, *args, **kwargs):
         if self.source == "transfer" and not self.transfer:
             raise ValueError("Transfer must be set for transfer expenses.")
-        if self.source == "manual" and not self.items.exists():
-            # allow manual expense with direct total
-            pass
-        self.total_price = sum(item.total_price for item in self.items.all())
-        if self.paid_amount >= self.total_price:
-            self.is_closed = True
         super().save(*args, **kwargs)
 
 

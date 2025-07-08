@@ -13,4 +13,9 @@ urlpatterns = [
         views.TechnicianDetailView.as_view(),
         name="technician-detail",
     ),
+    path(
+        "choices/technicians/",
+        views.TechnicianChoicesAPIView.as_view(),
+        name="technician-choices",
+    ),
 ]

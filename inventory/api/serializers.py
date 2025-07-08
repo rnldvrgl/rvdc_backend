@@ -16,7 +16,7 @@ from utils.inventory import (
     create_item_with_initial_stock,
 )
 from utils.inventory import record_stock_movement
-from expenses.models import ExpenseItem, Expense
+from expenses.models import Expense
 
 
 class StockPatchSerializer(serializers.ModelSerializer):
@@ -299,15 +299,23 @@ class StockRoomStockSerializer(serializers.ModelSerializer):
 
 
 class StockTransferItemSerializer(serializers.ModelSerializer):
-    item_name = serializers.CharField(source="item.name", read_only=True)
+    item = serializers.PrimaryKeyRelatedField(queryset=Item.objects.all())
 
     class Meta:
         model = StockTransferItem
-        fields = ["item", "item_name", "quantity"]
+        fields = ["item", "quantity"]
+
+    def to_representation(self, instance):
+        """When serializing, show full item details."""
+        data = super().to_representation(instance)
+        data["item"] = ItemSerializer(instance.item).data
+        return data
 
 
 class StockTransferSerializer(serializers.ModelSerializer):
     items = StockTransferItemSerializer(many=True)
+    is_paid = serializers.SerializerMethodField()
+    paid_at = serializers.SerializerMethodField()
 
     class Meta:
         model = StockTransfer
@@ -321,6 +329,8 @@ class StockTransferSerializer(serializers.ModelSerializer):
             "is_finalized",
             "finalized_at",
             "items",
+            "is_paid",
+            "paid_at",
         ]
         read_only_fields = [
             "transferred_by",
@@ -329,14 +339,43 @@ class StockTransferSerializer(serializers.ModelSerializer):
             "finalized_at",
         ]
 
+    def to_representation(self, instance):
+        """This allows you to safely import inside the method to avoid circular imports"""
+        from users.api.serializers import TechnicianSerializer
+        from inventory.api.serializers import StallSerializer
+
+        data = super().to_representation(instance)
+
+        data["from_stall"] = (
+            StallSerializer(instance.from_stall).data if instance.from_stall else None
+        )
+        data["to_stall"] = (
+            StallSerializer(instance.to_stall).data if instance.to_stall else None
+        )
+        data["technician"] = (
+            TechnicianSerializer(instance.technician).data
+            if instance.technician
+            else None
+        )
+
+        return data
+
+    def get_is_paid(self, obj):
+        expense = Expense.objects.filter(transfer=obj, source="transfer").first()
+        return expense.is_closed if expense else False
+
+    def get_paid_at(self, obj):
+        expense = Expense.objects.filter(transfer=obj, source="transfer").first()
+        return expense.paid_at if expense else None
+
     def create(self, validated_data):
         items_data = validated_data.pop("items")
         from_stall = validated_data.get("from_stall")
 
-        # check stocks
         for item_data in items_data:
             item = item_data["item"]
             qty = item_data["quantity"]
+
             if from_stall:
                 stock = Stock.objects.filter(stall=from_stall, item=item).first()
                 if not stock or stock.quantity < qty:

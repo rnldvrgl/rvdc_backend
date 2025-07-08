@@ -181,7 +181,7 @@ class StockTransfer(models.Model):
         return f"Transfer to {self.to_stall.name} on {self.transfer_date.strftime('%Y-%m-%d')}"
 
     def finalize(self, user):
-        from expenses.models import Expense, ExpenseItem  # <--- moved import here
+        from expenses.models import Expense, ExpenseItem
         from notifications.models import Notification
 
         User = get_user_model()
@@ -193,6 +193,7 @@ class StockTransfer(models.Model):
         self.save()
 
         total_price = 0
+        print("HERE 1")
         expense = Expense.objects.create(
             stall=self.to_stall,
             total_price=0,
@@ -201,7 +202,8 @@ class StockTransfer(models.Model):
             source="transfer",
             transfer=self,
         )
-        for t_item in self.items.all():
+        print("HERE 2")
+        for t_item in self.items.select_related("item"):
             item_total = t_item.item.retail_price * t_item.quantity
             total_price += item_total
             ExpenseItem.objects.create(
