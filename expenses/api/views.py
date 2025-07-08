@@ -1,8 +1,11 @@
-from rest_framework import viewsets, filters
+from rest_framework import viewsets, filters, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from .serializers import ExpenseSerializer
-from expenses.models import Expense
 from django_filters.rest_framework import DjangoFilterBackend
+from django.db.models import F, Sum
+from expenses.models import Expense
+from .serializers import ExpenseSerializer, ExpensePaymentSerializer
 
 
 class ExpenseViewSet(viewsets.ModelViewSet):
@@ -15,3 +18,24 @@ class ExpenseViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, source="manual")
+
+    @action(detail=False, methods=["get"], url_path="unpaid-total")
+    def unpaid_total(self, request):
+        stall_id = request.query_params.get("stall")
+        if not stall_id:
+            return Response({"error": "Please provide ?stall=id"}, status=400)
+        unpaid = (
+            Expense.objects.filter(
+                stall_id=stall_id, paid_amount__lt=F("total_price")
+            ).aggregate(total=Sum(F("total_price") - F("paid_amount")))["total"]
+            or 0
+        )
+        return Response({"stall": stall_id, "unpaid_total": unpaid})
+
+    @action(detail=True, methods=["patch"], url_path="pay")
+    def pay(self, request, pk=None):
+        expense = self.get_object()
+        serializer = ExpensePaymentSerializer(expense, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)

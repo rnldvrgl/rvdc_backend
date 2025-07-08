@@ -1,21 +1,37 @@
 from django.db import models
-from inventory.models import Stall
+from inventory.models import Stall, Item, StockTransfer
 from users.models import CustomUser
-from inventory.models import Item
 
 
 class Expense(models.Model):
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE, related_name="expenses")
-    total_price = models.DecimalField(max_digits=10, decimal_places=2)
+    total_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    paid_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    paid_at = models.DateTimeField(null=True, blank=True)
     description = models.TextField(blank=True)
     created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_deleted = models.BooleanField(default=False)
+    is_closed = models.BooleanField(default=False)
     source = models.CharField(
         max_length=20,
         choices=[("manual", "Manual"), ("transfer", "Transfer")],
         default="manual",
     )
+    transfer = models.ForeignKey(
+        StockTransfer, on_delete=models.CASCADE, null=True, blank=True
+    )
+
+    def save(self, *args, **kwargs):
+        if self.source == "transfer" and not self.transfer:
+            raise ValueError("Transfer must be set for transfer expenses.")
+        if self.source == "manual" and not self.items.exists():
+            # allow manual expense with direct total
+            pass
+        self.total_price = sum(item.total_price for item in self.items.all())
+        if self.paid_amount >= self.total_price:
+            self.is_closed = True
+        super().save(*args, **kwargs)
 
 
 class ExpenseItem(models.Model):
@@ -23,3 +39,10 @@ class ExpenseItem(models.Model):
     item = models.ForeignKey(Item, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField()
     total_price = models.DecimalField(max_digits=10, decimal_places=2)
+
+    def save(self, *args, **kwargs):
+        if not self.total_price:
+            self.total_price = self.quantity * self.item.retail_price
+        if self.expense.paid_amount > 0:
+            raise ValueError("Cannot edit items after payments have been made.")
+        super().save(*args, **kwargs)
