@@ -193,7 +193,7 @@ class StockTransfer(models.Model):
         self.save()
 
         total_price = 0
-        print("HERE 1")
+
         expense = Expense.objects.create(
             stall=self.to_stall,
             total_price=0,
@@ -202,7 +202,7 @@ class StockTransfer(models.Model):
             source="transfer",
             transfer=self,
         )
-        print("HERE 2")
+
         for t_item in self.items.select_related("item"):
             item_total = t_item.item.retail_price * t_item.quantity
             total_price += item_total
@@ -223,7 +223,11 @@ class StockTransfer(models.Model):
             Notification.objects.create(
                 user=manager_user,
                 type="expense_created",
-                data={"expense_id": expense.id},
+                data={
+                    "expense_id": expense.id,
+                    "stall": self.to_stall.name if self.to_stall else "Unknown",
+                    "amount": total_price,
+                },
                 message=f"New expense created from stock transfer finalized from {self.from_stall or 'Stock Room'}.",
             )
 

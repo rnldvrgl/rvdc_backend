@@ -27,12 +27,31 @@ class NotificationSerializer(serializers.ModelSerializer):
 
     def get_summary(self, obj):
         t = obj.type
-        d = obj.data
+        d = obj.data or {}
+
         if t == "expense_created":
-            return f"New expense for {d.get('stall')} of {d.get('amount')}"
+            stall = d.get("stall")
+            amount = d.get("amount")
+            if stall and amount is not None:
+                return f"New expense for {stall} of {self.format_currency(amount)}"
+            return "New expense created."
+
         elif t == "appointment_reminder":
-            return f"Appointment: {d.get('client_name')} at {d.get('time')}"
+            client = d.get("client_name")
+            time = d.get("time")
+            if client and time:
+                return f"Appointment: {client} at {time}"
+            return "Upcoming appointment."
+
         elif t == "stock_low":
-            return f"Low stock: {d.get('item_name')} ({d.get('remaining')} left)"
-        else:
-            return obj.message or "Notification"
+            item = d.get("item_name")
+            remaining = d.get("remaining")
+            if item and remaining is not None:
+                return f"Low stock: {item} ({remaining} left)"
+            return "Low stock alert."
+
+        return obj.message or "Notification"
+
+    def format_currency(self, amount):
+        # customize this for your local currency
+        return f"₱{amount:,.2f}"
