@@ -17,6 +17,13 @@ class ExpenseViewSet(viewsets.ModelViewSet):
     search_fields = ["description", "stall__name"]
     filterset_fields = ["stall", "created_by", "source"]
 
+    def get_queryset(self):
+        if self.request.user.role == "admin":
+            return super().get_queryset()
+        elif self.request.user.role == "manager" and self.request.user.assigned_stall:
+            return super().get_queryset().filter(stall=self.request.user.assigned_stall)
+        return super().get_queryset().none()
+
     def perform_create(self, serializer):
         instance = serializer.save(
             created_by=self.request.user,
