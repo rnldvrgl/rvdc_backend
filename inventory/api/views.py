@@ -4,8 +4,9 @@ from rest_framework import generics, status, filters, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Q
+from django.utils import timezone
 
+from expenses.models import Expense
 from inventory.models import (
     Stock,
     StockRoomStock,
@@ -199,6 +200,27 @@ class StockRoomStockDetailView(generics.RetrieveUpdateDestroyAPIView):
 # ---------------------------
 
 
+class StockTransferMarkExpensePaidView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        # Fetch the expense tied to this transfer
+        expense = Expense.objects.filter(transfer_id=pk).first()
+        if not expense:
+            return Response(
+                {"detail": "Expense not found for this transfer."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Mark as paid
+        expense.paid_amount = expense.total_price
+        expense.paid_at = timezone.now()
+        expense.is_paid = True
+        expense.save()
+
+        return Response({"detail": "Expense marked as paid."})
+
+
 class StockTransferCreateView(generics.CreateAPIView):
     queryset = StockTransfer.objects.all()
     serializer_class = StockTransferSerializer
@@ -245,21 +267,6 @@ class StockTransferListRelatedToMyStallView(generics.ListAPIView):
     ]
     filterset_fields = ["to_stall"]
     search_fields = ["to_stall__name"]
-
-    def get_queryset(self):
-        user = self.request.user
-        queryset = StockTransfer.objects.all()
-
-        # Superusers see everything
-        if user.role == "admin":
-            return queryset
-
-        # Manager: show only outgoing transfers from their stall
-        if hasattr(user, "role") and user.role == "manager":
-            return queryset.filter(from_stall=user.assigned_stall)
-
-        # Otherwise, show transfers directly involving the user
-        return queryset.filter(Q(technician=user) | Q(transferred_by=user))
 
     def get_queryset(self):
         user = self.request.user

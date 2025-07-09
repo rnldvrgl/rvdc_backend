@@ -9,7 +9,7 @@ class ExpenseAdmin(admin.ModelAdmin):
         "stall",
         "total_price",
         "paid_amount",
-        "is_closed",
+        "is_paid",
         "source",
         "created_at",
     )

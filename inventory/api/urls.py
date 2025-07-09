@@ -20,6 +20,7 @@ from inventory.api.views import (
     ProductCategoryDetailView,
     StockRoomRestockAPIView,
     StockTransferDetailView,
+    StockTransferMarkExpensePaidView,
 )
 
 urlpatterns = [
@@ -91,6 +92,11 @@ urlpatterns = [
         "stocks/transfers/<int:pk>/",
         StockTransferDetailView.as_view(),
         name="stock_transfer_detail",
+    ),
+    path(
+        "stocks/transfers/<int:pk>/mark-expense-as-paid/",
+        StockTransferMarkExpensePaidView.as_view(),
+        name="mark-expense-paid",
     ),
     path(
         "stocks/transfers/<int:pk>/finalize/",

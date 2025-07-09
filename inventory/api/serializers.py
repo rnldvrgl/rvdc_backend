@@ -316,6 +316,7 @@ class StockTransferSerializer(serializers.ModelSerializer):
     items = StockTransferItemSerializer(many=True)
     is_paid = serializers.SerializerMethodField()
     paid_at = serializers.SerializerMethodField()
+    total_price = serializers.SerializerMethodField()
 
     class Meta:
         model = StockTransfer
@@ -331,12 +332,14 @@ class StockTransferSerializer(serializers.ModelSerializer):
             "items",
             "is_paid",
             "paid_at",
+            "total_price",
         ]
         read_only_fields = [
             "transferred_by",
             "transfer_date",
             "is_finalized",
             "finalized_at",
+            "total_price",
         ]
 
     def to_representation(self, instance):
@@ -360,9 +363,16 @@ class StockTransferSerializer(serializers.ModelSerializer):
 
         return data
 
+    def get_total_price(self, obj):
+        total = 0
+        for transfer_item in obj.items.all():
+            item_price = transfer_item.item.retail_price or 0
+            total += item_price * transfer_item.quantity
+        return total
+
     def get_is_paid(self, obj):
         expense = Expense.objects.filter(transfer=obj, source="transfer").first()
-        return expense.is_closed if expense else False
+        return expense.is_paid if expense else False
 
     def get_paid_at(self, obj):
         expense = Expense.objects.filter(transfer=obj, source="transfer").first()
@@ -399,32 +409,37 @@ class StockTransferSerializer(serializers.ModelSerializer):
 
     def _adjust_stock(self, item_data, transfer):
         item, qty = item_data["item"], item_data["quantity"]
+
         if transfer.from_stall:
             from_stock = Stock.objects.filter(
                 stall=transfer.from_stall, item=item
             ).first()
-            if from_stock:
-                from_stock.quantity = max(from_stock.quantity - qty, 0)
-                from_stock.save()
-                record_stock_movement(
-                    item=item,
-                    stall=transfer.from_stall,
-                    qty=-qty,
-                    source="transfer",
-                    related_transfer=transfer,
+            if not from_stock or from_stock.quantity < qty:
+                raise ValidationError(
+                    f"Not enough stock of {item.name} in {transfer.from_stall.name}"
                 )
+            from_stock.quantity -= qty
+            from_stock.save()
+            record_stock_movement(
+                item=item,
+                stall=transfer.from_stall,
+                qty=-qty,
+                source="transfer",
+                related_transfer=transfer,
+            )
         else:
             room_stock = StockRoomStock.objects.filter(item=item).first()
-            if room_stock:
-                room_stock.quantity = max(room_stock.quantity - qty, 0)
-                room_stock.save()
-                record_stock_movement(
-                    item=item,
-                    stall=None,
-                    qty=-qty,
-                    source="transfer",
-                    related_transfer=transfer,
-                )
+            if not room_stock or room_stock.quantity < qty:
+                raise ValidationError(f"Not enough stock of {item.name} in stock room")
+            room_stock.quantity -= qty
+            room_stock.save()
+            record_stock_movement(
+                item=item,
+                stall=None,
+                qty=-qty,
+                source="transfer",
+                related_transfer=transfer,
+            )
 
         to_stock, created = Stock.objects.get_or_create(
             stall=transfer.to_stall, item=item, defaults={"quantity": 0}
@@ -438,6 +453,75 @@ class StockTransferSerializer(serializers.ModelSerializer):
             source="transfer",
             related_transfer=transfer,
         )
+
+    def update(self, instance, validated_data):
+        items_data = validated_data.pop("items", None)
+
+        with transaction.atomic():
+            # Update simple fields
+            instance.technician = validated_data.get("technician", instance.technician)
+            instance.to_stall = validated_data.get("to_stall", instance.to_stall)
+            instance.save()
+
+            # Only update items if explicitly provided
+            if items_data is not None:
+                # Rollback existing stock for current items
+                for old_item in instance.items.all():
+                    self._reverse_stock(old_item, instance)
+
+                # Delete old transfer items
+                instance.items.all().delete()
+
+                # Recreate transfer items and adjust stock
+                for item_data in items_data:
+                    StockTransferItem.objects.create(transfer=instance, **item_data)
+                    self._adjust_stock(item_data, instance)
+
+        return instance
+
+    def _reverse_stock(self, transfer_item, transfer):
+        item, qty = transfer_item.item, transfer_item.quantity
+
+        # return stock to from_stall or stock room
+        if transfer.from_stall:
+            stock, _ = Stock.objects.get_or_create(stall=transfer.from_stall, item=item)
+            stock.quantity += qty
+            stock.save()
+            record_stock_movement(
+                item=item,
+                stall=transfer.from_stall,
+                qty=qty,
+                source="transfer-reverse",
+                related_transfer=transfer,
+            )
+        else:
+            room_stock, _ = StockRoomStock.objects.get_or_create(item=item)
+            room_stock.quantity += qty
+            room_stock.save()
+            record_stock_movement(
+                item=item,
+                stall=None,
+                qty=qty,
+                source="transfer-reverse",
+                related_transfer=transfer,
+            )
+
+        # reduce stock from to_stall
+        to_stock = Stock.objects.filter(stall=transfer.to_stall, item=item).first()
+        if to_stock:
+            if to_stock.quantity < qty:
+                raise ValidationError(
+                    f"Cannot rollback {qty} from {item.name} at {transfer.to_stall.name}, only {to_stock.quantity} in stock."
+                )
+            to_stock.quantity -= qty
+            to_stock.save()
+            record_stock_movement(
+                item=item,
+                stall=transfer.to_stall,
+                qty=-qty,
+                source="transfer-reverse",
+                related_transfer=transfer,
+            )
 
 
 class StockAdjustSerializer(serializers.Serializer):

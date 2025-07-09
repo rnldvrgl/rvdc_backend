@@ -14,7 +14,7 @@ class Expense(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     is_deleted = models.BooleanField(default=False)
-    is_closed = models.BooleanField(default=False)
+    is_paid = models.BooleanField(default=False)
     source = models.CharField(
         max_length=20,
         choices=[("manual", "Manual"), ("transfer", "Transfer")],

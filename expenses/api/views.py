@@ -6,6 +6,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import F, Sum
 from expenses.models import Expense
 from .serializers import ExpenseSerializer, ExpensePaymentSerializer
+from django.utils import timezone
 
 
 class ExpenseViewSet(viewsets.ModelViewSet):
@@ -38,4 +39,18 @@ class ExpenseViewSet(viewsets.ModelViewSet):
         serializer = ExpensePaymentSerializer(expense, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="mark-as-paid")
+    def mark_as_paid(self, request, pk=None):
+        expense = self.get_object()
+        if expense.is_paid:
+            return Response({"detail": "Expense already marked as paid."}, status=400)
+
+        expense.paid_amount = expense.total_price
+        expense.paid_at = timezone.now()
+        expense.is_paid = True
+        expense.save()
+
+        serializer = self.get_serializer(expense)
         return Response(serializer.data)

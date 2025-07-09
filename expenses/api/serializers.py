@@ -30,7 +30,7 @@ class ExpenseSerializer(serializers.ModelSerializer):
             "description",
             "created_by",
             "created_at",
-            "is_closed",
+            "is_paid",
             "source",
             "transfer",
             "items",
@@ -39,7 +39,7 @@ class ExpenseSerializer(serializers.ModelSerializer):
             "created_by",
             "created_at",
             "items",
-            "is_closed",
+            "is_paid",
             "total_price",
         ]
 
@@ -53,6 +53,6 @@ class ExpensePaymentSerializer(serializers.ModelSerializer):
         instance.paid_amount = validated_data.get("paid_amount", instance.paid_amount)
         instance.paid_at = validated_data.get("paid_at", instance.paid_at)
         if instance.paid_amount >= instance.total_price:
-            instance.is_closed = True
+            instance.is_paid = True
         instance.save()
         return instance

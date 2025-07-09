@@ -226,7 +226,7 @@ class StockTransfer(models.Model):
                 data={
                     "expense_id": expense.id,
                     "stall": self.to_stall.name if self.to_stall else "Unknown",
-                    "amount": total_price,
+                    "amount": float(total_price),
                 },
                 message=f"New expense created from stock transfer finalized from {self.from_stall or 'Stock Room'}.",
             )
