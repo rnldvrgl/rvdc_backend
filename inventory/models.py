@@ -167,6 +167,7 @@ class StockTransfer(models.Model):
         on_delete=models.SET_NULL,
         related_name="requested_transfers",
     )
+    used_for = models.CharField(max_length=100, blank=True, null=True)
     transferred_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True
     )

@@ -333,6 +333,7 @@ class StockTransferSerializer(serializers.ModelSerializer):
             "is_paid",
             "paid_at",
             "total_price",
+            "used_for",
         ]
         read_only_fields = [
             "transferred_by",
@@ -461,6 +462,7 @@ class StockTransferSerializer(serializers.ModelSerializer):
             # Update simple fields
             instance.technician = validated_data.get("technician", instance.technician)
             instance.to_stall = validated_data.get("to_stall", instance.to_stall)
+            instance.used_for = validated_data.get("used_for", instance.used_for)
             instance.save()
 
             # Only update items if explicitly provided
