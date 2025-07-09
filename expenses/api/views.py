@@ -18,7 +18,14 @@ class ExpenseViewSet(viewsets.ModelViewSet):
     filterset_fields = ["stall", "created_by", "source"]
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user, source="manual")
+        instance = serializer.save(
+            created_by=self.request.user,
+            source="manual",
+            is_paid=True,
+            paid_at=timezone.now(),
+        )
+        instance.paid_amount = instance.total_price
+        instance.save()
 
     @action(detail=False, methods=["get"], url_path="unpaid-total")
     def unpaid_total(self, request):

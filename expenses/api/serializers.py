@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from expenses.models import Expense, ExpenseItem
+from inventory.api.serializers import StockTransferSerializer
 
 
 class ExpenseItemSerializer(serializers.ModelSerializer):
@@ -18,6 +19,7 @@ class ExpenseItemSerializer(serializers.ModelSerializer):
 
 class ExpenseSerializer(serializers.ModelSerializer):
     items = ExpenseItemSerializer(many=True, read_only=True)
+    transfer = StockTransferSerializer(read_only=True)
 
     class Meta:
         model = Expense
@@ -40,7 +42,6 @@ class ExpenseSerializer(serializers.ModelSerializer):
             "created_at",
             "items",
             "is_paid",
-            "total_price",
         ]
 
 
