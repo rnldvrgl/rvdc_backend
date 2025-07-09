@@ -440,6 +440,13 @@ class StallChoicesAPIView(generics.ListAPIView):
     pagination_class = None
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        exclude_id = self.request.query_params.get("exclude")
+        if exclude_id:
+            qs = qs.exclude(id=exclude_id)
+        return qs
+
 
 class ProductCategoryChoicesAPIView(generics.ListAPIView):
     queryset = ProductCategory.objects.filter(is_deleted=False)

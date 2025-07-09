@@ -9,7 +9,7 @@ from notifications.api.serializers import NotificationSerializer
 
 class NotificationCursorPagination(CursorPagination):
     page_size = 10
-    ordering = "-created_at"
+    ordering = ["-created_at", "-id"]
 
 
 class NotificationViewSet(viewsets.ModelViewSet):
@@ -20,7 +20,7 @@ class NotificationViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return Notification.objects.filter(user=self.request.user).order_by(
-            "-created_at"
+            "-created_at", "-id"
         )
 
     def retrieve(self, request, *args, **kwargs):
@@ -42,3 +42,14 @@ class NotificationViewSet(viewsets.ModelViewSet):
         notification.is_read = True
         notification.save()
         return Response({"status": "marked as read"})
+
+    @action(detail=False, methods=["post"])
+    def mark_all_as_read(self, request):
+        count = self.get_queryset().filter(is_read=False).update(is_read=True)
+        return Response({"status": "marked all as read", "updated": count})
+
+    @action(detail=True, methods=["post"])
+    def delete(self, request, pk=None):
+        notification = self.get_object()
+        notification.delete()
+        return Response({"status": "deleted"})
