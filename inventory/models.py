@@ -217,7 +217,7 @@ class StockTransfer(models.Model):
         expense.save()
 
         manager_user = User.objects.filter(
-            assigned_stall=self.to_stall, role="manager"
+            assigned_stall=self.to_stall, role=("manager" or "clerk")
         ).first()
 
         if manager_user:

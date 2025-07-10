@@ -50,7 +50,7 @@ INSTALLED_APPS = [
     "inventory",
     "logs",
     "sales",
-    "services",
+    # "services",
     "expenses",
     "notifications",
 ]
