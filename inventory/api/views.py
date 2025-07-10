@@ -142,7 +142,7 @@ class StockListCreateView(generics.ListCreateAPIView):
         user = self.request.user
         if user.role == "admin":
             return queryset
-        elif user.role == ("manager", "clerk") and user.assigned_stall:
+        elif user.role == "manager" or user.role == "clerk" and user.assigned_stall:
             return queryset.filter(stall=user.assigned_stall)
         return queryset.none()
 
@@ -272,7 +272,7 @@ class StockTransferListRelatedToMyStallView(generics.ListAPIView):
         user = self.request.user
         if user.role == "admin":
             return StockTransfer.objects.all()
-        elif user.role == ("manager", "clerk") and user.assigned_stall:
+        elif user.role == "manager" or user.role == "clerk" and user.assigned_stall:
             return StockTransfer.objects.filter(from_stall=user.assigned_stall)
         return StockTransfer.objects.none()
 
