@@ -13,9 +13,6 @@ from inventory.api.views import (
     StockTransferListRelatedToMyStallView,
     StockAdjustAPIView,
     StockRestockAPIView,
-    ItemChoicesAPIView,
-    StallChoicesAPIView,
-    ProductCategoryChoicesAPIView,
     ProductCategoryListCreateView,
     ProductCategoryDetailView,
     StockRoomRestockAPIView,
@@ -104,14 +101,4 @@ urlpatterns = [
         name="stock_transfer_finalize",
     ),
     path("stocks/adjust/", StockAdjustAPIView.as_view(), name="stock_adjust"),
-    # --------------------------------------
-    # SIMPLE DROPDOWN CHOICES
-    # --------------------------------------
-    path(
-        "choices/categories/",
-        ProductCategoryChoicesAPIView.as_view(),
-        name="category_choices",
-    ),
-    path("choices/items/", ItemChoicesAPIView.as_view(), name="item_choices"),
-    path("choices/stalls/", StallChoicesAPIView.as_view(), name="stall_choices"),
 ]

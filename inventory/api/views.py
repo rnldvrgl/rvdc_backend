@@ -427,36 +427,3 @@ class StockAdjustAPIView(APIView):
         log_activity(request.user, log_msg)
 
         return Response({"non_field_errors": [log_msg]})
-
-
-# ---------------------------
-# SIMPLE CHOICES
-# ---------------------------
-
-
-class ItemChoicesAPIView(generics.ListAPIView):
-    queryset = Item.objects.filter(is_deleted=False)
-    serializer_class = ItemSerializer
-    pagination_class = None
-    permission_classes = [permissions.IsAuthenticated]
-
-
-class StallChoicesAPIView(generics.ListAPIView):
-    queryset = Stall.objects.filter(is_deleted=False)
-    serializer_class = StallSerializer
-    pagination_class = None
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        qs = super().get_queryset()
-        exclude_id = self.request.query_params.get("exclude")
-        if exclude_id:
-            qs = qs.exclude(id=exclude_id)
-        return qs
-
-
-class ProductCategoryChoicesAPIView(generics.ListAPIView):
-    queryset = ProductCategory.objects.filter(is_deleted=False)
-    serializer_class = ProductCategorySerializer
-    pagination_class = None
-    permission_classes = [permissions.IsAuthenticated]

@@ -24,9 +24,12 @@ class SalesItemSerializer(serializers.ModelSerializer):
 
 
 class SalesPaymentSerializer(serializers.ModelSerializer):
+    payment_date = serializers.DateTimeField(required=False, read_only=True)
+
     class Meta:
         model = SalesPayment
-        fields = ["payment_type", "amount", "payment_date"]
+        fields = ["id", "payment_type", "amount", "payment_date"]
+        read_only_fields = ["id", "payment_date"]
 
 
 class SalesTransactionSerializer(serializers.ModelSerializer):

@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     # "services",
     "expenses",
     "notifications",
+    "choices",
 ]
 
 MIDDLEWARE = [
