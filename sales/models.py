@@ -5,6 +5,7 @@ from django.utils import timezone
 
 from inventory.models import Stall, Item
 from clients.models import Client
+from users.models import CustomUser
 
 
 class PaymentType(models.TextChoices):
@@ -24,6 +25,13 @@ class PaymentStatus(models.TextChoices):
 class SalesTransaction(models.Model):
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE)
     client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True)
+    sales_clerk = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sales_transactions",
+    )
 
     manual_receipt_number = models.CharField(max_length=100, blank=True, null=True)
     system_receipt_number = models.UUIDField(default=uuid.uuid4, editable=False)

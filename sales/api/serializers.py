@@ -70,6 +70,17 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             "system_receipt_number",
         ]
 
+    def to_representation(self, instance):
+        from clients.api.serializers import ClientSerializer
+
+        data = super().to_representation(instance)
+
+        data["client"] = (
+            ClientSerializer(instance.client).data if instance.client else None
+        )
+
+        return data
+
     def create(self, validated_data):
         items_data = validated_data.pop("items")
         payments_data = validated_data.pop("payments", [])
