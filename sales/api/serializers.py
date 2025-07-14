@@ -124,6 +124,15 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
 
                 SalesItem.objects.create(transaction=sale_txn, **item_data)
 
+                record_stock_movement(
+                    item=item,
+                    stall=stall,
+                    quantity=-qty,
+                    movement_type="sale",
+                    related_object=sale_txn,
+                    note=f"Sale transaction #{sale_txn.id} to {sale_txn.client.full_name if sale_txn.client else 'N/A'}",
+                )
+
             # Create payments if any
             for payment_data in payments_data:
                 SalesPayment.objects.create(transaction=sale_txn, **payment_data)
