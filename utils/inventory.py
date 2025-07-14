@@ -1,20 +1,38 @@
 from django.db import transaction
-from inventory.models import Item, StockRoomStock, Stock, StockMovement, Stall
 
 
-def record_stock_movement(item, stall, qty, source, related_transfer=None):
-    """
-    Creates a StockMovement record.
+def record_stock_movement(
+    item,
+    stall,
+    quantity,
+    movement_type,
+    note=None,
+    related_object=None,
+):
+    from inventory.models import StockMovement
 
-    - stall=None indicates the stock room.
-    - qty is the amount of stock added (positive) or removed (negative).
-    """
-    StockMovement.objects.create(
+    MOVEMENT_TYPE_CHOICES = {
+        "sale",
+        "purchase",
+        "transfer_in",
+        "transfer_out",
+        "adjustment",
+        "return",
+    }
+
+    if movement_type not in MOVEMENT_TYPE_CHOICES:
+        raise ValueError(
+            f"Invalid movement_type '{movement_type}'. "
+            f"Allowed: {sorted(MOVEMENT_TYPE_CHOICES)}"
+        )
+
+    return StockMovement.objects.create(
         item=item,
         stall=stall,
-        quantity=qty,
-        source=source,
-        related_transfer=related_transfer,
+        quantity=quantity,
+        note=note,
+        movement_type=movement_type,
+        related_object=related_object,
     )
 
 
@@ -27,6 +45,8 @@ def user_can_manage_stall(user, stall):
 
 @transaction.atomic
 def create_item_with_initial_stock(validated_data, user=None):
+    from inventory.models import Item, StockRoomStock, Stock, Stall
+
     """
     Creates an Item, initializes StockRoomStock with initial quantity,
     logs StockMovement, and sets zero stock for all stalls.
@@ -57,10 +77,10 @@ def create_item_with_initial_stock(validated_data, user=None):
     if initial_stock_quantity > 0:
         record_stock_movement(
             item=item,
-            stall=None,  # None indicates stock room
-            qty=initial_stock_quantity,
-            source="initial_stock",
-            related_transfer=None,
+            stall=None,
+            quantity=initial_stock_quantity,
+            movement_type="purchase",
+            note="Initial stock in stock room",
         )
 
     # Create zero Stock entries for each stall (no stock movement needed)
@@ -77,6 +97,8 @@ def create_item_with_initial_stock(validated_data, user=None):
 
 @transaction.atomic
 def create_stall_with_initial_stocks(validated_data):
+    from inventory.models import Item, Stock, Stall
+
     """
     Creates a Stall and sets up zero stock for all existing items.
 

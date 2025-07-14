@@ -1,104 +1,22 @@
-from django.urls import path
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
 from inventory.api.views import (
-    ItemListCreateView,
-    ItemDetailView,
-    StallListCreateView,
-    StallDetailView,
-    StockListCreateView,
-    StockDetailView,
-    StockRoomStockListCreateView,
-    StockRoomStockDetailView,
-    StockTransferCreateView,
-    StockTransferFinalizeView,
-    StockTransferListRelatedToMyStallView,
-    StockAdjustAPIView,
-    StockRestockAPIView,
-    ProductCategoryListCreateView,
-    ProductCategoryDetailView,
-    StockRoomRestockAPIView,
-    StockTransferDetailView,
-    StockTransferMarkExpensePaidView,
+    ItemViewSet,
+    StallViewSet,
+    StockViewSet,
+    StockRoomStockViewSet,
+    ProductCategoryViewSet,
+    StockTransferViewSet,
 )
 
+router = DefaultRouter()
+router.register(r"items", ItemViewSet)
+router.register(r"stalls", StallViewSet)
+router.register(r"stocks", StockViewSet)
+router.register(r"stockroom/stocks", StockRoomStockViewSet, basename="stockroomstock")
+router.register(r"categories", ProductCategoryViewSet)
+router.register(r"stock-transfers", StockTransferViewSet, basename="stocktransfer")
+
 urlpatterns = [
-    # --------------------------------------
-    # PRODUCT CATEGORIES
-    # --------------------------------------
-    path(
-        "categories/",
-        ProductCategoryListCreateView.as_view(),
-        name="category_list_create",
-    ),
-    path(
-        "categories/<int:pk>/",
-        ProductCategoryDetailView.as_view(),
-        name="category_detail",
-    ),
-    # --------------------------------------
-    # ITEMS
-    # --------------------------------------
-    path("items/", ItemListCreateView.as_view(), name="item_list_create"),
-    path("items/<int:pk>/", ItemDetailView.as_view(), name="item_detail"),
-    # --------------------------------------
-    # STALLS
-    # --------------------------------------
-    path("stalls/", StallListCreateView.as_view(), name="stall_list_create"),
-    path("stalls/<int:pk>/", StallDetailView.as_view(), name="stall_detail"),
-    # --------------------------------------
-    # STOCKS AT STALLS (flattened)
-    # --------------------------------------
-    path("stocks/", StockListCreateView.as_view(), name="stock_list_create"),
-    path("stocks/<int:pk>/", StockDetailView.as_view(), name="stock_detail"),
-    path(
-        "stocks/<int:stock_id>/restock/",
-        StockRestockAPIView.as_view(),
-        name="stock_restock",
-    ),
-    # --------------------------------------
-    # STOCK ROOM STOCKS (for management)
-    # --------------------------------------
-    path(
-        "stockroom/stocks/<int:stock_id>/restock/",
-        StockRoomRestockAPIView.as_view(),
-        name="stock_room_stock_restock",
-    ),
-    path(
-        "stockroom/stocks/",
-        StockRoomStockListCreateView.as_view(),
-        name="stock_room_stock_list_create",
-    ),
-    path(
-        "stockroom/stocks/<int:pk>/",
-        StockRoomStockDetailView.as_view(),
-        name="stock_room_stock_detail",
-    ),
-    # --------------------------------------
-    # STOCK TRANSFERS & ADJUSTMENTS
-    # --------------------------------------
-    path(
-        "stocks/transfer/",
-        StockTransferCreateView.as_view(),
-        name="stock_transfer_create",
-    ),
-    path(
-        "stocks/transfers/",
-        StockTransferListRelatedToMyStallView.as_view(),
-        name="stock_transfer_list",
-    ),
-    path(
-        "stocks/transfers/<int:pk>/",
-        StockTransferDetailView.as_view(),
-        name="stock_transfer_detail",
-    ),
-    path(
-        "stocks/transfers/<int:pk>/mark-expense-as-paid/",
-        StockTransferMarkExpensePaidView.as_view(),
-        name="mark-expense-paid",
-    ),
-    path(
-        "stocks/transfers/<int:pk>/finalize/",
-        StockTransferFinalizeView.as_view(),
-        name="stock_transfer_finalize",
-    ),
-    path("stocks/adjust/", StockAdjustAPIView.as_view(), name="stock_adjust"),
+    path("", include(router.urls)),
 ]

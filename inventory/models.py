@@ -1,21 +1,19 @@
-from django.db import models
+from django.db import models, transaction
 from django.conf import settings
 import uuid
 from django.contrib.auth import get_user_model
 from django.utils import timezone
+from django.contrib.contenttypes import fields, models as contenttypes_models
 
 
-# ===========
-# Managers
-# ===========
+# =========== MANAGERS ===========
 class ActiveManager(models.Manager):
     def get_queryset(self):
         return super().get_queryset().filter(is_deleted=False)
 
 
-# ===========
-# Constants
-# ===========
+# =========== CONSTANTS ===========
+
 UNIT_CHOICES = [
     ("pcs", "Pieces"),
     ("ft", "Feet"),
@@ -25,9 +23,7 @@ UNIT_CHOICES = [
 ]
 
 
-# ===========
-# Models
-# ===========
+# =========== MODELS ===========
 
 
 class ProductCategory(models.Model):
@@ -103,13 +99,16 @@ class Stall(models.Model):
 
 
 class Stock(models.Model):
-    item = models.ForeignKey(Item, on_delete=models.CASCADE)
+    item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="stocks")
     low_stock_threshold = models.PositiveIntegerField(default=0)
-    stall = models.ForeignKey(Stall, on_delete=models.CASCADE)
+    stall = models.ForeignKey(Stall, on_delete=models.CASCADE, related_name="stocks")
     quantity = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_deleted = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["item__name"]
 
     def status(self):
         if self.quantity == 0:
@@ -124,7 +123,9 @@ class Stock(models.Model):
 
 
 class StockRoomStock(models.Model):
-    item = models.OneToOneField(Item, on_delete=models.CASCADE)
+    item = models.OneToOneField(
+        Item, on_delete=models.CASCADE, related_name="stockroom_stock"
+    )
     quantity = models.PositiveIntegerField(default=0)
     low_stock_threshold = models.PositiveIntegerField(default=0)
     is_deleted = models.BooleanField(default=False)
@@ -181,56 +182,103 @@ class StockTransfer(models.Model):
     def __str__(self):
         return f"Transfer to {self.to_stall.name} on {self.transfer_date.strftime('%Y-%m-%d')}"
 
-    def finalize(self, user):
-        from expenses.models import Expense, ExpenseItem
-        from notifications.models import Notification
+    def can_be_finalized_by(self, user):
+        if user.role == "admin":
+            return True
+        if user.role in ["manager", "clerk"] and user.assigned_stall == self.from_stall:
+            return True
+        return False
 
-        User = get_user_model()
+    def finalize(self, user):
+        from notifications.models import Notification
+        from utils.inventory import record_stock_movement
+        from expenses.models import Expense, ExpenseItem
 
         if self.is_finalized:
             return
-        self.is_finalized = True
-        self.finalized_at = timezone.now()
-        self.save()
 
-        total_price = 0
+        with transaction.atomic():
+            # 1. Mark as finalized
+            self.is_finalized = True
+            self.finalized_at = timezone.now()
+            self.save()
 
-        expense = Expense.objects.create(
-            stall=self.to_stall,
-            total_price=0,
-            description=f"Finalized stock transfer from {self.from_stall or 'Stock Room'}",
-            created_by=user,
-            source="transfer",
-            transfer=self,
-        )
-
-        for t_item in self.items.select_related("item"):
-            item_total = t_item.item.retail_price * t_item.quantity
-            total_price += item_total
-            ExpenseItem.objects.create(
-                expense=expense,
-                item=t_item.item,
-                quantity=t_item.quantity,
-                total_price=item_total,
+            # 2. Create Expense record
+            total_price = 0
+            expense = Expense.objects.create(
+                stall=self.to_stall,
+                total_price=0,  # will update below
+                description=f"Finalized stock transfer from {self.from_stall or 'Stock Room'}",
+                created_by=user,
+                source="transfer",
+                transfer=self,
             )
-        expense.total_price = total_price
-        expense.save()
 
-        manager_user = User.objects.filter(
-            assigned_stall=self.to_stall, role=("manager" or "clerk")
-        ).first()
+            # 3. Create Expense Items & compute total
+            for t_item in self.items.select_related("item"):
+                item_total = t_item.item.retail_price * t_item.quantity
+                total_price += item_total
+                ExpenseItem.objects.create(
+                    expense=expense,
+                    item=t_item.item,
+                    quantity=t_item.quantity,
+                    total_price=item_total,
+                )
 
-        if manager_user:
-            Notification.objects.create(
-                user=manager_user,
-                type="expense_created",
-                data={
-                    "expense_id": expense.id,
-                    "stall": self.to_stall.name if self.to_stall else "Unknown",
-                    "amount": float(total_price),
-                },
-                message=f"New expense created from stock transfer finalized from {self.from_stall or 'Stock Room'}.",
+                # 4. Create stock movements (audit only, do NOT adjust stocks)
+                if self.from_stall:
+                    record_stock_movement(
+                        item=t_item.item,
+                        stall=self.from_stall,
+                        quantity=-t_item.quantity,
+                        movement_type="transfer_out",
+                        related_object=self,
+                        note=f"Finalized transfer OUT: {t_item.quantity} {t_item.item.unit_of_measure} of {t_item.item.name}",
+                    )
+                else:
+                    # from stock room
+                    record_stock_movement(
+                        item=t_item.item,
+                        stall=None,
+                        quantity=-t_item.quantity,
+                        movement_type="transfer_out",
+                        related_object=self,
+                        note=f"Finalized transfer OUT from Stock Room",
+                    )
+
+                record_stock_movement(
+                    item=t_item.item,
+                    stall=self.to_stall,
+                    quantity=t_item.quantity,
+                    movement_type="transfer_in",
+                    related_object=self,
+                    note=f"Finalized transfer IN: {t_item.quantity} {t_item.item.unit_of_measure} of {t_item.item.name}",
+                )
+
+            # 5. Update expense total
+            expense.total_price = total_price
+            expense.save()
+
+            # 6. Notify manager/clerk of to_stall
+            manager_user = (
+                get_user_model()
+                .objects.filter(
+                    assigned_stall=self.to_stall, role__in=["manager", "clerk"]
+                )
+                .first()
             )
+
+            if manager_user:
+                Notification.objects.create(
+                    user=manager_user,
+                    type="expense_created",
+                    data={
+                        "expense_id": expense.id,
+                        "stall": self.to_stall.name if self.to_stall else "Unknown",
+                        "amount": float(total_price),
+                    },
+                    message=f"New expense from stock transfer finalized from {self.from_stall or 'Stock Room'}.",
+                )
 
 
 class StockTransferItem(models.Model):
@@ -244,25 +292,54 @@ class StockTransferItem(models.Model):
         return f"{self.quantity} {self.item.unit_of_measure} of {self.item.name}"
 
 
+class Restock(models.Model):
+    item = models.ForeignKey(Item, on_delete=models.CASCADE)
+    quantity = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        "users.CustomUser", on_delete=models.SET_NULL, null=True
+    )
+
+
 class StockMovement(models.Model):
-    SOURCE_CHOICES = [
-        ("stock_room", "Stock Room"),
-        ("bought", "Bought Outside"),
-        ("transfer", "Transfer From Another Stall"),
+    MOVEMENT_TYPE_CHOICES = [
+        ("sale", "Sale"),
+        ("purchase", "Purchase"),
+        ("transfer_in", "Transfer In"),
+        ("transfer_out", "Transfer Out"),
+        ("adjustment", "Adjustment"),
+        ("return", "Return"),
     ]
+
     item = models.ForeignKey(Item, on_delete=models.CASCADE)
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE, null=True, blank=True)
-    quantity = models.IntegerField()
-    source = models.CharField(max_length=100, choices=SOURCE_CHOICES)
-    related_transfer = models.ForeignKey(
-        StockTransfer,
+    quantity = models.IntegerField(
+        help_text="Positive for stock in, negative for stock out"
+    )
+    movement_type = models.CharField(max_length=50, choices=MOVEMENT_TYPE_CHOICES)
+    note = models.CharField(
+        max_length=255, blank=True, help_text="Optional description / reason"
+    )
+
+    # The magic: link to ANY object
+    content_type = models.ForeignKey(
+        contenttypes_models.ContentType,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="movements",
     )
+    object_id = models.PositiveIntegerField(null=True, blank=True)
+    related_object = fields.GenericForeignKey("content_type", "object_id")
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         direction = "added" if self.quantity > 0 else "removed"
-        return f"{abs(self.quantity)} {self.item.unit_of_measure} {self.item.name} {direction} in {self.stall.name} from {self.source}"
+        return (
+            f"{abs(self.quantity)} {self.item.unit_of_measure} {self.item.name} "
+            f"{direction} in {self.stall.name if self.stall else 'stockroom'} "
+            f"due to {self.movement_type}"
+        )
+
+    class Meta:
+        ordering = ["-created_at"]
