@@ -46,7 +46,7 @@ class StallViewSet(viewsets.ModelViewSet):
 
 class StockViewSet(viewsets.ModelViewSet):
     queryset = Stock.objects.all()
-    permission_classes = [IsAuthenticated]  # assuming
+    permission_classes = [IsAuthenticated]
 
     def get_serializer_class(self):
         if self.action in ["list", "retrieve"]:
@@ -56,6 +56,14 @@ class StockViewSet(viewsets.ModelViewSet):
         elif self.action == "create":
             return StockWriteSerializer
         return StockReadSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.role == "admin":
+            return Stock.objects.all()
+        elif user.role in ["manager", "clerk"] and (user.assigned_stall is not None):
+            return Stock.objects.filter(stall=user.assigned_stall)
+        return Stock.objects.none()
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     @transaction.atomic

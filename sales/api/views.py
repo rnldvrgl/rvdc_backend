@@ -20,6 +20,14 @@ class SalesTransactionViewSet(viewsets.ModelViewSet):
     filterset_fields = ["client__full_name", "stall__name", "payment_status", "voided"]
     search_fields = ["client__full_name", "stall__name"]
 
+    def get_queryset(self):
+        user = self.request.user
+        if user.role == "admin":
+            return SalesTransaction.objects.all()
+        elif user.role in ["manager", "clerk"] and (user.assigned_stall is not None):
+            return SalesTransaction.objects.filter(stall=user.assigned_stall)
+        return SalesTransaction.objects.none()
+
     def perform_create(self, serializer):
         serializer.save(sales_clerk=self.request.user)
 

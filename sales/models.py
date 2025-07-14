@@ -20,6 +20,7 @@ class PaymentStatus(models.TextChoices):
     UNPAID = "unpaid", _("Unpaid")
     PARTIAL = "partial", _("Partial")
     PAID = "paid", _("Paid")
+    VOIDED = "voided", _("Voided")
 
 
 class SalesTransaction(models.Model):
@@ -50,6 +51,9 @@ class SalesTransaction(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        ordering = ["-updated_at"]
+
     def __str__(self):
         return f"Sale #{self.id} - OR {self.manual_receipt_number or 'N/A'}"
 
@@ -66,8 +70,12 @@ class SalesTransaction(models.Model):
         return sum(payment.amount for payment in self.payments.all())
 
     def update_payment_status(self):
+        voided = self.voided
         total = self.computed_total
         paid = self.total_paid
+
+        if voided:
+            self.payment_status = PaymentStatus.VOIDED
 
         if paid == 0:
             self.payment_status = PaymentStatus.UNPAID

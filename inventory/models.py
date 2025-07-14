@@ -318,6 +318,8 @@ class StockMovement(models.Model):
         ("transfer_out", "Transfer Out"),
         ("adjustment", "Adjustment"),
         ("return", "Return"),
+        ("restore_sale", "Restore Sale"),
+        ("void_sale", "Void Sale"),
     ]
 
     item = models.ForeignKey(Item, on_delete=models.CASCADE)

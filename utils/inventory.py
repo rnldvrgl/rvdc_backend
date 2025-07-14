@@ -6,7 +6,7 @@ def record_stock_movement(
     stall,
     quantity,
     movement_type,
-    note=None,
+    note="",
     related_object=None,
 ):
     from inventory.models import StockMovement
@@ -18,6 +18,8 @@ def record_stock_movement(
         "transfer_out",
         "adjustment",
         "return",
+        "restore_sale",
+        "void_sale",
     }
 
     if movement_type not in MOVEMENT_TYPE_CHOICES:
