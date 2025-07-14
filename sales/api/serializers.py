@@ -1,60 +1,75 @@
 from rest_framework import serializers
-from sales.models import SalesTransaction, SalesItem
-from inventory.models import Item, Stall
-from clients.models import Client
-from utils.logger import log_activity
-
-# from utils.inventory import deduct_inventory
-from django.core.exceptions import ValidationError
+from django.db import transaction
+from rest_framework.exceptions import ValidationError
+from inventory.models import Stock
+from sales.models import SalesTransaction, SalesItem, SalesPayment
+from inventory.api.serializers import ItemSerializer, StallSerializer
+from utils.inventory import record_stock_movement
+from clients.api.serializers import ClientSerializer
+from inventory.models import Item
 
 
 class SalesItemSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
     item = serializers.PrimaryKeyRelatedField(
-        queryset=Item.objects.all(), write_only=True
+        queryset=Item.objects.all(), required=False, allow_null=True
     )
-    item_name = serializers.CharField(source="item.name", read_only=True)
-    item_unit = serializers.CharField(source="item.unit", read_only=True)  # Optional
-
-    retail_price = serializers.DecimalField(
-        max_digits=10, decimal_places=2, read_only=True
-    )
-    final_price = serializers.DecimalField(
+    description = serializers.CharField(required=False, allow_blank=True)
+    line_total = serializers.DecimalField(
         max_digits=10, decimal_places=2, read_only=True
     )
 
     class Meta:
         model = SalesItem
         fields = [
-            "item",  # for input
-            "item_name",  # for display
-            "item_unit",  # optional
+            "id",
+            "item",
+            "description",
             "quantity",
-            "retail_price",
-            "discount_amount",
-            "final_price",
+            "final_price_per_unit",
+            "line_total",
         ]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["item"] = ItemSerializer(instance.item).data if instance.item else None
+        return data
+
+
+class SalesPaymentSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False)
+    payment_date = serializers.DateTimeField(required=False, read_only=True)
+
+    class Meta:
+        model = SalesPayment
+        fields = ["id", "payment_type", "amount", "payment_date"]
+        read_only_fields = ["id", "payment_date"]
 
 
 class SalesTransactionSerializer(serializers.ModelSerializer):
     items = SalesItemSerializer(many=True)
-    total_price = serializers.SerializerMethodField()
-
-    # display-only
-    sales_clerk_name = serializers.CharField(
-        source="sales_clerk.username", read_only=True
+    payments = SalesPaymentSerializer(many=True, required=False)
+    computed_total = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
     )
-    client_name = serializers.CharField(source="client.full_name", read_only=True)
+    total_paid = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
+    )
+    payment_status = serializers.CharField(read_only=True)
 
     class Meta:
         model = SalesTransaction
         fields = [
             "id",
-            "receipt_number",
-            "sales_clerk_name",
-            "client_name",
-            "total_price",
-            "total_payment",
+            "stall",
+            "client",
+            "manual_receipt_number",
+            "system_receipt_number",
+            "computed_total",
+            "total_paid",
+            "payment_status",
             "items",
+            "payments",
             "created_at",
             "voided",
             "void_reason",
@@ -62,65 +77,168 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "created_at",
-            "voided",
-            "void_reason",
-            "sales_clerk_name",
-            "stall_name",
-            "client_name",
-            "total_price",
+            "computed_total",
+            "total_paid",
+            "payment_status",
+            "system_receipt_number",
         ]
 
-    def get_total_price(self, obj):
-        return sum(item.quantity * item.final_price for item in obj.items.all())
-
-    def query_set(self):
-        user_stall = getattr(self.request.user, "assigned_stall", None)
-        if user_stall:
-            return SalesTransaction.objects.filter(stall=user_stall).order_by(
-                "-created_at"
-            )
-        return SalesTransaction.objects.none()
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["client"] = (
+            ClientSerializer(instance.client).data if instance.client else None
+        )
+        data["stall"] = StallSerializer(instance.stall).data if instance.stall else None
+        return data
 
     def create(self, validated_data):
         items_data = validated_data.pop("items")
-        stall = validated_data.pop("stall")
+        payments_data = validated_data.pop("payments", [])
+        stall = validated_data.get("stall")
 
-        transaction = SalesTransaction.objects.create(stall=stall, **validated_data)
+        if not stall:
+            raise ValidationError("Stall is required for this sales transaction.")
 
-        sales_items = []
-        inventory_data = []
-
+        # Check stock availability before committing anything
         for item_data in items_data:
-            item_instance = item_data["item"]
-            quantity = item_data["quantity"]
-            discount = item_data.get("discount_amount", 0)
-            retail_price = item_instance.retail_price
-            final_price = retail_price - discount
-
-            sales_items.append(
-                SalesItem(
-                    transaction=transaction,
-                    item=item_instance,
-                    quantity=quantity,
-                    discount_amount=discount,
-                    retail_price=retail_price,
-                    final_price=final_price,
+            item = item_data["item"]
+            qty = item_data["quantity"]
+            stock = Stock.objects.filter(stall=stall, item=item).first()
+            if not stock or stock.quantity < qty:
+                raise ValidationError(
+                    f"Not enough stock of {item.name} in {stall.name}. "
+                    f"Available: {stock.quantity if stock else 0}, Needed: {qty}"
                 )
-            )
-            inventory_data.append({"item": item_instance, "quantity": quantity})
 
-        SalesItem.objects.bulk_create(sales_items)
+        with transaction.atomic():
+            sale_txn = SalesTransaction.objects.create(**validated_data)
 
-        try:
-            pass
-            # deduct_inventory(inventory_data, stall)
-        except ValidationError as e:
-            raise serializers.ValidationError({"non_field_errors": [str(e)]})
+            # Deduct stock & create sales items
+            for item_data in items_data:
+                item = item_data["item"]
+                qty = item_data["quantity"]
 
-        log_activity(
-            user=transaction.sales_clerk,
-            instance=transaction,
-            action=f"Created Sale #{transaction.id}",
-        )
+                stock = Stock.objects.get(stall=stall, item=item)
+                stock.quantity -= qty
+                stock.save()
 
-        return transaction
+                SalesItem.objects.create(transaction=sale_txn, **item_data)
+
+                record_stock_movement(
+                    item=item,
+                    stall=stall,
+                    quantity=-qty,
+                    movement_type="sale",
+                    related_object=sale_txn,
+                    note=f"Sale transaction #{sale_txn.id} to {sale_txn.client.full_name if sale_txn.client else 'N/A'}",
+                )
+
+            # Create payments if any
+            for payment_data in payments_data:
+                SalesPayment.objects.create(transaction=sale_txn, **payment_data)
+
+            sale_txn.update_payment_status()
+
+        return sale_txn
+
+    def update(self, instance, validated_data):
+        items_data = validated_data.pop("items", None)
+        payments_data = validated_data.pop("payments", None)
+        stall = validated_data.get("stall", instance.stall)
+
+        with transaction.atomic():
+            if items_data is not None:
+                existing_items = {item.id: item for item in instance.items.all()}
+                net_changes = {}
+
+                sent_ids = []
+                for item_data in items_data:
+                    item_id = item_data.get("id")
+                    item = item_data["item"]
+                    qty = item_data["quantity"]
+
+                    if item_id and item_id in existing_items:
+                        old_item = existing_items[item_id]
+                        delta_qty = qty - old_item.quantity
+                        net_changes[item] = net_changes.get(item, 0) + delta_qty
+                        sent_ids.append(item_id)
+                    else:
+                        net_changes[item] = net_changes.get(item, 0) + qty
+
+                for item_id, old_item in existing_items.items():
+                    if item_id not in sent_ids:
+                        net_changes[old_item.item] = (
+                            net_changes.get(old_item.item, 0) - old_item.quantity
+                        )
+
+                # Validate before applying changes
+                for item, change in net_changes.items():
+                    if change > 0:
+                        stock = Stock.objects.filter(stall=stall, item=item).first()
+                        if not stock or stock.quantity < change:
+                            raise ValidationError(
+                                f"Not enough stock of {item.name} in {stall.name}. "
+                                f"Available: {stock.quantity if stock else 0}, Needed additional: {change}"
+                            )
+
+                # Adjust stocks
+                for item, change in net_changes.items():
+                    if change != 0:
+                        stock, _ = Stock.objects.get_or_create(
+                            stall=stall, item=item, defaults={"quantity": 0}
+                        )
+                        stock.quantity -= change
+                        stock.save()
+                        record_stock_movement(
+                            item=item,
+                            stall=stall,
+                            quantity=-change,
+                            movement_type="sale",
+                            related_object=instance,
+                        )
+
+            # Apply basic field updates
+            for attr, value in validated_data.items():
+                setattr(instance, attr, value)
+            instance.save()
+
+            if items_data is not None:
+                existing_items = {item.id: item for item in instance.items.all()}
+                sent_ids = []
+                for item_data in items_data:
+                    item_id = item_data.pop("id", None)
+                    if item_id and item_id in existing_items:
+                        item = existing_items[item_id]
+                        for attr, value in item_data.items():
+                            setattr(item, attr, value)
+                        item.save()
+                        sent_ids.append(item_id)
+                    else:
+                        SalesItem.objects.create(transaction=instance, **item_data)
+
+                for item_id, item in existing_items.items():
+                    if item_id not in sent_ids:
+                        item.delete()
+
+            if payments_data is not None:
+                existing_payments = {p.id: p for p in instance.payments.all()}
+                sent_payment_ids = []
+                for payment_data in payments_data:
+                    payment_id = payment_data.pop("id", None)
+                    if payment_id and payment_id in existing_payments:
+                        payment = existing_payments[payment_id]
+                        for attr, value in payment_data.items():
+                            setattr(payment, attr, value)
+                        payment.save()
+                        sent_payment_ids.append(payment_id)
+                    else:
+                        SalesPayment.objects.create(
+                            transaction=instance, **payment_data
+                        )
+
+                for payment_id, payment in existing_payments.items():
+                    if payment_id not in sent_payment_ids:
+                        payment.delete()
+
+            instance.update_payment_status()
+        return instance

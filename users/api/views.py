@@ -101,10 +101,3 @@ class MyProfileView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_serializer_context(self):
         return {"request": self.request}
-
-
-class TechnicianChoicesAPIView(generics.ListAPIView):
-    queryset = CustomUser.objects.filter(role="technician", is_deleted=False)
-    serializer_class = TechnicianSerializer
-    pagination_class = None
-    permission_classes = [permissions.IsAuthenticated]

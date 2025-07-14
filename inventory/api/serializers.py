@@ -14,137 +14,9 @@ from utils.logger import log_activity
 from utils.inventory import (
     create_stall_with_initial_stocks,
     create_item_with_initial_stock,
+    record_stock_movement,
 )
-from utils.inventory import record_stock_movement
 from expenses.models import Expense
-
-
-class StockPatchSerializer(serializers.ModelSerializer):
-    quantity_adjustment = serializers.DictField(
-        child=serializers.CharField(), required=False
-    )
-
-    class Meta:
-        model = Stock
-        fields = [
-            "quantity",
-            "quantity_adjustment",
-            "low_stock_threshold",
-            "is_deleted",
-        ]
-
-    def validate(self, data):
-        adj = data.get("quantity_adjustment")
-        if adj:
-            if not isinstance(adj, dict):
-                raise serializers.ValidationError(
-                    "quantity_adjustment must be an object."
-                )
-            if "action" not in adj or "amount" not in adj:
-                raise serializers.ValidationError(
-                    "quantity_adjustment needs 'action' and 'amount'"
-                )
-            if adj["action"] not in ["increase", "decrease"]:
-                raise serializers.ValidationError(
-                    "action must be 'increase' or 'decrease'"
-                )
-            try:
-                adj["amount"] = int(adj["amount"])
-            except ValueError:
-                raise serializers.ValidationError("amount must be integer.")
-            if adj["amount"] < 0:
-                raise serializers.ValidationError("amount must be positive.")
-        return data
-
-    def update(self, instance, validated_data):
-        user = self.context["request"].user
-        adj = validated_data.pop("quantity_adjustment", None)
-        original_quantity = instance.quantity
-        original_threshold = instance.low_stock_threshold
-        original_is_deleted = instance.is_deleted
-
-        with transaction.atomic():
-            # Handle quantity adjustment
-            if adj:
-                amount = adj["amount"]
-                if adj["action"] == "increase":
-                    instance.quantity += amount
-                    record_stock_movement(
-                        item=instance.item,
-                        stall=instance.stall,
-                        qty=amount,
-                        source="manual",
-                    )
-                    log_activity(
-                        user,
-                        instance,
-                        "increase_stock",
-                        f"Incremented stock of '{instance.item.name}' by {amount} units.",
-                    )
-                elif adj["action"] == "decrease":
-                    instance.quantity = max(instance.quantity - amount, 0)
-                    record_stock_movement(
-                        item=instance.item,
-                        stall=instance.stall,
-                        qty=-amount,
-                        source="manual",
-                    )
-                    log_activity(
-                        user,
-                        instance,
-                        "decrease_stock",
-                        f"Decremented stock of '{instance.item.name}' by {amount} units.",
-                    )
-            # Direct quantity update
-            elif "quantity" in validated_data:
-                new_quantity = validated_data.get("quantity", instance.quantity)
-                if new_quantity != original_quantity:
-                    diff = new_quantity - original_quantity
-                    instance.quantity = new_quantity
-                    record_stock_movement(
-                        item=instance.item,
-                        stall=instance.stall,
-                        qty=diff,
-                        source="manual",
-                    )
-                    log_activity(
-                        user,
-                        instance,
-                        "update_stock",
-                        f"Updated stock of '{instance.item.name}' from {original_quantity} to {new_quantity} units.",
-                    )
-
-            # Threshold update
-            if "low_stock_threshold" in validated_data:
-                new_threshold = validated_data.get(
-                    "low_stock_threshold", instance.low_stock_threshold
-                )
-                if new_threshold != original_threshold:
-                    instance.low_stock_threshold = new_threshold
-                    log_activity(
-                        user,
-                        instance,
-                        "update_threshold",
-                        f"Updated low stock threshold for '{instance.item.name}' from {original_threshold} to {new_threshold}.",
-                    )
-
-            # Handle soft delete
-            if "is_deleted" in validated_data:
-                new_is_deleted = validated_data.get("is_deleted")
-                if new_is_deleted != original_is_deleted:
-                    instance.is_deleted = new_is_deleted
-                    action = "deleted_stock" if new_is_deleted else "restored_stock"
-                    log_activity(
-                        user,
-                        instance,
-                        action,
-                        f"{'Deleted' if new_is_deleted else 'Restored'} stock of '{instance.item.name}' at stall '{instance.stall.name}'.",
-                    )
-
-            instance.is_low_stock = instance.quantity <= instance.low_stock_threshold
-            instance.save()
-
-        return instance
 
 
 class ProductCategorySerializer(serializers.ModelSerializer):
@@ -159,7 +31,7 @@ class ProductCategorySerializer(serializers.ModelSerializer):
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():
             raise serializers.ValidationError(
-                "A product category with this name already exists."
+                "A category with this name already exists."
             )
         return value
 
@@ -176,29 +48,21 @@ class ItemSerializer(serializers.ModelSerializer):
         exclude = ["created_at", "updated_at", "is_deleted"]
 
     def get_display_name(self, obj):
-        if obj.is_deleted:
-            return f"{obj.name} (Deleted)"
-        return obj.name
+        return f"{obj.name} (Deleted)" if obj.is_deleted else obj.name
 
     def validate(self, data):
         category = data.get("category") or getattr(self.instance, "category", None)
         name = data.get("name") or getattr(self.instance, "name", None)
-
-        qs = Item.objects.filter(
-            name__iexact=name,
-            category=category,
-            is_deleted=False,
-        )
+        qs = Item.objects.filter(name__iexact=name, category=category, is_deleted=False)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():
             raise serializers.ValidationError(
-                "An item with this name, category, and size/spec already exists."
+                "An item with this name & category already exists."
             )
         return data
 
     def create(self, validated_data):
-        user = self.context["request"].user
         return create_item_with_initial_stock(validated_data)
 
 
@@ -208,7 +72,6 @@ class StallSerializer(serializers.ModelSerializer):
         exclude = ["updated_at", "is_deleted"]
 
     def create(self, validated_data):
-        user = self.context["request"].user
         return create_stall_with_initial_stocks(validated_data)
 
 
@@ -237,16 +100,12 @@ class StockReadSerializer(serializers.ModelSerializer):
         return obj.status()
 
     def get_stock_room_quantity(self, obj):
-        stock_room_stock = getattr(obj.item, "stockroomstock", None)
-        if stock_room_stock:
-            return stock_room_stock.quantity
-        return 0
+        stock_room_stock = StockRoomStock.objects.filter(item=obj.item).first()
+        return stock_room_stock.quantity if stock_room_stock else 0
 
     def get_stock_room_status(self, obj):
-        stock_room_stock = getattr(obj.item, "stockroomstock", None)
-        if stock_room_stock:
-            return stock_room_stock.status()
-        return "no_stock"
+        stock_room = StockRoomStock.objects.filter(item=obj.item).first()
+        return stock_room.status() if stock_room else "no_stock"
 
 
 class StockWriteSerializer(serializers.ModelSerializer):
@@ -262,20 +121,68 @@ class StockWriteSerializer(serializers.ModelSerializer):
         fields = ["id", "quantity", "item_id", "stall_id", "low_stock_threshold"]
 
     def validate(self, data):
-        item = data.get("item")
-        stall = data.get("stall")
-        qs = Stock.objects.filter(item=item, stall=stall)
+        qs = Stock.objects.filter(item=data["item"], stall=data["stall"])
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():
             raise serializers.ValidationError(
                 {
                     "non_field_errors": [
-                        f"Stock for item '{item.name}' and stall '{stall.name}' already exists. The combination of item and stall must be unique."
+                        f"Stock for item '{data['item'].name}' at stall '{data['stall'].name}' already exists."
                     ]
                 }
             )
         return data
+
+
+class StockPatchSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Stock
+        fields = ["quantity", "low_stock_threshold", "is_deleted"]
+
+    def update(self, instance, validated_data):
+        user = self.context["request"].user
+        original_qty = instance.quantity
+        original_threshold = instance.low_stock_threshold
+        original_deleted = instance.is_deleted
+
+        with transaction.atomic():
+            if "quantity" in validated_data:
+                new_qty = validated_data["quantity"]
+                diff = new_qty - original_qty
+                instance.quantity = new_qty
+                record_stock_movement(instance.item, instance.stall, diff, "adjustment")
+                log_activity(
+                    user,
+                    instance,
+                    "update_stock",
+                    f"Updated quantity from {original_qty} to {new_qty}",
+                )
+
+            if "low_stock_threshold" in validated_data:
+                new_threshold = validated_data["low_stock_threshold"]
+                instance.low_stock_threshold = new_threshold
+                log_activity(
+                    user,
+                    instance,
+                    "update_threshold",
+                    f"Updated threshold from {original_threshold} to {new_threshold}",
+                )
+
+            if "is_deleted" in validated_data:
+                instance.is_deleted = validated_data["is_deleted"]
+                action = "deleted_stock" if instance.is_deleted else "restored_stock"
+                log_activity(
+                    user,
+                    instance,
+                    action,
+                    f"{'Deleted' if instance.is_deleted else 'Restored'} stock",
+                )
+
+            instance.is_low_stock = instance.quantity <= instance.low_stock_threshold
+            instance.save()
+
+        return instance
 
 
 class StockRoomStockSerializer(serializers.ModelSerializer):
@@ -298,6 +205,15 @@ class StockRoomStockSerializer(serializers.ModelSerializer):
         return obj.status()
 
 
+class StockRestockSerializer(serializers.Serializer):
+    quantity = serializers.IntegerField(min_value=1)
+
+    def validate_quantity(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Quantity must be a positive integer.")
+        return value
+
+
 class StockTransferItemSerializer(serializers.ModelSerializer):
     item = serializers.PrimaryKeyRelatedField(queryset=Item.objects.all())
 
@@ -306,10 +222,9 @@ class StockTransferItemSerializer(serializers.ModelSerializer):
         fields = ["item", "quantity"]
 
     def to_representation(self, instance):
-        """When serializing, show full item details."""
-        data = super().to_representation(instance)
-        data["item"] = ItemSerializer(instance.item).data
-        return data
+        rep = super().to_representation(instance)
+        rep["item"] = ItemSerializer(instance.item).data
+        return rep
 
 
 class StockTransferSerializer(serializers.ModelSerializer):
@@ -344,32 +259,27 @@ class StockTransferSerializer(serializers.ModelSerializer):
         ]
 
     def to_representation(self, instance):
-        """This allows you to safely import inside the method to avoid circular imports"""
         from users.api.serializers import TechnicianSerializer
         from inventory.api.serializers import StallSerializer
 
-        data = super().to_representation(instance)
-
-        data["from_stall"] = (
+        rep = super().to_representation(instance)
+        rep["from_stall"] = (
             StallSerializer(instance.from_stall).data if instance.from_stall else None
         )
-        data["to_stall"] = (
+        rep["to_stall"] = (
             StallSerializer(instance.to_stall).data if instance.to_stall else None
         )
-        data["technician"] = (
+        rep["technician"] = (
             TechnicianSerializer(instance.technician).data
             if instance.technician
             else None
         )
-
-        return data
+        return rep
 
     def get_total_price(self, obj):
-        total = 0
-        for transfer_item in obj.items.all():
-            item_price = transfer_item.item.retail_price or 0
-            total += item_price * transfer_item.quantity
-        return total
+        return sum(
+            (item.item.retail_price or 0) * item.quantity for item in obj.items.all()
+        )
 
     def get_is_paid(self, obj):
         expense = Expense.objects.filter(transfer=obj, source="transfer").first()
@@ -381,182 +291,103 @@ class StockTransferSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         items_data = validated_data.pop("items")
-        from_stall = validated_data.get("from_stall")
-
-        for item_data in items_data:
-            item = item_data["item"]
-            qty = item_data["quantity"]
-
-            if from_stall:
-                stock = Stock.objects.filter(stall=from_stall, item=item).first()
-                if not stock or stock.quantity < qty:
-                    raise ValidationError(
-                        f"Not enough stock of {item.name} in {from_stall.name}"
-                    )
-            else:
-                room_stock = StockRoomStock.objects.filter(item=item).first()
-                if not room_stock or room_stock.quantity < qty:
-                    raise ValidationError(
-                        f"Not enough stock of {item.name} in stock room"
-                    )
-
+        self._check_stock_levels(items_data, validated_data.get("from_stall"))
         with transaction.atomic():
             transfer = StockTransfer.objects.create(**validated_data)
             for item_data in items_data:
                 StockTransferItem.objects.create(transfer=transfer, **item_data)
                 self._adjust_stock(item_data, transfer)
-
         return transfer
-
-    def _adjust_stock(self, item_data, transfer):
-        item, qty = item_data["item"], item_data["quantity"]
-
-        if transfer.from_stall:
-            from_stock = Stock.objects.filter(
-                stall=transfer.from_stall, item=item
-            ).first()
-            if not from_stock or from_stock.quantity < qty:
-                raise ValidationError(
-                    f"Not enough stock of {item.name} in {transfer.from_stall.name}"
-                )
-            from_stock.quantity -= qty
-            from_stock.save()
-            record_stock_movement(
-                item=item,
-                stall=transfer.from_stall,
-                qty=-qty,
-                source="transfer",
-                related_transfer=transfer,
-            )
-        else:
-            room_stock = StockRoomStock.objects.filter(item=item).first()
-            if not room_stock or room_stock.quantity < qty:
-                raise ValidationError(f"Not enough stock of {item.name} in stock room")
-            room_stock.quantity -= qty
-            room_stock.save()
-            record_stock_movement(
-                item=item,
-                stall=None,
-                qty=-qty,
-                source="transfer",
-                related_transfer=transfer,
-            )
-
-        to_stock, created = Stock.objects.get_or_create(
-            stall=transfer.to_stall, item=item, defaults={"quantity": 0}
-        )
-        to_stock.quantity += qty
-        to_stock.save()
-        record_stock_movement(
-            item=item,
-            stall=transfer.to_stall,
-            qty=qty,
-            source="transfer",
-            related_transfer=transfer,
-        )
 
     def update(self, instance, validated_data):
         items_data = validated_data.pop("items", None)
-
         with transaction.atomic():
-            # Update simple fields
             instance.technician = validated_data.get("technician", instance.technician)
             instance.to_stall = validated_data.get("to_stall", instance.to_stall)
             instance.used_for = validated_data.get("used_for", instance.used_for)
             instance.save()
 
-            # Only update items if explicitly provided
             if items_data is not None:
-                # Rollback existing stock for current items
                 for old_item in instance.items.all():
                     self._reverse_stock(old_item, instance)
-
-                # Delete old transfer items
                 instance.items.all().delete()
-
-                # Recreate transfer items and adjust stock
                 for item_data in items_data:
                     StockTransferItem.objects.create(transfer=instance, **item_data)
                     self._adjust_stock(item_data, instance)
-
         return instance
+
+    def _check_stock_levels(self, items_data, from_stall):
+        for item_data in items_data:
+            item, qty = item_data["item"], item_data["quantity"]
+            stock = (
+                Stock.objects.filter(stall=from_stall, item=item).first()
+                if from_stall
+                else StockRoomStock.objects.filter(item=item).first()
+            )
+            if not stock or stock.quantity < qty:
+                location = from_stall.name if from_stall else "stock room"
+                raise ValidationError(f"Not enough stock of {item.name} in {location}")
+
+    def _adjust_stock(self, item_data, transfer):
+        item, qty = item_data["item"], item_data["quantity"]
+        if transfer.from_stall:
+            stock = Stock.objects.get(stall=transfer.from_stall, item=item)
+            stock.quantity -= qty
+            stock.save()
+        else:
+            room_stock = StockRoomStock.objects.get(item=item)
+            room_stock.quantity -= qty
+            room_stock.save()
+
+        to_stock, _ = Stock.objects.get_or_create(
+            stall=transfer.to_stall, item=item, defaults={"quantity": 0}
+        )
+        to_stock.quantity += qty
+        to_stock.save()
 
     def _reverse_stock(self, transfer_item, transfer):
         item, qty = transfer_item.item, transfer_item.quantity
-
-        # return stock to from_stall or stock room
         if transfer.from_stall:
-            stock, _ = Stock.objects.get_or_create(stall=transfer.from_stall, item=item)
+            stock = Stock.objects.get(stall=transfer.from_stall, item=item)
             stock.quantity += qty
             stock.save()
-            record_stock_movement(
-                item=item,
-                stall=transfer.from_stall,
-                qty=qty,
-                source="transfer-reverse",
-                related_transfer=transfer,
-            )
         else:
-            room_stock, _ = StockRoomStock.objects.get_or_create(item=item)
+            room_stock = StockRoomStock.objects.get(item=item)
             room_stock.quantity += qty
             room_stock.save()
-            record_stock_movement(
-                item=item,
-                stall=None,
-                qty=qty,
-                source="transfer-reverse",
-                related_transfer=transfer,
-            )
 
-        # reduce stock from to_stall
-        to_stock = Stock.objects.filter(stall=transfer.to_stall, item=item).first()
-        if to_stock:
-            if to_stock.quantity < qty:
-                raise ValidationError(
-                    f"Cannot rollback {qty} from {item.name} at {transfer.to_stall.name}, only {to_stock.quantity} in stock."
+        to_stock = Stock.objects.get(stall=transfer.to_stall, item=item)
+        if to_stock.quantity < qty:
+            raise ValidationError(
+                f"Cannot rollback {qty} from {item.name} at {transfer.to_stall.name}, only {to_stock.quantity} available."
+            )
+        to_stock.quantity -= qty
+        to_stock.save()
+
+    def _create_stock_movements(self, transfer):
+        for item_data in transfer.items.all():
+            item, qty = item_data.item, item_data.quantity
+            if transfer.from_stall:
+                record_stock_movement(
+                    item=item,
+                    stall=transfer.from_stall,
+                    quantity=-qty,
+                    movement_type="transfer_out",
+                    related_object=transfer,
                 )
-            to_stock.quantity -= qty
-            to_stock.save()
+            else:
+                record_stock_movement(
+                    item=item,
+                    stall=None,
+                    quantity=-qty,
+                    movement_type="transfer_out",
+                    related_object=transfer,
+                )
+
             record_stock_movement(
                 item=item,
                 stall=transfer.to_stall,
-                qty=-qty,
-                source="transfer-reverse",
-                related_transfer=transfer,
+                quantity=qty,
+                movement_type="transfer_in",
+                related_object=transfer,
             )
-
-
-class StockAdjustSerializer(serializers.Serializer):
-    stall_id = serializers.IntegerField()
-    item_id = serializers.IntegerField()
-    quantity = serializers.IntegerField()
-    action = serializers.ChoiceField(
-        choices=[("increase", "Increase"), ("decrease", "Decrease")]
-    )
-
-    def validate(self, data):
-        stall_id = data["stall_id"]
-        item_id = data["item_id"]
-        action = data["action"]
-        quantity = data["quantity"]
-
-        stock = Stock.objects.filter(stall_id=stall_id, item_id=item_id).first()
-        if not stock:
-            raise serializers.ValidationError(
-                "Stock record not found for this stall and item."
-            )
-        if action == "decrease" and stock.quantity < quantity:
-            raise serializers.ValidationError(
-                f"Not enough stock to decrease. Current: {stock.quantity}"
-            )
-        data["stock"] = stock
-        return data
-
-
-class StockRestockSerializer(serializers.Serializer):
-    quantity = serializers.IntegerField()
-
-    def validate_quantity(self, value):
-        if value <= 0:
-            raise serializers.ValidationError("Quantity must be positive.")
-        return value
