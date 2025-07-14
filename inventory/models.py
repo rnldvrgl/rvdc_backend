@@ -269,15 +269,24 @@ class StockTransfer(models.Model):
             )
 
             if manager_user:
+                from_stall_name = (
+                    self.from_stall.name if self.from_stall else "Stock Room"
+                )
+                to_stall_name = self.to_stall.name if self.to_stall else "Unknown"
+
                 Notification.objects.create(
                     user=manager_user,
                     type="expense_created",
                     data={
                         "expense_id": expense.id,
-                        "stall": self.to_stall.name if self.to_stall else "Unknown",
+                        "from_stall": from_stall_name,
+                        "to_stall": to_stall_name,
                         "amount": float(total_price),
                     },
-                    message=f"New expense from stock transfer finalized from {self.from_stall or 'Stock Room'}.",
+                    message=(
+                        f"A stock transfer from {from_stall_name} to {to_stall_name} "
+                        f"Total: ₱{total_price:,.2f}."
+                    ),
                 )
 
 

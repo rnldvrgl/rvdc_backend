@@ -3,6 +3,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from django.db import transaction
+from notifications.models import Notification
+from django.contrib.auth import get_user_model
 
 from inventory.models import (
     Item,
@@ -131,6 +133,27 @@ class StockViewSet(viewsets.ModelViewSet):
             f"Restocked '{stock.item.name}' at '{stock.stall.name}' from {original_quantity} to {stock.quantity}.",
         )
 
+        manager_user = (
+            get_user_model()
+            .objects.filter(assigned_stall=stock.stall, role__in=["manager", "clerk"])
+            .first()
+        )
+
+        if manager_user:
+            Notification.objects.create(
+                user=manager_user,
+                type="restock",
+                data={
+                    "stall": stock.stall.name,
+                    "item": stock.item.name,
+                    "item_id": stock.item.id,
+                    "stock_id": stock.id,
+                    "quantity": quantity,
+                    "new_total": stock.quantity,
+                },
+                message=f"{quantity} {stock.item.unit_of_measure} of '{stock.item.name}' restocked to {stock.stall.name}.",
+            )
+
         return Response(
             {"detail": f"Restocked successfully. New quantity: {stock.quantity}"}
         )
@@ -212,7 +235,7 @@ class StockTransferViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        transfer.finalize(request.user)  # 🔥 FIXED
+        transfer.finalize(request.user)
 
         return Response({"detail": "Stock transfer finalized."})
 

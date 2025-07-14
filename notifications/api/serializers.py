@@ -7,6 +7,7 @@ from rest_framework import serializers
 class NotificationSerializer(serializers.ModelSerializer):
     relative_time = serializers.SerializerMethodField()
     summary = serializers.SerializerMethodField()
+    entity_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Notification
@@ -20,6 +21,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             "created_at",
             "relative_time",
             "summary",
+            "entity_id",
         ]
 
     def get_relative_time(self, obj):
@@ -30,11 +32,18 @@ class NotificationSerializer(serializers.ModelSerializer):
         d = obj.data or {}
 
         if t == "expense_created":
-            stall = d.get("stall")
+            from_stall = d.get("from_stall")
+            to_stall = d.get("to_stall")
             amount = d.get("amount")
-            if stall and amount is not None:
-                return f"New expense for {stall} of {self.format_currency(amount)}"
-            return "New expense created."
+
+            if from_stall and to_stall and amount is not None:
+                return (
+                    f"Transfer expense: {from_stall} ➔ {to_stall} "
+                    f"({self.format_currency(amount)})"
+                )
+            elif to_stall and amount is not None:
+                return f"Expense for {to_stall} ({self.format_currency(amount)})"
+            return "New expense recorded."
 
         elif t == "appointment_reminder":
             client = d.get("client_name")
@@ -52,6 +61,17 @@ class NotificationSerializer(serializers.ModelSerializer):
 
         return obj.message or "Notification"
 
+    def get_entity_id(self, obj):
+        d = obj.data or {}
+        t = obj.type
+
+        if t == "expense_created":
+            return d.get("expense_id")
+        elif t == "appointment_reminder":
+            return d.get("appointment_id")
+        elif t == "stock_low" or t == "restock":
+            return d.get("stock_id") or d.get("item_id")
+        return None
+
     def format_currency(self, amount):
-        # customize this for your local currency
         return f"₱{amount:,.2f}"
