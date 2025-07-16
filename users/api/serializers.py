@@ -82,7 +82,7 @@ class UserSerializer(serializers.ModelSerializer):
             and validated_data.get("is_staff") is False
         ):
             raise serializers.ValidationError(
-                {"is_staff": "You cannot remove your own admin rights."}
+                {"non_field_errors": ["You cannot remove your own admin rights."]}
             )
 
         # handle password change
@@ -93,17 +93,27 @@ class UserSerializer(serializers.ModelSerializer):
             if not current_password:
                 raise serializers.ValidationError(
                     {
-                        "current_password": "Current password is required to set a new password."
+                        "non_field_errors": [
+                            "Current password is required to set a new password."
+                        ]
                     }
                 )
             if not instance.check_password(current_password):
                 raise serializers.ValidationError(
-                    {"current_password": "Current password is incorrect."}
+                    {"non_field_errors": ["Current password is incorrect."]}
+                )
+
+            if new_password == current_password:
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            "New password cannot be the same as the current password."
+                        ]
+                    }
                 )
             instance.set_password(new_password)
 
         if "profile_image" in validated_data and validated_data["profile_image"] == "":
-            # set to default (or None to clear)
             validated_data["profile_image"] = "profile_images/default_image.jpg"
 
         return super().update(instance, validated_data)
