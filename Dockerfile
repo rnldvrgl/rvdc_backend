@@ -1,4 +1,4 @@
-FROM python:3.13.3-alpine
+FROM python:3.13.3-alpine AS base
 
 # Set work directory
 WORKDIR /usr/src/app
@@ -15,5 +15,12 @@ RUN pip install -r requirements.txt
 # Copy project files
 COPY . .
 
-# Start Django server
+# Development stage
+FROM base AS development
 CMD [ "python", "manage.py", "runserver", "0.0.0.0:8000" ]
+
+# Production stage
+FROM base AS production
+RUN chmod +x /usr/src/app/entrypoint.sh
+ENTRYPOINT ["/usr/src/app/entrypoint.sh"]
+CMD [ "gunicorn", "project.wsgi:application", "--bind", "0.0.0.0:8000" ]
