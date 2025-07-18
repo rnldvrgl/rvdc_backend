@@ -7,6 +7,7 @@ from rest_framework.exceptions import NotFound
 from django_filters.rest_framework import DjangoFilterBackend
 from django.core.exceptions import ValidationError
 
+from utils.query import get_role_filtered_queryset
 from sales.models import SalesPayment, SalesTransaction
 from sales.api.serializers import SalesPaymentSerializer, SalesTransactionSerializer
 from utils.sales import void_sales_transaction, unvoid_sales_transaction
@@ -21,12 +22,7 @@ class SalesTransactionViewSet(viewsets.ModelViewSet):
     search_fields = ["client__full_name", "stall__name"]
 
     def get_queryset(self):
-        user = self.request.user
-        if user.role == "admin":
-            return SalesTransaction.objects.all()
-        elif user.role in ["manager", "clerk"] and (user.assigned_stall is not None):
-            return SalesTransaction.objects.filter(stall=user.assigned_stall)
-        return SalesTransaction.objects.none()
+        return get_role_filtered_queryset(self.request, super().get_queryset())
 
     def perform_create(self, serializer):
         serializer.save(sales_clerk=self.request.user)

@@ -1,5 +1,6 @@
 from rest_framework import generics, permissions, filters
 from rest_framework.exceptions import NotFound
+from utils.query import filter_by_date_range
 from users.models import CustomUser
 from users.api.serializers import TechnicianSerializer, UserSerializer
 from django_filters.rest_framework import DjangoFilterBackend
@@ -14,6 +15,9 @@ class UserListView(generics.ListAPIView):
 
     filterset_fields = ["username", "contact_number", "first_name", "last_name", "role"]
     search_fields = ["username", "contact_number", "first_name", "last_name"]
+
+    def get_queryset(self):
+        return filter_by_date_range(self.request, super().get_queryset())
 
 
 # Admin: view, update, or soft delete any specific user
@@ -68,6 +72,9 @@ class TechnicianListView(generics.ListCreateAPIView):
         "city",
         "barangay",
     ]
+
+    def get_queryset(self):
+        return filter_by_date_range(self.request, super().get_queryset())
 
 
 class TechnicianDetailView(generics.RetrieveUpdateDestroyAPIView):

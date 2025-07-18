@@ -2,6 +2,7 @@ from rest_framework import generics, permissions, filters, serializers
 from clients.models import Client
 from clients.api.serializers import ClientSerializer
 from django_filters.rest_framework import DjangoFilterBackend
+from utils.query import filter_by_date_range
 from utils.mixins import LogCreateMixin, LogUpdateMixin, LogSoftDeleteMixin
 
 
@@ -19,6 +20,9 @@ class ClientListCreateView(LogCreateMixin, generics.ListCreateAPIView):
         "barangay",
         "address",
     ]
+
+    def get_queryset(self):
+        return filter_by_date_range(self.request, super().get_queryset())
 
     def perform_create(self, serializer):
         full_name = serializer.validated_data.get("full_name")

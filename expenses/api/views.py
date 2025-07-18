@@ -5,8 +5,10 @@ from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import F, Sum
 from expenses.models import Expense
+from utils.query import get_role_filtered_queryset
 from .serializers import ExpenseSerializer, ExpensePaymentSerializer
 from django.utils import timezone
+from rest_framework.exceptions import PermissionDenied
 
 
 class ExpenseViewSet(viewsets.ModelViewSet):
@@ -18,19 +20,18 @@ class ExpenseViewSet(viewsets.ModelViewSet):
     filterset_fields = ["stall", "created_by", "source"]
 
     def get_queryset(self):
-        if self.request.user.role == "admin":
-            return super().get_queryset()
-        elif (
-            self.request.user.role == "manager"
-            or self.request.user.role == "clerk"
-            and self.request.user.assigned_stall
-        ):
-            return super().get_queryset().filter(stall=self.request.user.assigned_stall)
-        return super().get_queryset().none()
+        return get_role_filtered_queryset(self.request, super().get_queryset())
 
     def perform_create(self, serializer):
+        user = self.request.user
+        stall = serializer.validated_data.get("stall", None)
+
+        # Only admin can create stock room expenses (stall=None)
+        if stall is None and user.role != "admin":
+            raise PermissionDenied("Only admins can add stock room expenses.")
+
         instance = serializer.save(
-            created_by=self.request.user,
+            created_by=user,
             source="manual",
             is_paid=True,
             paid_at=timezone.now(),

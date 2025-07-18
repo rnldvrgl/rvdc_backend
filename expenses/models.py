@@ -3,7 +3,11 @@ from django.db import models
 
 class Expense(models.Model):
     stall = models.ForeignKey(
-        "inventory.Stall", on_delete=models.CASCADE, related_name="expenses"
+        "inventory.Stall",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="expenses",
     )
     total_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     paid_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)

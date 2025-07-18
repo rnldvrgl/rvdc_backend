@@ -26,22 +26,30 @@ from inventory.api.serializers import (
     StockWriteSerializer,
     StockPatchSerializer,
 )
+from utils.query import filter_by_date_range
 from utils.inventory import (
     user_can_manage_stall,
     record_stock_movement,
 )
 from utils.logger import log_activity
 from django_filters.rest_framework import DjangoFilterBackend
+from utils.query import get_role_filtered_queryset
 
 
 class ItemViewSet(viewsets.ModelViewSet):
     queryset = Item.objects.all()
     serializer_class = ItemSerializer
 
+    def get_queryset(self):
+        return filter_by_date_range(self.request, super().get_queryset())
+
 
 class StallViewSet(viewsets.ModelViewSet):
     queryset = Stall.objects.all()
     serializer_class = StallSerializer
+
+    def get_queryset(self):
+        return filter_by_date_range(self.request, super().get_queryset())
 
 
 class StockViewSet(viewsets.ModelViewSet):
@@ -58,12 +66,7 @@ class StockViewSet(viewsets.ModelViewSet):
         return StockReadSerializer
 
     def get_queryset(self):
-        user = self.request.user
-        if user.role == "admin":
-            return Stock.objects.all()
-        elif user.role in ["manager", "clerk"] and (user.assigned_stall is not None):
-            return Stock.objects.filter(stall=user.assigned_stall)
-        return Stock.objects.none()
+        return get_role_filtered_queryset(self.request, super().get_queryset())
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     @transaction.atomic
@@ -171,6 +174,9 @@ class StockRoomStockViewSet(viewsets.ModelViewSet):
     queryset = StockRoomStock.objects.all()
     serializer_class = StockRoomStockSerializer
 
+    def get_queryset(self):
+        return filter_by_date_range(self.request, super().get_queryset())
+
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUser])
     @transaction.atomic
     def restock(self, request, pk=None):
@@ -217,6 +223,9 @@ class ProductCategoryViewSet(viewsets.ModelViewSet):
     queryset = ProductCategory.objects.all()
     serializer_class = ProductCategorySerializer
 
+    def get_queryset(self):
+        return filter_by_date_range(self.request, super().get_queryset())
+
 
 class StockTransferViewSet(viewsets.ModelViewSet):
     queryset = StockTransfer.objects.all()
@@ -226,12 +235,7 @@ class StockTransferViewSet(viewsets.ModelViewSet):
     search_fields = ["from_stall__name", "to_stall__name"]
 
     def get_queryset(self):
-        user = self.request.user
-        if user.role == "admin":
-            return StockTransfer.objects.all()
-        elif user.role in ["manager", "clerk"] and (user.assigned_stall is not None):
-            return StockTransfer.objects.filter(from_stall=user.assigned_stall)
-        return StockTransfer.objects.none()
+        return get_role_filtered_queryset(self.request, super().get_queryset())
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     @transaction.atomic
