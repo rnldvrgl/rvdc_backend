@@ -20,7 +20,11 @@ class ExpenseViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         if self.request.user.role == "admin":
             return super().get_queryset()
-        elif self.request.user.role == "manager" and self.request.user.assigned_stall:
+        elif (
+            self.request.user.role == "manager"
+            or self.request.user.role == "clerk"
+            and self.request.user.assigned_stall
+        ):
             return super().get_queryset().filter(stall=self.request.user.assigned_stall)
         return super().get_queryset().none()
 
