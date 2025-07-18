@@ -317,9 +317,9 @@ class RestocksOverTimeView(APIView):
         stall_filter = get_stall_filter(request)
 
         queryset = (
-            StockTransfer.objects.filter(created_at__range=(start_date, end_date))
+            StockTransfer.objects.filter(transfer_date__range=(start_date, end_date))
             .filter(**stall_filter)
-            .annotate(day=TruncDay("created_at"))
+            .annotate(day=TruncDay("transfer_date"))
             .values("day")
             .annotate(restocked_items=Sum("items__quantity"))
             .order_by("day")
