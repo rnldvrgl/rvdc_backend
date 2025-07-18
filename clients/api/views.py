@@ -10,7 +10,11 @@ class ClientListCreateView(LogCreateMixin, generics.ListCreateAPIView):
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
     filterset_fields = ["full_name", "contact_number"]
     search_fields = [
         "full_name",
@@ -20,6 +24,7 @@ class ClientListCreateView(LogCreateMixin, generics.ListCreateAPIView):
         "barangay",
         "address",
     ]
+    ordering_fields = "__all__"
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())

@@ -15,9 +15,14 @@ class ExpenseViewSet(viewsets.ModelViewSet):
     queryset = Expense.objects.all().order_by("-created_at")
     serializer_class = ExpenseSerializer
     permission_classes = [IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
     search_fields = ["description", "stall__name"]
     filterset_fields = ["stall", "created_by", "source"]
+    ordering_fields = "__all__"
 
     def get_queryset(self):
         return get_role_filtered_queryset(self.request, super().get_queryset())

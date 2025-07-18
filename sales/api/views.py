@@ -17,9 +17,19 @@ class SalesTransactionViewSet(viewsets.ModelViewSet):
     queryset = SalesTransaction.objects.all().order_by("-created_at")
     serializer_class = SalesTransactionSerializer
     permission_classes = [IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
     filterset_fields = ["client__full_name", "stall__name", "payment_status", "voided"]
-    search_fields = ["client__full_name", "stall__name"]
+    search_fields = [
+        "client__full_name",
+        "stall__name",
+        "payment_status",
+        "client__contact_number",
+    ]
+    ordering_fields = "__all__"
 
     def get_queryset(self):
         return get_role_filtered_queryset(self.request, super().get_queryset())

@@ -11,10 +11,15 @@ class UserListView(generics.ListAPIView):
     queryset = CustomUser.all_objects.all()
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAdminUser]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
 
     filterset_fields = ["username", "contact_number", "first_name", "last_name", "role"]
     search_fields = ["username", "contact_number", "first_name", "last_name"]
+    ordering_fields = "__all__"
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
@@ -49,7 +54,11 @@ class TechnicianListView(generics.ListCreateAPIView):
     serializer_class = TechnicianSerializer
     permission_classes = [permissions.IsAuthenticated]
     queryset = CustomUser.objects.filter(role="technician", is_deleted=False)
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
     filterset_fields = [
         "username",
         "contact_number",
@@ -72,6 +81,7 @@ class TechnicianListView(generics.ListCreateAPIView):
         "city",
         "barangay",
     ]
+    ordering_fields = "__all__"
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())

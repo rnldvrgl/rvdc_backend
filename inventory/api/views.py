@@ -39,6 +39,14 @@ from utils.query import get_role_filtered_queryset
 class ItemViewSet(viewsets.ModelViewSet):
     queryset = Item.objects.all()
     serializer_class = ItemSerializer
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_fields = ["name"]
+    search_fields = ["name"]
+    ordering_fields = "__all__"
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
@@ -47,6 +55,15 @@ class ItemViewSet(viewsets.ModelViewSet):
 class StallViewSet(viewsets.ModelViewSet):
     queryset = Stall.objects.all()
     serializer_class = StallSerializer
+    permission_classes = [IsAdminUser]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_fields = ["name"]
+    search_fields = ["name"]
+    ordering_fields = "__all__"
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
@@ -55,6 +72,14 @@ class StallViewSet(viewsets.ModelViewSet):
 class StockViewSet(viewsets.ModelViewSet):
     queryset = Stock.objects.all()
     permission_classes = [IsAuthenticated]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_fields = ["stall", "item"]
+    search_fields = ["stall__name", "item__name"]
+    ordering_fields = "__all__"
 
     def get_serializer_class(self):
         if self.action in ["list", "retrieve"]:
@@ -173,6 +198,14 @@ class StockViewSet(viewsets.ModelViewSet):
 class StockRoomStockViewSet(viewsets.ModelViewSet):
     queryset = StockRoomStock.objects.all()
     serializer_class = StockRoomStockSerializer
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_fields = ["item"]
+    search_fields = ["item__name"]
+    ordering_fields = "__all__"
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
@@ -222,6 +255,14 @@ class StockRoomStockViewSet(viewsets.ModelViewSet):
 class ProductCategoryViewSet(viewsets.ModelViewSet):
     queryset = ProductCategory.objects.all()
     serializer_class = ProductCategorySerializer
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_fields = ["name"]
+    search_fields = ["name"]
+    ordering_fields = "__all__"
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
