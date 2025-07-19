@@ -14,12 +14,6 @@ git pull origin master
 echo ">>> Building Docker containers..."
 $DOCKER_COMPOSE build
 
-echo ">>> Applying Django migrations..."
-$DOCKER_COMPOSE run --rm web python manage.py migrate
-
-echo ">>> Collecting static files..."
-$DOCKER_COMPOSE run --rm web python manage.py collectstatic --noinput
-
 echo ">>> Restarting Docker containers..."
 $DOCKER_COMPOSE down
 $DOCKER_COMPOSE up -d
