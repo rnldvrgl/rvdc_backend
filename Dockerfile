@@ -1,26 +1,37 @@
+# Base image for building and installing dependencies
 FROM python:3.13.3-alpine AS base
 
-# Set work directory
 WORKDIR /usr/src/app
-
-# Prevent Python from writing .pyc files to disc and enable stdout/stderr logging
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Install dependencies
-RUN pip install --upgrade pip
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN apk add --no-cache build-base libpq postgresql-dev
 
-# Copy project files
+COPY requirements.txt .
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
 COPY . .
 
-# Development stage
+# Development stage (not used in production)
 FROM base AS development
-CMD [ "python", "manage.py", "runserver", "0.0.0.0:8000" ]
+CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
 
-# Production stage
-FROM base AS production
+# 🔥 Production stage (this is what matters)
+FROM python:3.13.3-alpine AS production
+
+WORKDIR /usr/src/app
+
+RUN apk add --no-cache build-base libpq postgresql-dev
+
+# Copy requirements and install them again (must do this in this stage!)
+COPY requirements.txt .
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+# Copy everything else
+COPY . .
+
+# Make sure entrypoint script is executable
 RUN chmod +x /usr/src/app/entrypoint.sh
+
 ENTRYPOINT ["/usr/src/app/entrypoint.sh"]
-CMD [ "gunicorn", "project.wsgi:application", "--bind", "0.0.0.0:8000" ]
+CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"]

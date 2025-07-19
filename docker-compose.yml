@@ -1,9 +1,8 @@
 services:
   web:
-    build: 
-      target: development
-    volumes:
-      - .:/usr/src/app/
+    build:
+      context: .
+      target: production
     ports:
       - "8000:8000"
     depends_on:
