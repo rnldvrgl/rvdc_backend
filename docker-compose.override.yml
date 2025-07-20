@@ -1,0 +1,20 @@
+services:
+  web:
+    build:
+      target: development
+    env_file:
+      - .env.local
+    environment:
+      DJANGO_ENV_FILE: .env.local
+    command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+    volumes:
+      - .:/usr/src/app
+
+  db:
+    environment:
+      POSTGRES_DB: rvdc_db_local
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+
+volumes:
+  postgres_data_dev:
