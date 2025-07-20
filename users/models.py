@@ -32,7 +32,8 @@ class CustomUser(AbstractUser):
     contact_number = models.CharField(max_length=15, null=True, blank=True)
     profile_image = models.ImageField(
         upload_to="profile_images/",
-        default="images/default_image.jpg",
+        null=True,
+        blank=True,
     )
     sss_number = models.CharField(max_length=50, blank=True, null=True)
     philhealth_number = models.CharField(max_length=50, blank=True, null=True)

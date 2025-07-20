@@ -114,6 +114,6 @@ class UserSerializer(serializers.ModelSerializer):
             instance.set_password(new_password)
 
         if "profile_image" in validated_data and validated_data["profile_image"] == "":
-            validated_data["profile_image"] = "profile_images/default_image.jpg"
+            validated_data["profile_image"] = None
 
         return super().update(instance, validated_data)
