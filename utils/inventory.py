@@ -61,6 +61,9 @@ def create_item_with_initial_stock(validated_data, user=None):
         name=validated_data["name"],
         category=validated_data["category"],
         retail_price=validated_data["retail_price"],
+        wholesale_price=validated_data.get("wholesale_price", 0),
+        technician_price=validated_data.get("technician_price", 0),
+        cost_price=validated_data.get("cost_price", 0),
         unit_of_measure=validated_data.get("unit_of_measure", "pcs"),
         description=validated_data.get("description"),
     )
