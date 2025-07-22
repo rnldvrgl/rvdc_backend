@@ -11,8 +11,14 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         # Step 1: Create default stalls
         default_stalls = [
-            {"name": "Main Stall", "location": "A-02"},
-            {"name": "Sub Stall", "location": "A-03"},
+            {
+                "name": "Main Stall",
+                "location": "A-02 MRL Building, Mc. Arthur Hiway, Mabiga, Mabalacat City, Pampanga",
+            },
+            {
+                "name": "Sub Stall",
+                "location": "A-03 MRL Building, Mc. Arthur Hiway, Mabiga, Mabalacat City, Pampanga",
+            },
         ]
 
         stall_map = {}
