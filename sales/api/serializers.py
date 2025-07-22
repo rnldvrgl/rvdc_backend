@@ -56,6 +56,9 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
         max_digits=10, decimal_places=2, read_only=True
     )
     payment_status = serializers.CharField(read_only=True)
+    change_amount = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
+    )
 
     class Meta:
         model = SalesTransaction
@@ -67,6 +70,7 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             "system_receipt_number",
             "computed_total",
             "total_paid",
+            "change_amount",
             "payment_status",
             "items",
             "payments",

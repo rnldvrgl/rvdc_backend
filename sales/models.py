@@ -51,6 +51,8 @@ class SalesTransaction(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    change_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
     class Meta:
         ordering = ["-updated_at"]
 
@@ -70,21 +72,23 @@ class SalesTransaction(models.Model):
         return sum(payment.amount for payment in self.payments.all())
 
     def update_payment_status(self):
-        voided = self.voided
-        total = self.computed_total
-        paid = self.total_paid
-
-        if voided:
+        if self.voided:
             self.payment_status = PaymentStatus.VOIDED
-
-        if paid == 0:
-            self.payment_status = PaymentStatus.UNPAID
-        elif paid < total:
-            self.payment_status = PaymentStatus.PARTIAL
+            self.change_amount = 0
         else:
-            self.payment_status = PaymentStatus.PAID
+            total = self.computed_total
+            paid = self.total_paid
 
-        self.save()
+            if paid == 0:
+                self.payment_status = PaymentStatus.UNPAID
+            elif paid < total:
+                self.payment_status = PaymentStatus.PARTIAL
+            else:
+                self.payment_status = PaymentStatus.PAID
+
+            self.change_amount = max(paid - total, 0)
+
+        self.save(update_fields=["payment_status", "change_amount"])
 
     def soft_delete(self):
         self.is_deleted = True

@@ -55,6 +55,7 @@ INSTALLED_APPS = [
     "notifications",
     "choices",
     "analytics",
+    "remittances",
     # "services",
 ]
 

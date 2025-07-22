@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from expenses.models import Expense, ExpenseItem
 from inventory.api.serializers import StallSerializer, StockTransferSerializer
+from inventory.models import Stall
 
 
 class ExpenseItemSerializer(serializers.ModelSerializer):
@@ -20,13 +21,17 @@ class ExpenseItemSerializer(serializers.ModelSerializer):
 class ExpenseSerializer(serializers.ModelSerializer):
     items = ExpenseItemSerializer(many=True, read_only=True)
     transfer = StockTransferSerializer(read_only=True)
-    stall = serializers.SerializerMethodField()
+    stall = serializers.PrimaryKeyRelatedField(
+        queryset=Stall.objects.all(), write_only=True, required=False
+    )
+    stall_data = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Expense
         fields = [
             "id",
             "stall",
+            "stall_data",
             "total_price",
             "paid_amount",
             "paid_at",
@@ -45,7 +50,7 @@ class ExpenseSerializer(serializers.ModelSerializer):
             "is_paid",
         ]
 
-    def get_stall(self, obj):
+    def get_stall_data(self, obj):
         if obj.stall:
             return StallSerializer(obj.stall).data
         return {"name": "Stock Room"}
