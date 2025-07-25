@@ -9,6 +9,9 @@ from utils.query import get_role_filtered_queryset
 from .serializers import ExpenseSerializer, ExpensePaymentSerializer
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
+from utils.filters.options import get_stall_options, get_user_options
+from utils.filters.role_filters import get_role_based_filter_response
+from expenses.api.filters import ExpenseFilter
 
 
 class ExpenseViewSet(viewsets.ModelViewSet):
@@ -20,12 +23,51 @@ class ExpenseViewSet(viewsets.ModelViewSet):
         filters.SearchFilter,
         filters.OrderingFilter,
     ]
+    filterset_class = ExpenseFilter
     search_fields = ["description", "stall__name"]
     filterset_fields = ["stall", "created_by", "source"]
-    ordering_fields = "__all__"
+    ordering_fields = [
+        "created_at",
+        "updated_at",
+        "total_price",
+        "paid_amount",
+        "paid_at",
+        "description",
+    ]
+    ordering = ["-created_at"]
 
     def get_queryset(self):
         return get_role_filtered_queryset(self.request, super().get_queryset())
+
+    @action(detail=False, methods=["get"], url_path="filters")
+    def get_filters(self, request):
+        filters_config = {
+            "stall": {
+                "options": get_stall_options,
+                "exclude_for": ["clerk", "manager"],
+            },
+            "source": {
+                "options": lambda: [
+                    {"label": "Manual", "value": "manual"},
+                    {"label": "Stock Transfer", "value": "transfer"},
+                ]
+            },
+            "is_paid": {
+                "options": lambda: [
+                    {"label": "Paid", "value": "true"},
+                    {"label": "Unpaid", "value": "false"},
+                ],
+            },
+        }
+
+        ordering_config = [
+            {"label": "Created At", "value": "created_at"},
+            {"label": "Paid At", "value": "paid_at"},
+            {"label": "Total Price", "value": "total_price"},
+            {"label": "Paid Amount", "value": "paid_amount"},
+        ]
+
+        return get_role_based_filter_response(request, filters_config, ordering_config)
 
     def perform_create(self, serializer):
         user = self.request.user

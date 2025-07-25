@@ -40,6 +40,7 @@ from utils.filters.options import (
     get_status_options,
     get_technician_options,
     get_unit_of_measure_options,
+    get_stall_options,
 )
 
 from utils.query import filter_by_date_range, get_transfer_role_filtered_queryset
@@ -164,9 +165,7 @@ class StockViewSet(viewsets.ModelViewSet):
     def get_filters(self, request):
         filters_config = {
             "stall": {
-                "options": lambda: format_options(
-                    Stall.objects.filter(is_deleted=False)
-                ),
+                "options": get_stall_options,
                 "exclude_for": ["clerk", "manager"],
             },
             "status": {
@@ -314,7 +313,7 @@ class StockRoomStockViewSet(viewsets.ModelViewSet):
         ordering_config = [
             {"label": "Item Name", "value": "item__name"},
             {"label": "Quantity", "value": "quantity"},
-            {"label": "Last Updated", "value": "-updated_at"},
+            {"label": "Last Updated", "value": "updated_at"},
         ]
 
         return get_role_based_filter_response(request, filters_config, ordering_config)

@@ -1,5 +1,5 @@
 from typing import List, Dict
-from inventory.models import Item
+from inventory.models import Item, Stall
 from django.db.models.functions import Concat
 from django.db.models import F, Value
 from users.models import CustomUser
@@ -31,3 +31,17 @@ def get_technician_options() -> List[Dict[str, str]]:
         .values("id", "full_name")
     )
     return [{"label": t["full_name"], "value": str(t["id"])} for t in technicians]
+
+
+def get_stall_options() -> List[Dict[str, str]]:
+    stalls = Stall.objects.filter(is_deleted=False).values("id", "name")
+    return [{"label": s["name"], "value": str(s["id"])} for s in stalls]
+
+
+def get_user_options() -> List[Dict[str, str]]:
+    users = (
+        CustomUser.objects.filter(role__in=["clerk", "manager"], is_deleted=False)
+        .annotate(full_name=Concat(F("first_name"), Value(" "), F("last_name")))
+        .values("id", "full_name")
+    )
+    return [{"label": u["full_name"], "value": str(u["id"])} for u in users]
