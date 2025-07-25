@@ -1,5 +1,5 @@
 from typing import List, Dict
-from inventory.models import Item, Stall
+from inventory.models import Item, Stall, ProductCategory
 from django.db.models.functions import Concat
 from django.db.models import F, Value
 from users.models import CustomUser
@@ -45,3 +45,8 @@ def get_user_options() -> List[Dict[str, str]]:
         .values("id", "full_name")
     )
     return [{"label": u["full_name"], "value": str(u["id"])} for u in users]
+
+
+def get_product_category_options() -> List[Dict[str, str]]:
+    categories = ProductCategory.objects.filter(is_deleted=False).values("id", "name")
+    return [{"label": c["name"], "value": str(c["id"])} for c in categories]

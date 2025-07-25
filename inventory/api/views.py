@@ -41,6 +41,7 @@ from utils.filters.options import (
     get_technician_options,
     get_unit_of_measure_options,
     get_stall_options,
+    get_product_category_options,
 )
 
 from utils.query import filter_by_date_range, get_transfer_role_filtered_queryset
@@ -74,9 +75,7 @@ class ItemViewSet(viewsets.ModelViewSet):
     def get_filters(self, request):
         filters_config = {
             "category": {
-                "options": lambda: format_options(
-                    ProductCategory.objects.filter(is_deleted=False)
-                ),
+                "options": get_product_category_options,
             },
             "unit_of_measure": {
                 "options": get_unit_of_measure_options,
@@ -300,10 +299,8 @@ class StockRoomStockViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):
         filters_config = {
-            "item": {
-                "options": lambda: format_options(
-                    Item.objects.filter(is_deleted=False)
-                ),
+            "category": {
+                "options": get_product_category_options,
             },
             "status": {
                 "options": get_status_options,
