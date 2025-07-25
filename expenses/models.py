@@ -27,7 +27,11 @@ class Expense(models.Model):
         default="manual",
     )
     transfer = models.OneToOneField(
-        StockTransfer, on_delete=models.CASCADE, related_name="expense"
+        StockTransfer,
+        on_delete=models.CASCADE,
+        related_name="expense",
+        null=True,
+        blank=True,
     )
 
     def save(self, *args, **kwargs):
