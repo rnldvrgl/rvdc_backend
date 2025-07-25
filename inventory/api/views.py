@@ -5,7 +5,7 @@ from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from django.db import transaction
 from notifications.models import Notification
 from django.contrib.auth import get_user_model
-from inventory.api.filters import StockFilter, StockRoomFilter
+from inventory.api.filters import ItemFilter, StockFilter, StockRoomFilter
 
 from inventory.models import (
     Item,
@@ -27,6 +27,12 @@ from inventory.api.serializers import (
     StockWriteSerializer,
     StockPatchSerializer,
 )
+from utils.filters.base import (
+    format_options,
+)
+from utils.filters.role_filters import get_role_based_filter_response
+from utils.filters.options import get_status_options, get_unit_of_measure_options
+
 from utils.query import filter_by_date_range
 from utils.inventory import (
     user_can_manage_stall,
@@ -45,12 +51,37 @@ class ItemViewSet(viewsets.ModelViewSet):
         filters.SearchFilter,
         filters.OrderingFilter,
     ]
-    filterset_fields = ["name"]
+    filterset_class = ItemFilter
     search_fields = ["name"]
     ordering_fields = "__all__"
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
+
+    @action(detail=False, methods=["get"], url_path="filters")
+    def get_filters(self, request):
+        filters_config = {
+            "category": {
+                "options": lambda: format_options(
+                    ProductCategory.objects.filter(is_deleted=False)
+                ),
+            },
+            "unit_of_measure": {
+                "options": get_unit_of_measure_options,
+            },
+        }
+
+        ordering_config = [
+            {"label": "Name", "value": "name"},
+            {"label": "Category", "value": "category__name"},
+            {"label": "Unit", "value": "unit_of_measure"},
+        ]
+
+        return get_role_based_filter_response(
+            request,
+            filters_config,
+            ordering_config,
+        )
 
 
 class StallViewSet(viewsets.ModelViewSet):
@@ -96,25 +127,24 @@ class StockViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):
-        stalls = Stall.objects.filter(is_deleted=False).values("id", "name")
-        return Response(
-            {
-                "filters": {
-                    "stall": [
-                        {"label": s["name"], "value": str(s["id"])} for s in stalls
-                    ],
-                    "status": [
-                        {"label": "No Stock", "value": "no_stock"},
-                        {"label": "Low Stock", "value": "low_stock"},
-                        {"label": "High Stock", "value": "high_stock"},
-                    ],
-                },
-                "ordering": [
-                    {"label": "Item Name", "value": "item__name"},
-                    {"label": "Quantity", "value": "quantity"},
-                ],
-            }
-        )
+        filters_config = {
+            "stall": {
+                "options": lambda: format_options(
+                    Stall.objects.filter(is_deleted=False)
+                ),
+                "exclude_for": ["clerk", "manager"],
+            },
+            "status": {
+                "options": get_status_options,
+            },
+        }
+
+        ordering_config = [
+            {"label": "Item Name", "value": "item__name"},
+            {"label": "Quantity", "value": "quantity"},
+        ]
+
+        return get_role_based_filter_response(request, filters_config, ordering_config)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     @transaction.atomic
@@ -235,22 +265,24 @@ class StockRoomStockViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):
-        items = Item.objects.filter(is_deleted=False).values("id", "name")
-        return Response(
-            {
-                "filters": {
-                    "item": [
-                        {"label": i["name"], "value": str(i["id"])} for i in items
-                    ],
-                    "status": [
-                        {"label": "No Stock", "value": "no_stock"},
-                        {"label": "Low Stock", "value": "low_stock"},
-                        {"label": "High Stock", "value": "high_stock"},
-                    ],
-                },
-                "ordering": ["item__name", "quantity", "updated_at", "-updated_at"],
-            }
-        )
+        filters_config = {
+            "item": {
+                "options": lambda: format_options(
+                    Item.objects.filter(is_deleted=False)
+                ),
+            },
+            "status": {
+                "options": get_status_options,
+            },
+        }
+
+        ordering_config = [
+            {"label": "Item Name", "value": "item__name"},
+            {"label": "Quantity", "value": "quantity"},
+            {"label": "Last Updated", "value": "-updated_at"},
+        ]
+
+        return get_role_based_filter_response(request, filters_config, ordering_config)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUser])
     @transaction.atomic

@@ -1,6 +1,6 @@
 from django.db import models
 from django_filters import rest_framework as filters
-from inventory.models import Stock, StockRoomStock
+from inventory.models import Item, Stock, StockRoomStock
 
 
 class StatusFilterMixin:
@@ -31,3 +31,9 @@ class StockRoomFilter(StatusFilterMixin, filters.FilterSet):
     class Meta:
         model = StockRoomStock
         fields = ["item", "status"]
+
+
+class ItemFilter(filters.FilterSet):
+    class Meta:
+        model = Item
+        fields = ["name", "category", "unit_of_measure"]
