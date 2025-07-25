@@ -25,7 +25,6 @@ class ExpenseViewSet(viewsets.ModelViewSet):
     ]
     filterset_class = ExpenseFilter
     search_fields = ["description", "stall__name"]
-    filterset_fields = ["stall", "created_by", "source"]
     ordering_fields = [
         "created_at",
         "updated_at",

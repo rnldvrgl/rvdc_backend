@@ -11,6 +11,10 @@ from utils.query import get_role_filtered_queryset
 from sales.models import SalesPayment, SalesTransaction
 from sales.api.serializers import SalesPaymentSerializer, SalesTransactionSerializer
 from utils.sales import void_sales_transaction, unvoid_sales_transaction
+from sales.api.filters import SalesTransactionFilter
+
+from utils.filters.options import get_stall_options
+from utils.filters.role_filters import get_role_based_filter_response
 
 
 class SalesTransactionViewSet(viewsets.ModelViewSet):
@@ -22,7 +26,7 @@ class SalesTransactionViewSet(viewsets.ModelViewSet):
         filters.SearchFilter,
         filters.OrderingFilter,
     ]
-    filterset_fields = ["client__full_name", "stall__name", "payment_status", "voided"]
+    filterset_class = SalesTransactionFilter
     search_fields = [
         "client__full_name",
         "stall__name",
@@ -33,6 +37,32 @@ class SalesTransactionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return get_role_filtered_queryset(self.request, super().get_queryset())
+
+    @action(detail=False, methods=["get"], url_path="filters")
+    def get_filters(self, request):
+        filters_config = {
+            "stall": {"options": get_stall_options},
+            "payment_status": {
+                "options": lambda: [
+                    {"label": "Paid", "value": "paid"},
+                    {"label": "Unpaid", "value": "unpaid"},
+                    {"label": "Partial", "value": "partial"},
+                ]
+            },
+            "voided": {
+                "options": lambda: [
+                    {"label": "Voided", "value": "true"},
+                    {"label": "Not Voided", "value": "false"},
+                ]
+            },
+        }
+
+        ordering_config = [
+            {"label": "Date", "value": "created_at"},
+            {"label": "Stall", "value": "stall__name"},
+        ]
+
+        return get_role_based_filter_response(request, filters_config, ordering_config)
 
     def perform_create(self, serializer):
         serializer.save(sales_clerk=self.request.user)
