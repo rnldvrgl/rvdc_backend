@@ -32,7 +32,7 @@ class StockRoomFilter(StatusFilterMixin, filters.FilterSet):
 
     class Meta:
         model = StockRoomStock
-        fields = ["item", "status"]
+        fields = ["category", "status"]
 
 
 class ItemFilter(filters.FilterSet):
