@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from django.db import transaction
 from notifications.models import Notification
 from django.contrib.auth import get_user_model
+from inventory.api.filters import StockFilter, StockRoomFilter
 
 from inventory.models import (
     Item,
@@ -77,7 +78,7 @@ class StockViewSet(viewsets.ModelViewSet):
         filters.SearchFilter,
         filters.OrderingFilter,
     ]
-    filterset_fields = ["stall", "item"]
+    filterset_class = StockFilter
     search_fields = ["stall__name", "item__name"]
     ordering_fields = "__all__"
 
@@ -92,6 +93,28 @@ class StockViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return get_role_filtered_queryset(self.request, super().get_queryset())
+
+    @action(detail=False, methods=["get"], url_path="filters")
+    def get_filters(self, request):
+        stalls = Stall.objects.filter(is_deleted=False).values("id", "name")
+        return Response(
+            {
+                "filters": {
+                    "stall": [
+                        {"label": s["name"], "value": str(s["id"])} for s in stalls
+                    ],
+                    "status": [
+                        {"label": "No Stock", "value": "no_stock"},
+                        {"label": "Low Stock", "value": "low_stock"},
+                        {"label": "High Stock", "value": "high_stock"},
+                    ],
+                },
+                "ordering": [
+                    {"label": "Item Name", "value": "item__name"},
+                    {"label": "Quantity", "value": "quantity"},
+                ],
+            }
+        )
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     @transaction.atomic
@@ -203,12 +226,31 @@ class StockRoomStockViewSet(viewsets.ModelViewSet):
         filters.SearchFilter,
         filters.OrderingFilter,
     ]
-    filterset_fields = ["item"]
+    filterset_class = StockRoomFilter
     search_fields = ["item__name"]
     ordering_fields = "__all__"
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
+
+    @action(detail=False, methods=["get"], url_path="filters")
+    def get_filters(self, request):
+        items = Item.objects.filter(is_deleted=False).values("id", "name")
+        return Response(
+            {
+                "filters": {
+                    "item": [
+                        {"label": i["name"], "value": str(i["id"])} for i in items
+                    ],
+                    "status": [
+                        {"label": "No Stock", "value": "no_stock"},
+                        {"label": "Low Stock", "value": "low_stock"},
+                        {"label": "High Stock", "value": "high_stock"},
+                    ],
+                },
+                "ordering": ["item__name", "quantity", "updated_at", "-updated_at"],
+            }
+        )
 
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUser])
     @transaction.atomic
