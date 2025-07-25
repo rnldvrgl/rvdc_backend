@@ -1,5 +1,7 @@
 from django.db import models
 
+from inventory.models import StockTransfer
+
 
 class Expense(models.Model):
     stall = models.ForeignKey(
@@ -24,8 +26,8 @@ class Expense(models.Model):
         choices=[("manual", "Manual"), ("transfer", "Transfer")],
         default="manual",
     )
-    transfer = models.ForeignKey(
-        "inventory.StockTransfer", on_delete=models.CASCADE, null=True, blank=True
+    transfer = models.OneToOneField(
+        StockTransfer, on_delete=models.CASCADE, related_name="expense"
     )
 
     def save(self, *args, **kwargs):

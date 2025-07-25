@@ -282,21 +282,28 @@ class StockTransferSerializer(serializers.ModelSerializer):
         )
 
     def get_is_paid(self, obj):
-        expense = Expense.objects.filter(transfer=obj, source="transfer").first()
-        return expense.is_paid if expense else False
+        try:
+            return obj.expense.is_paid
+        except Expense.DoesNotExist:
+            return False
 
     def get_paid_at(self, obj):
-        expense = Expense.objects.filter(transfer=obj, source="transfer").first()
-        return expense.paid_at if expense else None
+        try:
+            return obj.expense.paid_at
+        except Expense.DoesNotExist:
+            return None
+
+    def _save_items(self, transfer, items_data):
+        for item_data in items_data:
+            StockTransferItem.objects.create(transfer=transfer, **item_data)
+            self._adjust_stock(item_data, transfer)
 
     def create(self, validated_data):
         items_data = validated_data.pop("items")
         self._check_stock_levels(items_data, validated_data.get("from_stall"))
         with transaction.atomic():
             transfer = StockTransfer.objects.create(**validated_data)
-            for item_data in items_data:
-                StockTransferItem.objects.create(transfer=transfer, **item_data)
-                self._adjust_stock(item_data, transfer)
+            self._save_items(transfer, items_data)
         return transfer
 
     def update(self, instance, validated_data):
@@ -311,9 +318,7 @@ class StockTransferSerializer(serializers.ModelSerializer):
                 for old_item in instance.items.all():
                     self._reverse_stock(old_item, instance)
                 instance.items.all().delete()
-                for item_data in items_data:
-                    StockTransferItem.objects.create(transfer=instance, **item_data)
-                    self._adjust_stock(item_data, instance)
+                self._save_items(instance, items_data)
         return instance
 
     def _check_stock_levels(self, items_data, from_stall):

@@ -15,6 +15,8 @@ services:
       POSTGRES_DB: rvdc_db_local
     volumes:
       - postgres_data_dev:/var/lib/postgresql/data
+    ports:
+      - "5433:5432" 
 
 volumes:
   postgres_data_dev:

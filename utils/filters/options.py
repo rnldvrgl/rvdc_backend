@@ -1,5 +1,8 @@
 from typing import List, Dict
 from inventory.models import Item
+from django.db.models.functions import Concat
+from django.db.models import F, Value
+from users.models import CustomUser
 
 
 def get_status_options() -> List[Dict[str, str]]:
@@ -19,3 +22,12 @@ def get_unit_of_measure_options() -> List[Dict[str, str]]:
         .exclude(unit_of_measure__exact="")
     )
     return [{"label": u, "value": u} for u in units]
+
+
+def get_technician_options() -> List[Dict[str, str]]:
+    technicians = (
+        CustomUser.objects.filter(role="technician", is_deleted=False)
+        .annotate(full_name=Concat(F("first_name"), Value(" "), F("last_name")))
+        .values("id", "full_name")
+    )
+    return [{"label": t["full_name"], "value": str(t["id"])} for t in technicians]

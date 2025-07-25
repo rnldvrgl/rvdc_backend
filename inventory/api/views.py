@@ -5,7 +5,12 @@ from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from django.db import transaction
 from notifications.models import Notification
 from django.contrib.auth import get_user_model
-from inventory.api.filters import ItemFilter, StockFilter, StockRoomFilter
+from inventory.api.filters import (
+    ItemFilter,
+    StockFilter,
+    StockRoomFilter,
+    StockTransferFilter,
+)
 
 from inventory.models import (
     Item,
@@ -31,9 +36,13 @@ from utils.filters.base import (
     format_options,
 )
 from utils.filters.role_filters import get_role_based_filter_response
-from utils.filters.options import get_status_options, get_unit_of_measure_options
+from utils.filters.options import (
+    get_status_options,
+    get_technician_options,
+    get_unit_of_measure_options,
+)
 
-from utils.query import filter_by_date_range
+from utils.query import filter_by_date_range, get_transfer_role_filtered_queryset
 from utils.inventory import (
     user_can_manage_stall,
     record_stock_movement,
@@ -41,6 +50,8 @@ from utils.inventory import (
 from utils.logger import log_activity
 from django_filters.rest_framework import DjangoFilterBackend
 from utils.query import get_role_filtered_queryset
+from rest_framework.exceptions import ValidationError
+from django.utils import timezone
 
 
 class ItemViewSet(viewsets.ModelViewSet):
@@ -68,6 +79,30 @@ class ItemViewSet(viewsets.ModelViewSet):
             },
             "unit_of_measure": {
                 "options": get_unit_of_measure_options,
+            },
+            "retail_price": {
+                "options": lambda: [
+                    {"label": "Is Zero", "value": "true"},
+                    {"label": "Is Not Zero", "value": "false"},
+                ],
+            },
+            "wholesale_price": {
+                "options": lambda: [
+                    {"label": "Is Zero", "value": "true"},
+                    {"label": "Is Not Zero", "value": "false"},
+                ],
+            },
+            "technician_price": {
+                "options": lambda: [
+                    {"label": "Is Zero", "value": "true"},
+                    {"label": "Is Not Zero", "value": "false"},
+                ],
+            },
+            "cost_price": {
+                "options": lambda: [
+                    {"label": "Is Zero", "value": "true"},
+                    {"label": "Is Not Zero", "value": "false"},
+                ],
             },
         }
 
@@ -346,11 +381,48 @@ class StockTransferViewSet(viewsets.ModelViewSet):
     queryset = StockTransfer.objects.all()
     serializer_class = StockTransferSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_fields = ["from_stall", "to_stall"]
+    filterset_class = StockTransferFilter
     search_fields = ["from_stall__name", "to_stall__name"]
 
     def get_queryset(self):
         return get_role_filtered_queryset(self.request, super().get_queryset())
+
+
+class StockTransferViewSet(viewsets.ModelViewSet):
+    queryset = StockTransfer.objects.all()
+    serializer_class = StockTransferSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_class = StockTransferFilter
+    search_fields = ["from_stall__name", "to_stall__name"]
+
+    def get_queryset(self):
+        return get_transfer_role_filtered_queryset(self.request, super().get_queryset())
+
+    @action(detail=False, methods=["get"], url_path="filters")
+    def get_filters(self, request):
+        filters_config = {
+            "technician": {"options": get_technician_options},
+            "is_finalized": {
+                "options": lambda: [
+                    {"label": "Finalized", "value": "true"},
+                    {"label": "Not Finalized", "value": "false"},
+                ],
+            },
+            "is_paid": {
+                "options": lambda: [
+                    {"label": "Paid", "value": "true"},
+                    {"label": "Unpaid", "value": "false"},
+                ],
+            },
+        }
+
+        ordering_config = [
+            {"label": "Transfer Date", "value": "transfer_date"},
+            {"label": "From Stall", "value": "from_stall__name"},
+            {"label": "To Stall", "value": "to_stall__name"},
+        ]
+
+        return get_role_based_filter_response(request, filters_config, ordering_config)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     @transaction.atomic
@@ -361,14 +433,14 @@ class StockTransferViewSet(viewsets.ModelViewSet):
                 {"detail": "You do not have permission to finalize this transfer."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-
         transfer.finalize(request.user)
-
         return Response({"detail": "Stock transfer finalized."})
 
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUser])
     @transaction.atomic
-    def mark_expense_as_paid(self, request, pk=None):
-        transfer = self.get_object()
-        transfer.mark_expense_as_paid()
-        return Response({"detail": "Marked expense as paid."})
+    def mark_expense_as_paid(self):
+        if not hasattr(self, "expense"):
+            raise ValidationError("This stock transfer has no linked expense.")
+        self.expense.is_paid = True
+        self.expense.paid_at = timezone.now()
+        self.expense.save()

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from django.db.models import Q
 
 
 def filter_by_date_range(request, queryset):
@@ -23,6 +24,21 @@ def get_role_filtered_queryset(request, base_queryset):
 
     if user.role in ["manager", "clerk"] and user.assigned_stall:
         qs = base_queryset.filter(stall=user.assigned_stall)
+        return filter_by_date_range(request, qs)
+
+    return base_queryset.none()
+
+
+def get_transfer_role_filtered_queryset(request, base_queryset):
+    user = request.user
+
+    if user.role == "admin":
+        return filter_by_date_range(request, base_queryset)
+
+    if user.role in ["manager", "clerk"] and user.assigned_stall:
+        qs = base_queryset.filter(
+            Q(from_stall=user.assigned_stall) | Q(to_stall=user.assigned_stall)
+        )
         return filter_by_date_range(request, qs)
 
     return base_queryset.none()
