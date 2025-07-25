@@ -28,12 +28,12 @@ class StockFilter(StatusFilterMixin, filters.FilterSet):
 
 
 class StockRoomFilter(StatusFilterMixin, filters.FilterSet):
-    status = filters.CharFilter(method="filter_by_status")
     category = filters.NumberFilter(field_name="item__category_id", lookup_expr="exact")
+    status = filters.CharFilter(method="filter_by_status")
 
     class Meta:
         model = StockRoomStock
-        fields = ["category", "status"]
+        fields = ["status"]
 
 
 class ItemFilter(filters.FilterSet):
