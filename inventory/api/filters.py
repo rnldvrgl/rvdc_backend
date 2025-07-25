@@ -1,6 +1,6 @@
 from django.db import models
 from django_filters import rest_framework as filters
-from inventory.models import Item, Stock, StockRoomStock, StockTransfer
+from inventory.models import Item, Stock, StockRoomStock, StockTransfer, ProductCategory
 from users.models import CustomUser
 from utils.filters.base import make_zero_filter
 
@@ -29,6 +29,7 @@ class StockFilter(StatusFilterMixin, filters.FilterSet):
 
 class StockRoomFilter(StatusFilterMixin, filters.FilterSet):
     status = filters.CharFilter(method="filter_by_status")
+    category = filters.NumberFilter(field_name="item__category_id", lookup_expr="exact")
 
     class Meta:
         model = StockRoomStock
