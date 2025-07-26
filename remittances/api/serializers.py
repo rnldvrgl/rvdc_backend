@@ -49,7 +49,6 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             "id",
             "stall",
             "stall_data",
-            "date",
             "total_sales_cash",
             "total_sales_gcash",
             "total_sales_credit",
