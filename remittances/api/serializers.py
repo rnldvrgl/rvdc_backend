@@ -103,7 +103,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         breakdown_data = validated_data.pop("cash_breakdown", None)
         notes = validated_data.pop("notes", "")
         stall = validated_data.pop("stall")
-        date_val = validated_data.pop("date", date.today())
+        date_val = date.today()
         user = self.context["request"].user
 
         def sum_sales(payment_type: str):
@@ -155,6 +155,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             total_sales_debit=total_sales_debit,
             total_sales_cheque=total_sales_cheque,
             total_expenses=total_expenses,
+            created_at=date_val,
             remitted_amount=remitted_amount,
             remitted_by=user,
             notes=notes,
