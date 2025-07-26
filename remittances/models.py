@@ -11,7 +11,6 @@ class RemittanceRecord(models.Model):
     """
 
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE)
-    date = models.DateField(default=timezone.now)
 
     # Sales totals by payment method
     total_sales_cash = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -32,6 +31,7 @@ class RemittanceRecord(models.Model):
     is_remitted = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(null=True, blank=True, auto_now=True)
 
     notes = models.TextField(blank=True)
 

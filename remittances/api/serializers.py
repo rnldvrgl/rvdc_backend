@@ -150,7 +150,6 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
 
         remittance = RemittanceRecord.objects.create(
             stall=stall,
-            date=date_val,
             total_sales_cash=total_sales_cash,
             total_sales_gcash=total_sales_gcash,
             total_sales_credit=total_sales_credit,
