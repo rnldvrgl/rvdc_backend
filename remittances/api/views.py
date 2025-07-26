@@ -1,11 +1,10 @@
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets, permissions, filters
 from remittances.models import RemittanceRecord
 from remittances.api.serializers import RemittanceRecordSerializer
 from utils.query import get_role_filtered_queryset
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework import status
-from django_filters import rest_framework as filters
 from django_filters.rest_framework import DjangoFilterBackend
 from remittances.api.filters import RemittanceRecordFilter
 from utils.filters.options import get_stall_options

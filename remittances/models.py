@@ -36,11 +36,11 @@ class RemittanceRecord(models.Model):
     notes = models.TextField(blank=True)
 
     class Meta:
-        unique_together = ("stall", "date")
-        ordering = ["-date"]
+        unique_together = ("stall", "created_at")
+        ordering = ["-created_at"]
 
     def __str__(self):
-        return f"{self.stall.name} - {self.date}"
+        return f"{self.stall.name} - {self.created_at}"
 
     @property
     def total_collected(self):
