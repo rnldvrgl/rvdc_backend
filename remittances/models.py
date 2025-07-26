@@ -18,7 +18,6 @@ class RemittanceRecord(models.Model):
     total_sales_credit = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_sales_debit = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_sales_cheque = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    coins_remitted = models.BooleanField(default=False)
 
     # Expense deductions
     total_expenses = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -55,7 +54,7 @@ class RemittanceRecord(models.Model):
     @property
     def expected_remittance(self):
         expected = self.total_collected - self.total_expenses
-        if hasattr(self, "cash_breakdown") and not self.coins_remitted:
+        if hasattr(self, "cash_breakdown"):
             expected -= self.cash_breakdown.cod_amount
         return expected
 
@@ -67,7 +66,7 @@ class RemittanceRecord(models.Model):
 class CashDenominationBreakdown(models.Model):
     """
     Physical cash denomination count for a remittance.
-    Splits actual remitted vs. cash on drawer (COD).
+    Tracks actual remitted vs. cash on drawer (COD).
     """
 
     remittance = models.OneToOneField(
@@ -79,76 +78,71 @@ class CashDenominationBreakdown(models.Model):
     count_500 = models.PositiveIntegerField(default=0)
     count_100 = models.PositiveIntegerField(default=0)
     count_50 = models.PositiveIntegerField(default=0)
-
-    # Coins (may be remitted or left as COD)
     count_20 = models.PositiveIntegerField(default=0)
     count_10 = models.PositiveIntegerField(default=0)
     count_5 = models.PositiveIntegerField(default=0)
     count_1 = models.PositiveIntegerField(default=0)
 
-    coins_remitted = models.BooleanField(default=True)
+    # Declared denominations (what the cashier actually has)
+    declared_count_1000 = models.PositiveIntegerField(default=0)
+    declared_count_500 = models.PositiveIntegerField(default=0)
+    declared_count_100 = models.PositiveIntegerField(default=0)
+    declared_count_50 = models.PositiveIntegerField(default=0)
+    declared_count_20 = models.PositiveIntegerField(default=0)
+    declared_count_10 = models.PositiveIntegerField(default=0)
+    declared_count_5 = models.PositiveIntegerField(default=0)
+    declared_count_1 = models.PositiveIntegerField(default=0)
 
     @staticmethod
-    def compute_total_from_counts(data: dict, coins_remitted: bool = True):
-        """
-        Compute the total cash based on denomination counts,
-        optionally including coins depending on remittance flag.
-        """
-        total = (
-            data.get("count_1000", 0) * 1000
-            + data.get("count_500", 0) * 500
-            + data.get("count_100", 0) * 100
-            + data.get("count_50", 0) * 50
-        )
-        if coins_remitted:
-            total += (
-                data.get("count_20", 0) * 20
-                + data.get("count_10", 0) * 10
-                + data.get("count_5", 0) * 5
-                + data.get("count_1", 0) * 1
-            )
+    def compute_total_from_counts(data: dict, declared: bool = False) -> int:
+        denom_map = [
+            (1000, "declared_count_1000" if declared else "count_1000"),
+            (500, "declared_count_500" if declared else "count_500"),
+            (100, "declared_count_100" if declared else "count_100"),
+            (50, "declared_count_50" if declared else "count_50"),
+            (20, "declared_count_20" if declared else "count_20"),
+            (10, "declared_count_10" if declared else "count_10"),
+            (5, "declared_count_5" if declared else "count_5"),
+            (1, "declared_count_1" if declared else "count_1"),
+        ]
+        total = 0
+        for value, key in denom_map:
+            count = data.get(key, 0) or 0
+            total += count * value
         return total
 
     @property
-    def total_remitted_amount(self):
-        """
-        Compute actual remitted amount including coins only if remitted.
-        """
-        base = (
+    def total_remitted_amount(self) -> int:
+        return (
             self.count_1000 * 1000
             + self.count_500 * 500
             + self.count_100 * 100
             + self.count_50 * 50
-        )
-        if self.coins_remitted:
-            base += (
-                self.count_20 * 20
-                + self.count_10 * 10
-                + self.count_5 * 5
-                + self.count_1 * 1
-            )
-        return base
-
-    @property
-    def cod_amount(self):
-        """
-        Shows all coin amounts whether or not they were remitted,
-        for record-keeping or discrepancy analysis.
-        """
-        return (
-            self.count_20 * 20
+            + self.count_20 * 20
             + self.count_10 * 10
             + self.count_5 * 5
             + self.count_1 * 1
         )
 
     @property
-    def total_cash_declared(self):
-        """
-        Total physical cash declared (remitted + coins left as COD).
-        """
-        return self.total_remitted_amount + (
-            0 if self.coins_remitted else self.cod_amount
+    def total_cash_declared(self) -> int:
+        return (
+            self.declared_count_1000 * 1000
+            + self.declared_count_500 * 500
+            + self.declared_count_100 * 100
+            + self.declared_count_50 * 50
+            + self.declared_count_20 * 20
+            + self.declared_count_10 * 10
+            + self.declared_count_5 * 5
+            + self.declared_count_1 * 1
+        )
+
+    @property
+    def cod_amount(self):
+        return sum(
+            max(0, (getattr(self, f"declared_count_{d}") - getattr(self, f"count_{d}")))
+            * d
+            for d in [1000, 500, 100, 50, 20, 10, 5, 1]
         )
 
     def __str__(self):
