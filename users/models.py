@@ -50,6 +50,9 @@ class CustomUser(AbstractUser):
     def __str__(self):
         return f"{self.get_full_name() or self.email or self.pk}"
 
+    def get_full_name(self):
+        return f"{self.first_name} {self.last_name}".strip()
+
     def delete(self, *args, **kwargs):
         self.is_deleted = True
         self.save()
