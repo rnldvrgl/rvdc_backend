@@ -27,6 +27,8 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = get_role_filtered_queryset(self.request, super().get_queryset())
 
+        qs = qs.select_related("cash_breakdown")
+
         stall_id = self.request.query_params.get("stall")
         if stall_id and self.request.user.role == "admin":
             qs = qs.filter(stall_id=stall_id)
@@ -40,7 +42,7 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
                 "options": get_stall_options,
                 "exclude_for": ["clerk", "manager"],
             },
-            "status": {
+            "is_remitted": {
                 "options": lambda: [
                     {"label": "Remitted", "value": "true"},
                     {"label": "Not Remitted", "value": "false"},

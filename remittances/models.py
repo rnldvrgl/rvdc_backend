@@ -1,5 +1,7 @@
+from decimal import Decimal
 from django.db import models
-from django.utils import timezone
+from django.utils.timezone import localdate
+from datetime import timedelta
 
 from users.models import CustomUser
 from inventory.models import Stall
@@ -24,6 +26,7 @@ class RemittanceRecord(models.Model):
 
     # Actual remittance details
     remitted_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    declared_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     remitted_by = models.ForeignKey(
         CustomUser, on_delete=models.SET_NULL, null=True, blank=True
     )
@@ -52,15 +55,67 @@ class RemittanceRecord(models.Model):
         )
 
     @property
-    def expected_remittance(self):
-        expected = self.total_collected - self.total_expenses
-        if hasattr(self, "cash_breakdown"):
-            expected -= self.cash_breakdown.cod_amount
-        return expected
+    def balance(self):
+        expected = self.expected_remittance
+        try:
+            declared = Decimal(self.cash_breakdown.total_cash_declared)
+        except CashDenominationBreakdown.DoesNotExist:
+            declared = Decimal("0")
+
+        return declared - expected
 
     @property
-    def balance(self):
-        return self.expected_remittance - self.remitted_amount
+    def expected_remittance(self):
+        collected_cash = self.total_sales_cash or Decimal("0")
+        expenses = self.total_expenses or Decimal("0")
+
+        cod_for_today = RemittanceRecord.get_cod_for_today(self.stall)
+        cod_yesterday = Decimal(cod_for_today.get("cod_amount", 0) or 0)
+
+        return max(0, collected_cash + cod_yesterday - expenses)
+
+    @classmethod
+    def get_cod_for_today(cls, stall: Stall) -> dict:
+        """
+        Returns COD info for today based on the remittance of yesterday.
+        If no remittance was made, fallback to yesterday's total_sales_cash.
+        """
+        today = localdate()
+        yesterday = today - timedelta(days=1)
+
+        try:
+            remittance = cls.objects.get(stall=stall, created_at__date=yesterday)
+
+            if hasattr(remittance, "cash_breakdown"):
+                return {
+                    "cod_amount": remittance.cash_breakdown.cod_amount,
+                    "cod_breakdown": remittance.cash_breakdown.cod_breakdown,
+                    "source": "remitted",
+                    "date": str(yesterday),
+                }
+            else:
+                return {
+                    "cod_amount": 0,
+                    "cod_breakdown": {},
+                    "source": "remitted (no breakdown)",
+                    "date": str(yesterday),
+                }
+
+        except cls.DoesNotExist:
+            # No remittance means assume all sales_cash is in drawer
+            cash_total = (
+                cls.objects.filter(stall=stall, created_at__date=yesterday).aggregate(
+                    models.Sum("total_sales_cash")
+                )["total_sales_cash__sum"]
+                or 0
+            )
+
+            return {
+                "cod_amount": cash_total,
+                "cod_breakdown": None,
+                "source": "fallback_sales_cash",
+                "date": str(yesterday),
+            }
 
 
 class CashDenominationBreakdown(models.Model):
@@ -76,6 +131,7 @@ class CashDenominationBreakdown(models.Model):
     # Remitted denominations
     count_1000 = models.PositiveIntegerField(default=0)
     count_500 = models.PositiveIntegerField(default=0)
+    count_200 = models.PositiveIntegerField(default=0)
     count_100 = models.PositiveIntegerField(default=0)
     count_50 = models.PositiveIntegerField(default=0)
     count_20 = models.PositiveIntegerField(default=0)
@@ -86,6 +142,7 @@ class CashDenominationBreakdown(models.Model):
     # Declared denominations (what the cashier actually has)
     declared_count_1000 = models.PositiveIntegerField(default=0)
     declared_count_500 = models.PositiveIntegerField(default=0)
+    declared_count_200 = models.PositiveIntegerField(default=0)
     declared_count_100 = models.PositiveIntegerField(default=0)
     declared_count_50 = models.PositiveIntegerField(default=0)
     declared_count_20 = models.PositiveIntegerField(default=0)
@@ -98,6 +155,7 @@ class CashDenominationBreakdown(models.Model):
         denom_map = [
             (1000, "declared_count_1000" if declared else "count_1000"),
             (500, "declared_count_500" if declared else "count_500"),
+            (200, "declared_count_200" if declared else "count_200"),
             (100, "declared_count_100" if declared else "count_100"),
             (50, "declared_count_50" if declared else "count_50"),
             (20, "declared_count_20" if declared else "count_20"),
@@ -116,6 +174,7 @@ class CashDenominationBreakdown(models.Model):
         return (
             self.count_1000 * 1000
             + self.count_500 * 500
+            + self.count_200 * 200
             + self.count_100 * 100
             + self.count_50 * 50
             + self.count_20 * 20
@@ -129,6 +188,7 @@ class CashDenominationBreakdown(models.Model):
         return (
             self.declared_count_1000 * 1000
             + self.declared_count_500 * 500
+            + self.declared_count_200 * 200
             + self.declared_count_100 * 100
             + self.declared_count_50 * 50
             + self.declared_count_20 * 20
@@ -138,12 +198,27 @@ class CashDenominationBreakdown(models.Model):
         )
 
     @property
-    def cod_amount(self):
+    def cod_amount(self) -> int:
         return sum(
             max(0, (getattr(self, f"declared_count_{d}") - getattr(self, f"count_{d}")))
             * d
-            for d in [1000, 500, 100, 50, 20, 10, 5, 1]
+            for d in [1000, 500, 200, 100, 50, 20, 10, 5, 1]
         )
+
+    @property
+    def cod_breakdown(self) -> dict:
+        """
+        Returns a dictionary with denomination as key and COD count as value,
+        only including denominations where there is a difference.
+        """
+        breakdown = {}
+        for denom in [1000, 500, 200, 100, 50, 20, 10, 5, 1]:
+            declared = getattr(self, f"declared_count_{denom}")
+            remitted = getattr(self, f"count_{denom}")
+            diff = declared - remitted
+            if diff > 0:
+                breakdown[denom] = diff
+        return breakdown
 
     def __str__(self):
         return f"Cash Breakdown for {self.remittance}"
