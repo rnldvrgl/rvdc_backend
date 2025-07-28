@@ -1,7 +1,6 @@
 from django.db import models
 from dateutil.relativedelta import relativedelta
 from django.utils import timezone
-from sales.models import SalesTransaction
 from services.models import AirconInstallation
 from utils.enums import (
     AirconType,
@@ -35,11 +34,11 @@ class AirconModel(models.Model):
 
 
 class AirconUnit(models.Model):
-    aircon_model = models.ForeignKey("aircon.AirconModel", on_delete=models.PROTECT)
+    aircon_model = models.ForeignKey(AirconModel, on_delete=models.PROTECT)
     serial_number = models.CharField(max_length=100, unique=True)
 
     sale = models.ForeignKey(
-        SalesTransaction,
+        "sales.SalesTransaction",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,

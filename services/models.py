@@ -1,11 +1,9 @@
 from django.db import models
-from django.utils import timezone
 from django.core.exceptions import ValidationError
 import uuid
 
 from inventory.models import Item
 from clients.models import Client
-from sales.models import SalesTransaction
 from utils.enums import (
     ServiceType,
     ServiceStatus,
@@ -42,11 +40,11 @@ class Service(models.Model):
     client = models.ForeignKey(Client, on_delete=models.PROTECT)
     service_type = models.CharField(max_length=30, choices=ServiceType.choices)
     related_transaction = models.ForeignKey(
-        SalesTransaction, null=True, blank=True, on_delete=models.SET_NULL
+        "sales.SalesTransaction", null=True, blank=True, on_delete=models.SET_NULL
     )
     description = models.TextField(blank=True)
     status = models.CharField(
-        max_length=30, choices=ServiceStatus.choices, default=ServiceStatus.ONGOING
+        max_length=30, choices=ServiceStatus.choices, default=ServiceStatus.IN_PROGRESS
     )
     remarks = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -65,7 +63,6 @@ class HomeServiceSchedule(models.Model):
     scheduled_date = models.DateField()
     scheduled_time = models.TimeField(blank=True, null=True)
 
-    # Overrides in case home service is not at client's saved address/contact
     override_address = models.TextField(blank=True, null=True)
     override_contact_person = models.CharField(max_length=100, blank=True, null=True)
     override_contact_number = models.CharField(max_length=20, blank=True, null=True)
@@ -221,3 +218,34 @@ class ServiceStatusHistory(models.Model):
 
     def __str__(self):
         return f"{self.service} → {self.get_status_display()} @ {self.changed_at}"
+
+
+# ----------------------------------
+# MotorRewind
+# ----------------------------------
+class MotorRewind(models.Model):
+    service = models.ForeignKey(
+        Service, on_delete=models.CASCADE, related_name="motor_rewinds"
+    )
+    appliance_type = models.ForeignKey(
+        ApplianceType,
+        on_delete=models.SET_NULL,
+        null=True,
+        help_text="Type of motor (e.g., Electric Fan, Aircon Compressor)",
+    )
+    quantity = models.PositiveIntegerField(default=1)
+    labor_fee = models.DecimalField(max_digits=10, decimal_places=2)
+    notes = models.TextField(blank=True, null=True)
+
+    related_transaction = models.ForeignKey(
+        "sales.SalesTransaction",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Optional transaction for billing this motor rewind",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.quantity} x {self.appliance_type.name if self.appliance_type else 'Motor'} Rewind"
