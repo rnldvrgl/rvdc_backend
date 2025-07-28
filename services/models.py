@@ -1,104 +1,63 @@
-import uuid
 from django.db import models
-from django.utils.translation import gettext_lazy as _
+from django.utils import timezone
+from django.core.exceptions import ValidationError
+import uuid
 
+from inventory.models import Item
 from clients.models import Client
-from inventory.models import Item, ApplianceType
-from users.models import CustomUser
 from sales.models import SalesTransaction
+from utils.enums import (
+    ServiceType,
+    ServiceStatus,
+    ApplianceStatus,
+)
 
 
-class ServiceType(models.TextChoices):
-    REPAIR = "repair", _("Repair")
-    INSTALLATION = "installation", _("Installation")
-    MOTOR_REWIND = "motor_rewind", _("Motor Rewind")
-    CHECK_UP = "check_up", _("Check-up")
-    CLEANING = "cleaning", _("Cleaning")
-
-
-class ServiceStatus(models.TextChoices):
-    PENDING = "pending", _("Pending")
-    IN_PROGRESS = "in_progress", _("In Progress")
-    ON_HOLD = "on_hold", _("On Hold (Waiting for Parts)")
-    COMPLETED = "completed", _("Completed")
-    CANCELLED = "cancelled", _("Cancelled")
-
-
-class ApplianceStatus(models.TextChoices):
-    RECEIVED = "received", _("Received")
-    DIAGNOSED = "diagnosed", _("Diagnosed")
-    WAITING_PARTS = "waiting_parts", _("Waiting for Parts")
-    UNDER_REPAIR = "under_repair", _("Under Repair")
-    FIXED = "fixed", _("Fixed")
-    DELIVERED = "delivered", _("Delivered")
-    CANCELLED = "cancelled", _("Cancelled")
-
-
-class ServiceMode(models.TextChoices):
-    IN_SHOP = "in_shop", _("In-Shop")
-    HOME_SERVICE = "home_service", _("Home Service")
-    PICKUP = "pickup", _("Pickup and Return")
-
-
-class Service(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-
-    client = models.ForeignKey(
-        Client, on_delete=models.SET_NULL, null=True, related_name="services"
-    )
-
-    service_type = models.CharField(
-        max_length=20, choices=ServiceType.choices, default=ServiceType.REPAIR
-    )
-    mode = models.CharField(
-        max_length=30, choices=ServiceMode.choices, default=ServiceMode.IN_SHOP
-    )
-
-    previous_service = models.ForeignKey(
-        "self",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="followup_services",
-        help_text="Link to previous service (e.g., a check-up before repair)",
-    )
-
-    was_converted_to_repair = models.BooleanField(
-        default=False,
-        help_text="Set to True if a follow-up repair was created for a check-up",
-    )
-
-    status = models.CharField(
-        max_length=20, choices=ServiceStatus.choices, default=ServiceStatus.PENDING
-    )
-
-    assigned_technicians = models.ManyToManyField(
-        CustomUser,
-        blank=True,
-        limit_choices_to={"role": "technician"},
-        related_name="assigned_services",
-    )
-
-    remarks = models.TextField(blank=True, null=True)
-    related_transaction = models.ForeignKey(
-        SalesTransaction,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        help_text="Auto-linked if transaction is created from this service",
-        related_name="linked_services",
-    )
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+# ----------------------------------
+# BaseItemUsed (Abstract)
+# ----------------------------------
+class BaseItemUsed(models.Model):
+    item = models.ForeignKey(Item, on_delete=models.SET_NULL, null=True)
+    quantity = models.PositiveIntegerField(default=1)
 
     class Meta:
-        ordering = ["-created_at"]
+        abstract = True
+
+
+# ----------------------------------
+# ApplianceType
+# ----------------------------------
+class ApplianceType(models.Model):
+    name = models.CharField(max_length=100, unique=True)
 
     def __str__(self):
-        return f"{self.service_type.title()} for {self.client}"
+        return self.name
 
 
+# ----------------------------------
+# Service
+# ----------------------------------
+class Service(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey(Client, on_delete=models.PROTECT)
+    service_type = models.CharField(max_length=30, choices=ServiceType.choices)
+    related_transaction = models.ForeignKey(
+        SalesTransaction, null=True, blank=True, on_delete=models.SET_NULL
+    )
+    description = models.TextField(blank=True)
+    status = models.CharField(
+        max_length=30, choices=ServiceStatus.choices, default=ServiceStatus.ONGOING
+    )
+    remarks = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.client.name} - {self.get_service_type_display()}"
+
+
+# ----------------------------------
+# HomeServiceSchedule
+# ----------------------------------
 class HomeServiceSchedule(models.Model):
     service = models.OneToOneField(
         Service, on_delete=models.CASCADE, related_name="home_service_schedule"
@@ -106,6 +65,7 @@ class HomeServiceSchedule(models.Model):
     scheduled_date = models.DateField()
     scheduled_time = models.TimeField(blank=True, null=True)
 
+    # Overrides in case home service is not at client's saved address/contact
     override_address = models.TextField(blank=True, null=True)
     override_contact_person = models.CharField(max_length=100, blank=True, null=True)
     override_contact_number = models.CharField(max_length=20, blank=True, null=True)
@@ -120,13 +80,102 @@ class HomeServiceSchedule(models.Model):
         return self.service.client
 
     def __str__(self):
-        return f"Home Service for {self.client} on {self.scheduled_date}"
+        return f"Home Service for {self.client.name} on {self.scheduled_date}"
 
 
+# ----------------------------------
+# AirconInstallation
+# ----------------------------------
+class AirconInstallation(models.Model):
+    service = models.OneToOneField(
+        Service,
+        on_delete=models.CASCADE,
+        related_name="aircon_installation",
+    )
+    source = models.CharField(
+        max_length=30,
+        choices=[
+            ("inventory", "From Inventory"),
+            ("client_provided", "Client Provided"),
+        ],
+    )
+
+    class Meta:
+        verbose_name = "Aircon Installation"
+        verbose_name_plural = "Aircon Installations"
+
+    def clean(self):
+        # Ensure this is only linked to INSTALLATION-type services
+        if self.service and self.service.service_type != ServiceType.INSTALLATION:
+            raise ValidationError(
+                "AirconInstallation must be linked to an INSTALLATION service."
+            )
+
+    def __str__(self):
+        return f"Installation for {self.service}"
+
+
+# ----------------------------------
+# AirconItemUsed
+# ----------------------------------
+class AirconItemUsed(models.Model):
+    installation = models.ForeignKey(
+        AirconInstallation, on_delete=models.CASCADE, related_name="items_used"
+    )
+    item = models.ForeignKey(Item, on_delete=models.SET_NULL, null=True)
+
+    # Total quantity used in feet (manual input)
+    total_quantity_used = models.PositiveIntegerField()
+
+    # Free copper feet manually input (up to 10ft per size)
+    free_quantity = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        verbose_name = "Aircon Item Used"
+        verbose_name_plural = "Aircon Items Used"
+
+    def clean(self):
+        if self.total_quantity_used < self.free_quantity:
+            raise ValidationError("Free quantity cannot exceed total quantity used.")
+
+        # Free allowance not allowed if unit was provided by the client
+        if self.installation.source == "client_provided" and self.free_quantity > 0:
+            raise ValidationError(
+                "Free copper tube not allowed if unit is client provided."
+            )
+
+    @property
+    def payable_quantity(self):
+        # Payable = total - free
+        return max(self.total_quantity_used - self.free_quantity, 0)
+
+    def __str__(self):
+        return f"{self.item.name} - {self.total_quantity_used}ft (Free: {self.free_quantity})"
+
+
+# ----------------------------------
+# ApplianceStatusHistory
+# ----------------------------------
+class ApplianceStatusHistory(models.Model):
+    appliance = models.ForeignKey(
+        "ServiceAppliance", on_delete=models.CASCADE, related_name="status_history"
+    )
+    status = models.CharField(max_length=30, choices=ApplianceStatus.choices)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.appliance} → {self.get_status_display()} @ {self.changed_at}"
+
+
+# ----------------------------------
+# ServiceAppliance
+# ----------------------------------
 class ServiceAppliance(models.Model):
     service = models.ForeignKey(
         Service, on_delete=models.CASCADE, related_name="appliances"
     )
+
+    # Optional FK to ApplianceType if you're using a separate model
     appliance_type = models.ForeignKey(
         ApplianceType,
         on_delete=models.SET_NULL,
@@ -140,7 +189,9 @@ class ServiceAppliance(models.Model):
     diagnosis_notes = models.TextField(blank=True, null=True)
 
     status = models.CharField(
-        max_length=20, choices=ApplianceStatus.choices, default=ApplianceStatus.RECEIVED
+        max_length=20,
+        choices=ApplianceStatus.choices,
+        default=ApplianceStatus.RECEIVED,
     )
 
     labor_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -149,91 +200,24 @@ class ServiceAppliance(models.Model):
         return f"{self.appliance_type.name if self.appliance_type else 'Appliance'} ({self.brand or 'Unknown'})"
 
 
-class ApplianceItemUsed(models.Model):
+# ----------------------------------
+# ApplianceItemUsed
+# ----------------------------------
+class ApplianceItemUsed(BaseItemUsed):
     appliance = models.ForeignKey(
         ServiceAppliance, on_delete=models.CASCADE, related_name="items_used"
     )
-    item = models.ForeignKey(
-        Item, on_delete=models.SET_NULL, null=True, related_name="used_in_appliances"
-    )
-    quantity = models.PositiveIntegerField(default=1)
-
-    def __str__(self):
-        return f"{self.quantity} x {self.item.name}"
 
 
-class AirconInstallation(models.Model):
-    service = models.OneToOneField(
-        Service, on_delete=models.CASCADE, related_name="aircon_installation"
-    )
-    notes = models.TextField(blank=True, null=True)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return f"Aircon Installation for {self.service.client}"
-
-
-class AirconItemUsed(models.Model):
-    installation = models.ForeignKey(
-        AirconInstallation, on_delete=models.CASCADE, related_name="items_used"
-    )
-    item = models.ForeignKey(
-        Item, on_delete=models.SET_NULL, null=True, related_name="used_in_installations"
-    )
-    quantity = models.PositiveIntegerField(default=1)
-
-    def __str__(self):
-        return f"{self.quantity} x {self.item.name}"
-
-
-class MotorRewind(models.Model):
-    service = models.ForeignKey(
-        Service, on_delete=models.CASCADE, related_name="motor_rewinds"
-    )
-    appliance_type = models.ForeignKey(
-        ApplianceType,
-        on_delete=models.SET_NULL,
-        null=True,
-        help_text="Type of motor (e.g., Electric Fan, Aircon Compressor)",
-        related_name="used_in_motor_rewinds",
-    )
-    quantity = models.PositiveIntegerField(default=1)
-    labor_fee = models.DecimalField(max_digits=10, decimal_places=2)
-    notes = models.TextField(blank=True, null=True)
-
-    related_transaction = models.ForeignKey(
-        SalesTransaction,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        help_text="Optional transaction for billing this motor rewind",
-        related_name="motor_rewind_services",
-    )
-
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return f"{self.quantity} x {self.appliance_type.name if self.appliance_type else 'Motor'} Rewind"
-
-
+# ----------------------------------
+# ServiceStatusHistory
+# ----------------------------------
 class ServiceStatusHistory(models.Model):
     service = models.ForeignKey(
         Service, on_delete=models.CASCADE, related_name="status_history"
     )
-    status = models.CharField(max_length=20, choices=ServiceStatus.choices)
+    status = models.CharField(max_length=30, choices=ServiceStatus.choices)
     changed_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.service} → {self.status} @ {self.changed_at}"
-
-
-class ApplianceStatusHistory(models.Model):
-    appliance = models.ForeignKey(
-        ServiceAppliance, on_delete=models.CASCADE, related_name="status_history"
-    )
-    status = models.CharField(max_length=20, choices=ApplianceStatus.choices)
-    changed_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return f"{self.appliance} → {self.status} @ {self.changed_at}"
+        return f"{self.service} → {self.get_status_display()} @ {self.changed_at}"

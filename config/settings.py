@@ -56,7 +56,8 @@ INSTALLED_APPS = [
     "choices",
     "analytics",
     "remittances",
-    # "services",
+    "services",
+    # "installations",
 ]
 
 MIDDLEWARE = [

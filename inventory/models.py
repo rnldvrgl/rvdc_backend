@@ -4,6 +4,7 @@ import uuid
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.contrib.contenttypes import fields, models as contenttypes_models
+from django.utils.translation import gettext_lazy as _
 
 
 # =========== MANAGERS ===========
@@ -21,17 +22,6 @@ UNIT_CHOICES = [
     ("roll", "Roll"),
     ("box", "Box"),
 ]
-
-
-class AirconType(models.TextChoices):
-    WINDOW = "window", _("Window Type")
-    SPLIT = "split", _("Split Type")
-    FLOOR_MOUNTED = "floor_mounted", _("Floor Mounted")
-    CASSETTE = "cassette", _("Cassette Type")
-    PORTABLE = "portable", _("Portable")
-    CENTRALIZED = "centralized", _("Centralized")
-    OTHERS = "others", _("Others")
-
 
 # =========== MODELS ===========
 
@@ -373,43 +363,3 @@ class StockMovement(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
-
-
-class AirconBrand(models.Model):
-    name = models.CharField(max_length=100, unique=True)
-
-    def __str__(self):
-        return self.name
-
-
-class AirconModel(models.Model):
-    brand = models.ForeignKey(AirconBrand, on_delete=models.CASCADE)
-    model_name = models.CharField(max_length=100)
-
-    aircon_type = models.CharField(
-        max_length=30,
-        choices=AirconType.choices,
-        default=AirconType.WINDOW,
-    )
-
-    class Meta:
-        unique_together = ("brand", "model_name")
-
-    def __str__(self):
-        return f"{self.brand.name} {self.model_name} ({self.get_aircon_type_display()})"
-
-
-class ApplianceType(models.Model):
-    name = models.CharField(max_length=100, unique=True)
-
-    def __str__(self):
-        return self.name
-
-
-class AirconUnit(models.Model):
-    aircon_model = models.ForeignKey(AirconModel, on_delete=models.SET_NULL, null=True)
-    serial_number = models.CharField(max_length=100, unique=True)
-    is_installed = models.BooleanField(default=False)
-
-    def __str__(self):
-        return f"{self.aircon_model} - SN:{self.serial_number}"
