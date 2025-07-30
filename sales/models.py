@@ -6,7 +6,6 @@ from django.utils import timezone
 from inventory.models import Stall, Item
 from clients.models import Client
 from users.models import CustomUser
-from installations.models import AirconUnit
 
 
 class PaymentType(models.TextChoices):
@@ -124,13 +123,6 @@ class SalesItem(models.Model):
         null=True,
         blank=True,
         help_text="Leave blank for manual/labor/service line.",
-    )
-    aircon_unit = models.ForeignKey(
-        AirconUnit,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        help_text="Link to sold aircon unit (if applicable). Overrides item and description.",
     )
     description = models.CharField(
         max_length=255,
