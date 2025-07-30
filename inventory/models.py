@@ -4,6 +4,7 @@ import uuid
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.contrib.contenttypes import fields, models as contenttypes_models
+from django.utils.translation import gettext_lazy as _
 
 
 # =========== MANAGERS ===========
@@ -21,7 +22,6 @@ UNIT_CHOICES = [
     ("roll", "Roll"),
     ("box", "Box"),
 ]
-
 
 # =========== MODELS ===========
 

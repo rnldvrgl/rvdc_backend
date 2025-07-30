@@ -1,217 +1,165 @@
-# from django.db import models, transaction
-# from users.models import CustomUser
-# from utils.logger import log_activity
-# from clients.models import Client
-# from sales.models import SalesTransaction
+from django.db import models
+from django.core.exceptions import ValidationError
+import uuid
 
-# SERVICE_TYPES = [
-#     ("installation", "Installation"),
-#     ("repair", "Repair"),
-#     ("cleaning", "Cleaning"),
-#     ("dismantle_reinstall", "Dismantle & Reinstall"),
-#     ("dismantle", "Dismantle Only"),
-#     ("checkup", "Check-up / Diagnosis"),
-#     ("maintenance", "Preventive Maintenance"),
-#     ("reinstallation", "Reinstallation"),
-#     ("rewind", "Rewinding Motor"),
-#     ("reprocess", "Reprocessing Refrigerant"),
-# ]
+from inventory.models import Item
+from clients.models import Client
+from users.models import (
+    CustomUser,
+)  # Assumes technician users are in the custom User model
+from utils.enums import (
+    ServiceType,
+    ServiceStatus,
+    ApplianceStatus,
+    ServiceMode,
+    AirconType,
+)
 
-# STATUS_CHOICES = [
-#     ("pending", "Pending"),
-#     ("in_progress", "In Progress"),
-#     ("done", "Completed"),
-#     ("picked_up", "Picked Up"),
-#     ("delivered", "Delivered"),
-#     ("cancelled", "Cancelled"),
-# ]
-
-# APPLIANCE_TYPES = [
-#     ("aircon", "Air Conditioner"),
-#     ("fan", "Electric Fan"),
-#     ("ref", "Refrigerator"),
-#     ("washing_machine", "Washing Machine"),
-#     ("water_dispenser", "Water Dispenser"),
-#     ("microwave", "Microwave"),
-#     ("freezer", "Freezer"),
-# ]
-
-# PAYMENT_METHODS = [
-#     ("cash", "Cash"),
-#     ("gcash", "GCash"),
-#     ("bank_transfer", "Bank Transfer"),
-#     ("card", "Credit/Debit Card"),
-# ]
-
-# PAYMENT_STATUS = [
-#     ("unpaid", "Unpaid"),
-#     ("partial", "Partially Paid"),
-#     ("paid", "Fully Paid"),
-# ]
+from dateutil.relativedelta import relativedelta
+from django.utils import timezone
 
 
-# class ServiceRequest(models.Model):
-#     client = models.ForeignKey(Client, on_delete=models.CASCADE)
-#     technicians = models.ManyToManyField(CustomUser, related_name="service_requests")
-#     appliance_type = models.CharField(max_length=30, choices=APPLIANCE_TYPES)
-#     brand = models.CharField(max_length=100)
-#     unit_type = models.CharField(max_length=100)
-#     service_type = models.CharField(max_length=30, choices=SERVICE_TYPES)
-#     previous_service_type = models.CharField(
-#         max_length=30, choices=SERVICE_TYPES, blank=True, null=True
-#     )
-#     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
-#     remarks = models.TextField(blank=True, null=True)
-#     date_received = models.DateTimeField(auto_now_add=True)
-#     date_completed = models.DateTimeField(blank=True, null=True)
-#     total_payment = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-#     payment_method = models.CharField(
-#         max_length=20, choices=PAYMENT_METHODS, blank=True, null=True
-#     )
-#     payment_status = models.CharField(
-#         max_length=20, choices=PAYMENT_STATUS, default="unpaid"
-#     )
-#     payment_date = models.DateTimeField(blank=True, null=True)
-#     final_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-#     sales_transaction = models.OneToOneField(
-#         "sales.SalesTransaction",
-#         on_delete=models.SET_NULL,
-#         null=True,
-#         blank=True,
-#         related_name="service_request",
-#     )
-#     sales_transaction = models.OneToOneField(
-#         SalesTransaction, on_delete=models.SET_NULL, null=True, blank=True
-#     )
+# ----------------------------------
+# BaseItemUsed (Abstract)
+# ----------------------------------
+class BaseItemUsed(models.Model):
+    item = models.ForeignKey(Item, on_delete=models.SET_NULL, null=True)
+    quantity = models.PositiveIntegerField(default=1)
 
-#     def __str__(self):
-#         return (
-#             f"{self.get_appliance_type_display()} ({self.brand}) - {self.service_type}"
-#         )
-
-#     def save(self, *args, **kwargs):
-#         user = kwargs.pop("user", None)
-
-#         if self.pk:
-#             original = ServiceRequest.objects.get(pk=self.pk)
-#             changes = []
-
-#             if original.status != self.status:
-#                 changes.append(
-#                     f"Status changed from '{original.status}' to '{self.status}'"
-#                 )
-#             if original.service_type != self.service_type:
-#                 changes.append(
-#                     f"Service type changed from '{original.service_type}' to '{self.service_type}'"
-#                 )
-#             if original.previous_service_type != self.previous_service_type:
-#                 changes.append(
-#                     f"Previous service type changed from '{original.previous_service_type}' to '{self.previous_service_type}'"
-#                 )
-
-#             for change in changes:
-#                 log_activity(
-#                     user=user,
-#                     instance=self,
-#                     action="updated service request",
-#                     note=change,
-#                 )
-#                 ServiceStep.objects.create(
-#                     service_request=self, service_type=self.service_type, notes=change
-#                 )
-
-#         super().save(*args, **kwargs)
+    class Meta:
+        abstract = True
 
 
-# class ServiceStep(models.Model):
-#     service_request = models.ForeignKey(
-#         ServiceRequest, on_delete=models.CASCADE, related_name="steps"
-#     )
-#     service_type = models.CharField(max_length=30, choices=SERVICE_TYPES)
-#     performed_on = models.DateTimeField(auto_now_add=True)
-#     notes = models.TextField(blank=True, null=True)
+# ----------------------------------
+# ApplianceType
+# ----------------------------------
+class ApplianceType(models.Model):
+    name = models.CharField(max_length=100, unique=True)
 
-#     def __str__(self):
-#         return f"{self.service_request} - {self.service_type} on {self.performed_on}"
+    def __str__(self):
+        return self.name
 
 
-# class ServiceRequestItem(models.Model):
-#     service_request = models.ForeignKey(
-#         ServiceRequest, on_delete=models.CASCADE, related_name="used_items"
-#     )
-#     item = models.ForeignKey("inventory.Item", on_delete=models.CASCADE)
-#     quantity_used = models.PositiveIntegerField()
-#     deducted_from_stall = models.ForeignKey(
-#         "inventory.Stall", on_delete=models.SET_NULL, null=True
-#     )
-#     deducted_by = models.ForeignKey(
-#         CustomUser, on_delete=models.SET_NULL, null=True, related_name="item_deductions"
-#     )
-#     deducted_at = models.DateTimeField(auto_now_add=True)
+# ----------------------------------
+# Core Service Model
+# ----------------------------------
+class Service(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey(Client, on_delete=models.PROTECT)
+    service_type = models.CharField(max_length=30, choices=ServiceType.choices)
+    service_mode = models.CharField(max_length=30, choices=ServiceMode.choices)
+    related_transaction = models.ForeignKey(
+        "sales.SalesTransaction", null=True, blank=True, on_delete=models.SET_NULL
+    )
+    description = models.TextField(blank=True)
+    override_address = models.TextField(blank=True, null=True)
+    override_contact_person = models.CharField(max_length=100, blank=True, null=True)
+    override_contact_number = models.CharField(max_length=20, blank=True, null=True)
+    scheduled_date = models.DateField(blank=True, null=True)
+    scheduled_time = models.TimeField(blank=True, null=True)
+    pickup_date = models.DateField(blank=True, null=True)
+    delivery_date = models.DateField(blank=True, null=True)
+    status = models.CharField(
+        max_length=30, choices=ServiceStatus.choices, default=ServiceStatus.IN_PROGRESS
+    )
+    remarks = models.TextField(blank=True)
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
-#     def save(self, *args, **kwargs):
-#         from inventory.models import Stock
+    def __str__(self):
+        return f"{self.client.name} - {self.get_service_type_display()} ({self.get_service_mode_display()})"
 
-#         if not self.pk:
-#             # First-time creation: Deduct stock
-#             with transaction.atomic():
-#                 stock = (
-#                     Stock.objects.select_for_update()
-#                     .filter(
-#                         item=self.item,
-#                         stall=self.deducted_from_stall,
-#                         quantity__gte=self.quantity_used,
-#                         is_deleted=False,
-#                     )
-#                     .first()
-#                 )
 
-#                 if not stock:
-#                     raise ValueError(
-#                         "Insufficient stock or invalid stall for deduction."
-#                     )
+class ServiceTechnician(models.Model):
+    service = models.ForeignKey(
+        Service, on_delete=models.CASCADE, related_name="technicians"
+    )
+    technician = models.ForeignKey(
+        CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician"}
+    )
 
-#                 stock.quantity -= self.quantity_used
-#                 stock.save()
-#                 super().save(*args, **kwargs)
 
-#                 log_activity(
-#                     user=self.deducted_by,
-#                     instance=self,
-#                     action="deducted item",
-#                     note=f"Deducted {self.quantity_used} {self.item.unit_of_measure} of {self.item.name} from {self.deducted_from_stall.name}",
-#                 )
-#                 return
+class TechnicianAvailability(models.Model):
+    technician = models.ForeignKey(
+        CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician"}
+    )
+    date = models.DateField()
+    time_start = models.TimeField()
+    time_end = models.TimeField()
+    is_available = models.BooleanField(default=True)
 
-#         super().save(*args, **kwargs)
+    class Meta:
+        unique_together = ("technician", "date", "time_start", "time_end")
 
-#     def delete(self, *args, **kwargs):
-#         from inventory.models import Stock
+    def __str__(self):
+        status = "Available" if self.is_available else "Unavailable"
+        return f"{self.technician.get_full_name()} on {self.date} ({self.time_start}-{self.time_end}) - {status}"
 
-#         with transaction.atomic():
-#             try:
-#                 stock = Stock.objects.select_for_update().get(
-#                     item=self.item,
-#                     stall=self.deducted_from_stall,
-#                     is_deleted=False,
-#                 )
-#                 stock.quantity += self.quantity_used
-#                 stock.save()
-#             except Stock.DoesNotExist:
-#                 raise ValueError(
-#                     f"Cannot restore stock: Stock for item '{self.item}' in stall '{self.deducted_from_stall}' does not exist."
-#                 )
 
-#             log_activity(
-#                 user=self.deducted_by,
-#                 instance=self,
-#                 action="restored item",
-#                 note=f"Restored {self.quantity_used} {self.item.unit_of_measure} of {self.item.name} to {self.deducted_from_stall.name} (due to item deletion)",
-#             )
+# ----------------------------------
+# Service Appliance
+# ----------------------------------
+class ServiceAppliance(models.Model):
+    service = models.ForeignKey(
+        Service, on_delete=models.CASCADE, related_name="appliances"
+    )
+    appliance_type = models.ForeignKey(
+        ApplianceType,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="used_in_services",
+    )
+    brand = models.CharField(max_length=100, blank=True, null=True)
+    model = models.CharField(max_length=100, blank=True, null=True)
+    issue_reported = models.TextField(blank=True, null=True)
+    diagnosis_notes = models.TextField(blank=True, null=True)
+    status = models.CharField(
+        max_length=20, choices=ApplianceStatus.choices, default=ApplianceStatus.RECEIVED
+    )
+    labor_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
-#         super().delete(*args, **kwargs)
+    def __str__(self):
+        return f"{self.appliance_type.name if self.appliance_type else 'Appliance'} ({self.brand or 'Unknown'})"
 
-#     def __str__(self):
-#         return (
-#             f"{self.quantity_used} {self.item.unit_of_measure} of {self.item.name} used"
-#         )
+
+class ApplianceTechnician(models.Model):
+    appliance = models.ForeignKey(
+        ServiceAppliance, on_delete=models.CASCADE, related_name="technicians"
+    )
+    technician = models.ForeignKey(
+        CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician"}
+    )
+
+
+class ApplianceItemUsed(BaseItemUsed):
+    appliance = models.ForeignKey(
+        ServiceAppliance, on_delete=models.CASCADE, related_name="items_used"
+    )
+
+
+# ----------------------------------
+# Status Histories
+# ----------------------------------
+class ApplianceStatusHistory(models.Model):
+    appliance = models.ForeignKey(
+        ServiceAppliance,
+        on_delete=models.CASCADE,
+        related_name="appliance_status_history",
+    )
+    status = models.CharField(max_length=30, choices=ApplianceStatus.choices)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.appliance} → {self.get_status_display()} @ {self.changed_at}"
+
+
+class ServiceStatusHistory(models.Model):
+    service = models.ForeignKey(
+        Service, on_delete=models.CASCADE, related_name="service_status_history"
+    )
+    status = models.CharField(max_length=30, choices=ServiceStatus.choices)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.service} → {self.get_status_display()} @ {self.changed_at}"
