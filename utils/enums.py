@@ -42,3 +42,31 @@ class ServiceMode(models.TextChoices):
     IN_SHOP = "in_shop", _("In-Shop")
     HOME_SERVICE = "home_service", _("Home Service")
     PICKUP = "pickup", _("Pickup and Return")
+
+
+class BankChoices(models.TextChoices):
+    BPI = "BPI", "BPI"
+    BDO = "BDO", "BDO"
+    METROBANK = "Metrobank", "Metrobank"
+    LANDBANK = "Landbank", "Landbank"
+    SECURITY_BANK = "Security Bank", "Security Bank"
+    UNIONBANK = "UnionBank", "UnionBank"
+    RCBC = "RCBC", "RCBC"
+    PNB = "PNB", "PNB"
+    EASTWEST_BANK = "EastWestBank", "EastWest Bank"
+    CHINA_BANK = "ChinaBank", "China Bank"
+    MAYBANK_PH = "Maybank Philippines", "Maybank Philippines"
+
+
+class CollectionType(models.TextChoices):
+    PICKED_UP = "picked_up", "Picked Up by Staff"
+    CLIENT_DELIVERED = "client_delivered", "Delivered by Client"
+
+
+class ChequeStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
+    DEPOSITED = "deposited", "Deposited"
+    ENCAHSED = "encashed", "Encashed"
+    RETURNED = "returned", "Returned"
+    BOUNCED = "bounced", "Bounced"
+    CANCELLED = "cancelled", "Cancelled"

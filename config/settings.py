@@ -58,6 +58,7 @@ INSTALLED_APPS = [
     "remittances",
     "services",
     "installations",
+    "receivables",
 ]
 
 MIDDLEWARE = [

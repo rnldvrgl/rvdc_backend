@@ -35,6 +35,7 @@ class UserSerializer(serializers.ModelSerializer):
     current_password = serializers.CharField(write_only=True, required=False)
     new_password = serializers.CharField(write_only=True, required=False)
     assigned_stall = StallSerializer(read_only=True)
+    full_name = serializers.SerializerMethodField()
 
     class Meta:
         model = CustomUser
@@ -44,6 +45,7 @@ class UserSerializer(serializers.ModelSerializer):
             "email",
             "first_name",
             "last_name",
+            "full_name",
             "role",
             "birthday",
             "address",
@@ -58,6 +60,9 @@ class UserSerializer(serializers.ModelSerializer):
             "basic_salary",
         ]
         read_only_fields = ("id",)
+
+    def get_full_name(self, obj):
+        return obj.get_full_name()
 
     def to_representation(self, instance):
         rep = super().to_representation(instance)

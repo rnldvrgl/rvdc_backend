@@ -2,16 +2,17 @@ from datetime import datetime, timedelta
 from django.db.models import Q
 
 
-def filter_by_date_range(request, queryset):
+def filter_by_date_range(request, queryset, date_field="created_at"):
+
     start = request.query_params.get("start_date")
     end = request.query_params.get("end_date")
 
     if start:
-        queryset = queryset.filter(created_at__date__gte=start)
+        queryset = queryset.filter(**{f"{date_field}__date__gte": start})
 
     if end:
         end_dt = datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1)
-        queryset = queryset.filter(created_at__lt=end_dt)
+        queryset = queryset.filter(**{f"{date_field}__lt": end_dt})
 
     return queryset
 

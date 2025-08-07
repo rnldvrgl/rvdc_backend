@@ -9,7 +9,7 @@ from utils.query import get_role_filtered_queryset
 from .serializers import ExpenseSerializer, ExpensePaymentSerializer
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
-from utils.filters.options import get_stall_options, get_user_options
+from utils.filters.options import get_stall_options
 from utils.filters.role_filters import get_role_based_filter_response
 from expenses.api.filters import ExpenseFilter
 
