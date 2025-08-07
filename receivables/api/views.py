@@ -1,8 +1,9 @@
 from rest_framework import viewsets, filters
 from django_filters.rest_framework import DjangoFilterBackend
+from utils.enums import ChequeStatus
 from utils.filters.role_filters import get_role_based_filter_response
 from utils.filters.options import get_user_options, get_bank_options
-from receivables.models import ChequeCollection
+from receivables.models import ChequeCollection, CollectionType
 from receivables.api.serializers import ChequeCollectionSerializer
 from receivables.api.filters import ChequeCollectionFilter
 from rest_framework.permissions import IsAuthenticated
@@ -45,7 +46,7 @@ class ChequeCollectionViewSet(viewsets.ModelViewSet):
             "collection_type": {
                 "options": lambda: [
                     {"label": label, "value": value}
-                    for value, label in ChequeCollection.CollectionType.choices
+                    for value, label in CollectionType.choices
                 ]
             },
             "collected_by": {
@@ -54,7 +55,7 @@ class ChequeCollectionViewSet(viewsets.ModelViewSet):
             "status": {
                 "options": lambda: [
                     {"label": label, "value": value}
-                    for value, label in ChequeCollection.ChequeStatus.choices
+                    for value, label in ChequeStatus.choices
                 ]
             },
         }
