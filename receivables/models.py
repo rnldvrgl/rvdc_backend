@@ -23,6 +23,14 @@ class ChequeCollection(models.Model):
         help_text="Name of the bank that issued the cheque.",
         choices=BankChoices.choices,
     )
+    deposit_bank = models.CharField(
+        max_length=100,
+        help_text="Name of the bank where the cheque will be deposited or encashed.",
+        choices=BankChoices.choices,
+        blank=True,
+        null=True,
+    )
+
     or_number = models.CharField(max_length=50, blank=True, null=True)
 
     sales_transaction = models.ForeignKey(
@@ -88,29 +96,33 @@ class ChequeCollection(models.Model):
         today = now().date()
 
         # Require collected_by if picked up
-        if (
-            self.collection_type == self.CollectionType.PICKED_UP
-            and not self.collected_by
-        ):
+        if self.collection_type == CollectionType.PICKED_UP and not self.collected_by:
             raise ValidationError(
                 {
                     "collected_by": "Must be set if collection type is 'Picked Up by Staff'."
                 }
             )
 
-        # Status / cheque_date validation
-        if (
-            self.status in [self.ChequeStatus.ENCAHSED, self.ChequeStatus.DEPOSITED]
-            and self.cheque_date > today
-        ):
-            raise ValidationError(
-                {
-                    "cheque_date": "Cannot mark cheque as deposited or encashed before its cheque date."
-                }
-            )
+        # If cheque is marked deposited or encashed, enforce rules
+        if self.status in [ChequeStatus.ENCAHSED, ChequeStatus.DEPOSITED]:
+            # Cannot deposit/encash before cheque date
+            if self.cheque_date > today:
+                raise ValidationError(
+                    {
+                        "cheque_date": "Cannot mark cheque as deposited or encashed before its cheque date."
+                    }
+                )
 
-        # Require a reference for non-pending cheques
-        if self.status != self.ChequeStatus.PENDING and not (
+            # Must have deposit bank specified
+            if not self.deposit_bank:
+                raise ValidationError(
+                    {
+                        "deposit_bank": "Must specify the bank where the cheque will be deposited or encashed."
+                    }
+                )
+
+        # Require a reference (sales transaction or OR number) for non-pending cheques
+        if self.status != ChequeStatus.PENDING and not (
             self.sales_transaction or self.or_number
         ):
             raise ValidationError(

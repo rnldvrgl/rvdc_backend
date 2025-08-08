@@ -21,6 +21,7 @@ class ChequeCollectionSerializer(serializers.ModelSerializer):
             "cheque_number",
             "cheque_date",
             "bank_name",
+            "deposit_bank",
             "or_number",
             "sales_transaction",
             "collection_type",

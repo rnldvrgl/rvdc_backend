@@ -7,6 +7,7 @@ class ChequeCollectionFilter(filters.FilterSet):
         model = ChequeCollection
         fields = [
             "bank_name",
+            "deposit_bank",
             "collection_type",
             "status",
             "collected_by",

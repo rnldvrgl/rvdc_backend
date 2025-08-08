@@ -28,6 +28,7 @@ class ChequeCollectionViewSet(viewsets.ModelViewSet):
         "cheque_number",
         "or_number",
         "bank_name",
+        "deposit_bank",
         "issued_by",
         "client__name",
     ]
@@ -43,6 +44,7 @@ class ChequeCollectionViewSet(viewsets.ModelViewSet):
     def get_filters(self, request):
         filters_config = {
             "bank_name": {"options": lambda: get_bank_options()},
+            "deposit_bank": {"options": lambda: get_bank_options()},
             "collection_type": {
                 "options": lambda: [
                     {"label": label, "value": value}
