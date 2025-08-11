@@ -112,6 +112,7 @@ class Stock(models.Model):
     low_stock_threshold = models.PositiveIntegerField(default=0)
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE, related_name="stocks")
     quantity = models.PositiveIntegerField(default=0)
+    track_stock = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_deleted = models.BooleanField(default=False)

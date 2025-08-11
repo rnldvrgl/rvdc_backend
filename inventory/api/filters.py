@@ -21,10 +21,11 @@ class StatusFilterMixin:
 
 class StockFilter(StatusFilterMixin, filters.FilterSet):
     status = filters.CharFilter(method="filter_by_status")
+    track_stock = filters.BooleanFilter()
 
     class Meta:
         model = Stock
-        fields = ["stall", "item", "status"]
+        fields = ["stall", "item", "status", "track_stock"]
 
 
 class StockRoomFilter(StatusFilterMixin, filters.FilterSet):

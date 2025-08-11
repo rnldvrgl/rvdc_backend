@@ -140,25 +140,12 @@ class SalesItem(models.Model):
     )
 
     def save(self, *args, **kwargs):
-        if self.aircon_unit:
-            self.item = None
-            self.description = str(self.aircon_unit.model)
-            if self.final_price_per_unit is None:
-                self.final_price_per_unit = self.aircon_unit.model.retail_price
-        elif self.item and not self.description:
+        if self.item and not self.description:
             self.description = self.item.name
             if self.final_price_per_unit is None:
                 self.final_price_per_unit = self.item.retail_price
 
         super().save(*args, **kwargs)
-
-        if self.aircon_unit:
-            if self.aircon_unit.sale and self.aircon_unit.sale != self.transaction:
-                raise ValueError(
-                    "This aircon unit has already been sold in another transaction."
-                )
-            self.aircon_unit.sale = self.transaction
-            self.aircon_unit.save(update_fields=["sale"])
 
     @property
     def line_total(self):

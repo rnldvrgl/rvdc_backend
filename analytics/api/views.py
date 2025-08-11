@@ -74,11 +74,13 @@ class SummaryStatsView(APIView):
         if is_admin:
             stock_qs = StockRoomStock.objects.filter(is_deleted=False)
         else:
-            stock_qs = Stock.objects.filter(is_deleted=False, **stall_filter)
+            stock_qs = Stock.objects.filter(
+                is_deleted=False, **stall_filter, track_stock=True
+            )
 
-        no_stock_count = stock_qs.filter(quantity=0).count()
+        no_stock_count = stock_qs.filter(quantity=0, track_stock=True).count()
         low_stock_count = stock_qs.filter(
-            quantity__gt=0, quantity__lte=F("low_stock_threshold")
+            quantity__gt=0, quantity__lte=F("low_stock_threshold"), track_stock=True
         ).count()
 
         expense = (

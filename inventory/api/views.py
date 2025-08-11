@@ -168,6 +168,12 @@ class StockViewSet(viewsets.ModelViewSet):
             "status": {
                 "options": get_status_options,
             },
+            "track_stock": {
+                "options": lambda: [
+                    {"label": "Yes", "value": "true"},
+                    {"label": "No", "value": "false"},
+                ],
+            },
         }
 
         ordering_config = [

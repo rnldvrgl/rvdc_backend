@@ -92,6 +92,7 @@ class StockReadSerializer(serializers.ModelSerializer):
             "updated_at",
             "status",
             "stall",
+            "track_stock",
             "stock_room_quantity",
             "stock_room_status",
         ]
@@ -118,7 +119,14 @@ class StockWriteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Stock
-        fields = ["id", "quantity", "item_id", "stall_id", "low_stock_threshold"]
+        fields = [
+            "id",
+            "quantity",
+            "item_id",
+            "stall_id",
+            "low_stock_threshold",
+            "track_stock",
+        ]
 
     def validate(self, data):
         qs = Stock.objects.filter(item=data["item"], stall=data["stall"])
@@ -138,13 +146,12 @@ class StockWriteSerializer(serializers.ModelSerializer):
 class StockPatchSerializer(serializers.ModelSerializer):
     class Meta:
         model = Stock
-        fields = ["quantity", "low_stock_threshold", "is_deleted"]
+        fields = ["quantity", "low_stock_threshold", "is_deleted", "track_stock"]
 
     def update(self, instance, validated_data):
         user = self.context["request"].user
         original_qty = instance.quantity
         original_threshold = instance.low_stock_threshold
-        original_deleted = instance.is_deleted
 
         with transaction.atomic():
             if "quantity" in validated_data:
@@ -167,6 +174,16 @@ class StockPatchSerializer(serializers.ModelSerializer):
                     instance,
                     "update_threshold",
                     f"Updated threshold from {original_threshold} to {new_threshold}",
+                )
+
+            if "track_stock" in validated_data:
+                instance.track_stock = validated_data["track_stock"]
+                action = "untrack_stock" if instance.track_stock else "track_stock"
+                log_activity(
+                    user,
+                    instance,
+                    action,
+                    f"{'Untracked' if instance.track_stock else 'Tracked'} stock",
                 )
 
             if "is_deleted" in validated_data:

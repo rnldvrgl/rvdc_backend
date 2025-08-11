@@ -79,7 +79,6 @@ class AirconInstallationSerializer(serializers.ModelSerializer):
     service_id = serializers.PrimaryKeyRelatedField(
         source="service", queryset=Service.objects.all()
     )
-    aircon_unit = AirconUnitSerializer(read_only=True)
     aircon_unit = AirconUnitSerializer(many=True, read_only=True)
 
     class Meta:
