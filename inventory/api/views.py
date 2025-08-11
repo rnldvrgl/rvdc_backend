@@ -434,9 +434,14 @@ class StockTransferViewSet(viewsets.ModelViewSet):
         url_path="mark-expense-as-paid",
     )
     @transaction.atomic
-    def mark_expense_as_paid(self):
-        if not hasattr(self, "expense"):
+    def mark_expense_as_paid(self, request, pk=None):
+        stock_transfer = self.get_object()
+
+        if not hasattr(stock_transfer, "expense") or stock_transfer.expense is None:
             raise ValidationError("This stock transfer has no linked expense.")
-        self.expense.is_paid = True
-        self.expense.paid_at = timezone.now()
-        self.expense.save()
+
+        stock_transfer.expense.is_paid = True
+        stock_transfer.expense.paid_at = timezone.now()
+        stock_transfer.expense.save()
+
+        return Response({"detail": "Expense marked as paid."})
