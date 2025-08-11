@@ -430,7 +430,7 @@ class StockTransferViewSet(viewsets.ModelViewSet):
     @action(
         detail=True,
         methods=["post"],
-        permission_classes=[IsAdminUser],
+        permission_classes=[IsAuthenticated],
         url_path="mark-expense-as-paid",
     )
     @transaction.atomic
