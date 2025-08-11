@@ -32,9 +32,7 @@ from inventory.api.serializers import (
     StockWriteSerializer,
     StockPatchSerializer,
 )
-from utils.filters.base import (
-    format_options,
-)
+
 from utils.filters.role_filters import get_role_based_filter_response
 from utils.filters.options import (
     get_status_options,

@@ -16,6 +16,7 @@ class Client(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_deleted = models.BooleanField(default=False)
+    is_blocklisted = models.BooleanField(default=False)
 
     objects = ActiveClientManager()
     all_objects = models.Manager()

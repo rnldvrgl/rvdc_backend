@@ -1,12 +1,18 @@
-from rest_framework import generics, permissions, filters, serializers
+from rest_framework import viewsets, permissions, filters, serializers
 from clients.models import Client
 from clients.api.serializers import ClientSerializer
 from django_filters.rest_framework import DjangoFilterBackend
+from utils.filters.role_filters import get_role_based_filter_response
 from utils.query import filter_by_date_range
 from utils.mixins import LogCreateMixin, LogUpdateMixin, LogSoftDeleteMixin
+from clients.api.filters import ClientFilter
+from rest_framework.decorators import action
+from rest_framework.response import Response
 
 
-class ClientListCreateView(LogCreateMixin, generics.ListCreateAPIView):
+class ClientViewSet(
+    LogCreateMixin, LogUpdateMixin, LogSoftDeleteMixin, viewsets.ModelViewSet
+):
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -15,7 +21,7 @@ class ClientListCreateView(LogCreateMixin, generics.ListCreateAPIView):
         filters.SearchFilter,
         filters.OrderingFilter,
     ]
-    filterset_fields = ["full_name", "contact_number"]
+    filterset_class = ClientFilter
     search_fields = [
         "full_name",
         "contact_number",
@@ -28,6 +34,29 @@ class ClientListCreateView(LogCreateMixin, generics.ListCreateAPIView):
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
+
+    @action(detail=False, methods=["get"], url_path="filters")
+    def get_filters(self, request):
+        filters_config = {
+            "is_blocklisted": {
+                "options": lambda: [
+                    {"label": "Blocklisted", "value": "true"},
+                    {"label": "Not Blocklisted", "value": "false"},
+                ],
+            },
+            "is_deleted": {
+                "options": lambda: [
+                    {"label": "Deleted", "value": "true"},
+                    {"label": "Not Deleted", "value": "false"},
+                ],
+            },
+        }
+        ordering_config = [
+            {"label": "Full Name", "value": "full_name"},
+            {"label": "Created Date", "value": "created_at"},
+            {"label": "City", "value": "city"},
+        ]
+        return get_role_based_filter_response(request, filters_config, ordering_config)
 
     def perform_create(self, serializer):
         full_name = serializer.validated_data.get("full_name")
@@ -54,21 +83,3 @@ class ClientListCreateView(LogCreateMixin, generics.ListCreateAPIView):
             )
 
         serializer.save()
-
-
-class ClientDetailView(
-    LogUpdateMixin, LogSoftDeleteMixin, generics.RetrieveUpdateDestroyAPIView
-):
-    queryset = Client.objects.all()
-    serializer_class = ClientSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_fields = ["full_name", "contact_number"]
-    search_fields = [
-        "full_name",
-        "contact_number",
-        "province",
-        "city",
-        "barangay",
-        "address",
-    ]
