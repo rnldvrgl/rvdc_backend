@@ -17,27 +17,29 @@ def filter_by_date_range(request, queryset, date_field="created_at"):
     return queryset
 
 
-def get_role_filtered_queryset(request, base_queryset):
+def get_role_filtered_queryset(request, base_queryset, date_field="created_at"):
     user = request.user
 
     if user.role == "admin":
-        return filter_by_date_range(request, base_queryset)
+        return filter_by_date_range(request, base_queryset, date_field)
 
     if user.role in ["manager", "clerk"] and user.assigned_stall:
         qs = base_queryset.filter(stall=user.assigned_stall)
-        return filter_by_date_range(request, qs)
+        return filter_by_date_range(request, qs, date_field)
 
     return base_queryset.none()
 
 
-def get_transfer_role_filtered_queryset(request, base_queryset):
+def get_transfer_role_filtered_queryset(
+    request, base_queryset, date_field="created_at"
+):
     user = request.user
 
     if user.role == "admin":
-        return filter_by_date_range(request, base_queryset)
+        return filter_by_date_range(request, base_queryset, date_field)
 
     if user.role in ["manager", "clerk"] and user.assigned_stall:
         qs = base_queryset.filter(from_stall=user.assigned_stall)
-        return filter_by_date_range(request, qs)
+        return filter_by_date_range(request, qs, date_field)
 
     return base_queryset.none()

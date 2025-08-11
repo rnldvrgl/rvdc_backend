@@ -309,25 +309,3 @@ class UnpaidSalesStatusView(APIView):
         return Response(
             [{"status": q["payment_status"], "count": q["count"]} for q in queryset]
         )
-
-
-class RestocksOverTimeView(APIView):
-    def get(self, request):
-        start_date, end_date = get_date_range(request)
-        stall_filter = get_stall_filter(request)
-
-        queryset = (
-            StockTransfer.objects.filter(transfer_date__range=(start_date, end_date))
-            .filter(**stall_filter)
-            .annotate(day=TruncDay("transfer_date"))
-            .values("day")
-            .annotate(restocked_items=Sum("items__quantity"))
-            .order_by("day")
-        )
-
-        return Response(
-            [
-                {"date": q["day"], "restock_volume": q["restocked_items"] or 0}
-                for q in queryset
-            ]
-        )

@@ -381,18 +381,9 @@ class StockTransferViewSet(viewsets.ModelViewSet):
     search_fields = ["from_stall__name", "to_stall__name"]
 
     def get_queryset(self):
-        return get_role_filtered_queryset(self.request, super().get_queryset())
-
-
-class StockTransferViewSet(viewsets.ModelViewSet):
-    queryset = StockTransfer.objects.all()
-    serializer_class = StockTransferSerializer
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_class = StockTransferFilter
-    search_fields = ["from_stall__name", "to_stall__name"]
-
-    def get_queryset(self):
-        return get_transfer_role_filtered_queryset(self.request, super().get_queryset())
+        return get_transfer_role_filtered_queryset(
+            self.request, super().get_queryset(), "transfer_date"
+        )
 
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):

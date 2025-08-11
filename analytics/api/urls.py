@@ -6,7 +6,6 @@ from .views import (
     CashFlowView,
     TopClientsView,
     UnpaidSalesStatusView,
-    RestocksOverTimeView,
     SummaryStatsView,
 )
 
@@ -31,10 +30,5 @@ urlpatterns = [
         "charts/unpaid-sales-status/",
         UnpaidSalesStatusView.as_view(),
         name="unpaid-sales-status",
-    ),
-    path(
-        "charts/restocks-over-time/",
-        RestocksOverTimeView.as_view(),
-        name="restocks-over-time",
     ),
 ]
