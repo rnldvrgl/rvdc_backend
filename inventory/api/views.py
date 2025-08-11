@@ -427,7 +427,12 @@ class StockTransferViewSet(viewsets.ModelViewSet):
         transfer.finalize(request.user)
         return Response({"detail": "Stock transfer finalized."})
 
-    @action(detail=True, methods=["post"], permission_classes=[IsAdminUser])
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[IsAdminUser],
+        url_path="mark-expense-as-paid",
+    )
     @transaction.atomic
     def mark_expense_as_paid(self):
         if not hasattr(self, "expense"):
