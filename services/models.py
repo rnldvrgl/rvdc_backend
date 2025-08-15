@@ -1,28 +1,18 @@
 from django.db import models
-from django.core.exceptions import ValidationError
 import uuid
 
 from inventory.models import Item
 from clients.models import Client
-from users.models import (
-    CustomUser,
-)  # Assumes technician users are in the custom User model
-from utils.enums import (
-    ServiceType,
-    ServiceStatus,
-    ApplianceStatus,
-    ServiceMode,
-    AirconType,
-)
-
-from dateutil.relativedelta import relativedelta
-from django.utils import timezone
+from users.models import CustomUser
+from utils.enums import ServiceType, ServiceStatus, ApplianceStatus, ServiceMode
 
 
 # ----------------------------------
-# BaseItemUsed (Abstract)
+# Abstract: BaseItemUsed
 # ----------------------------------
 class BaseItemUsed(models.Model):
+    """Abstract base for any item used in a service or appliance repair."""
+
     item = models.ForeignKey(Item, on_delete=models.SET_NULL, null=True)
     quantity = models.PositiveIntegerField(default=1)
 
@@ -34,18 +24,26 @@ class BaseItemUsed(models.Model):
 # ApplianceType
 # ----------------------------------
 class ApplianceType(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100, unique=True)
+
+    class Meta:
+        verbose_name = "Appliance Type"
+        verbose_name_plural = "Appliance Types"
+        ordering = ["name"]
 
     def __str__(self):
         return self.name
 
 
 # ----------------------------------
-# Core Service Model
+# Service
 # ----------------------------------
 class Service(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    client = models.ForeignKey(Client, on_delete=models.PROTECT)
+    client = models.ForeignKey(
+        Client, on_delete=models.PROTECT, related_name="services"
+    )
     service_type = models.CharField(max_length=30, choices=ServiceType.choices)
     service_mode = models.CharField(max_length=30, choices=ServiceMode.choices)
     related_transaction = models.ForeignKey(
@@ -67,19 +65,57 @@ class Service(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        ordering = ["-created_at"]
+
     def __str__(self):
         return f"{self.client.name} - {self.get_service_type_display()} ({self.get_service_mode_display()})"
 
+    @property
+    def total_cost(self):
+        """Sum labor fees and parts for all appliances in this service."""
+        appliance_costs = sum(a.labor_fee for a in self.appliances.all())
+        parts_costs = sum(
+            iu.item.price * iu.quantity
+            for a in self.appliances.all()
+            for iu in a.items_used.all()
+            if iu.item and iu.item.price
+        )
+        return appliance_costs + parts_costs
 
-class ServiceTechnician(models.Model):
+
+# ----------------------------------
+# Technician Assignment
+# (merged ServiceTechnician & ApplianceTechnician for flexibility)
+# ----------------------------------
+class TechnicianAssignment(models.Model):
     service = models.ForeignKey(
-        Service, on_delete=models.CASCADE, related_name="technicians"
+        Service, on_delete=models.CASCADE, related_name="technician_assignments"
+    )
+    appliance = models.ForeignKey(
+        "ServiceAppliance",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="technician_assignments",
     )
     technician = models.ForeignKey(
         CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician"}
     )
 
+    class Meta:
+        verbose_name = "Technician Assignment"
+        verbose_name_plural = "Technician Assignments"
+        unique_together = ("service", "appliance", "technician")
 
+    def __str__(self):
+        target = self.appliance or self.service
+        return f"{self.technician.get_full_name()} → {target}"
+
+
+# ----------------------------------
+# Technician Availability
+# ----------------------------------
 class TechnicianAvailability(models.Model):
     technician = models.ForeignKey(
         CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician"}
@@ -91,6 +127,7 @@ class TechnicianAvailability(models.Model):
 
     class Meta:
         unique_together = ("technician", "date", "time_start", "time_end")
+        ordering = ["-date", "time_start"]
 
     def __str__(self):
         status = "Available" if self.is_available else "Unavailable"
@@ -101,6 +138,7 @@ class TechnicianAvailability(models.Model):
 # Service Appliance
 # ----------------------------------
 class ServiceAppliance(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     service = models.ForeignKey(
         Service, on_delete=models.CASCADE, related_name="appliances"
     )
@@ -108,7 +146,7 @@ class ServiceAppliance(models.Model):
         ApplianceType,
         on_delete=models.SET_NULL,
         null=True,
-        related_name="used_in_services",
+        related_name="service_appliances",
     )
     brand = models.CharField(max_length=100, blank=True, null=True)
     model = models.CharField(max_length=100, blank=True, null=True)
@@ -119,23 +157,28 @@ class ServiceAppliance(models.Model):
     )
     labor_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
+    class Meta:
+        ordering = ["appliance_type__name", "brand"]
+
     def __str__(self):
-        return f"{self.appliance_type.name if self.appliance_type else 'Appliance'} ({self.brand or 'Unknown'})"
+        appliance_type = (
+            self.appliance_type.name if self.appliance_type else "Unknown Type"
+        )
+        brand = self.brand or "Unknown Brand"
+        return f"{appliance_type} ({brand})"
 
 
-class ApplianceTechnician(models.Model):
-    appliance = models.ForeignKey(
-        ServiceAppliance, on_delete=models.CASCADE, related_name="technicians"
-    )
-    technician = models.ForeignKey(
-        CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician"}
-    )
-
-
+# ----------------------------------
+# Appliance Items Used
+# ----------------------------------
 class ApplianceItemUsed(BaseItemUsed):
     appliance = models.ForeignKey(
         ServiceAppliance, on_delete=models.CASCADE, related_name="items_used"
     )
+
+    class Meta:
+        verbose_name = "Appliance Item Used"
+        verbose_name_plural = "Appliance Items Used"
 
 
 # ----------------------------------
@@ -143,12 +186,16 @@ class ApplianceItemUsed(BaseItemUsed):
 # ----------------------------------
 class ApplianceStatusHistory(models.Model):
     appliance = models.ForeignKey(
-        ServiceAppliance,
-        on_delete=models.CASCADE,
-        related_name="appliance_status_history",
+        ServiceAppliance, on_delete=models.CASCADE, related_name="status_history"
     )
     status = models.CharField(max_length=30, choices=ApplianceStatus.choices)
     changed_at = models.DateTimeField(auto_now_add=True)
+    changed_by = models.ForeignKey(
+        CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+
+    class Meta:
+        ordering = ["-changed_at"]
 
     def __str__(self):
         return f"{self.appliance} → {self.get_status_display()} @ {self.changed_at}"
@@ -156,10 +203,16 @@ class ApplianceStatusHistory(models.Model):
 
 class ServiceStatusHistory(models.Model):
     service = models.ForeignKey(
-        Service, on_delete=models.CASCADE, related_name="service_status_history"
+        Service, on_delete=models.CASCADE, related_name="status_history"
     )
     status = models.CharField(max_length=30, choices=ServiceStatus.choices)
     changed_at = models.DateTimeField(auto_now_add=True)
+    changed_by = models.ForeignKey(
+        CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+
+    class Meta:
+        ordering = ["-changed_at"]
 
     def __str__(self):
         return f"{self.service} → {self.get_status_display()} @ {self.changed_at}"
