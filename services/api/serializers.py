@@ -45,6 +45,24 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "items_used",
         ]
 
+    def validate(self, data):
+        service = data.get("service")
+        appliance_type = data.get("appliance_type")
+        brand = data.get("brand")
+        model = data.get("model")
+
+        if ServiceAppliance.objects.filter(
+            service=service,
+            appliance_type=appliance_type,
+            brand=brand,
+            model=model,
+        ).exists():
+            raise serializers.ValidationError(
+                f"This appliance ({appliance_type}, {brand}, {model}) "
+                f"already exists for this service."
+            )
+        return data
+
     def create(self, validated_data):
         appliance = super().create(validated_data)
         ApplianceStatusHistory.objects.create(
@@ -75,6 +93,14 @@ class TechnicianAssignmentSerializer(serializers.ModelSerializer):
     def validate(self, data):
         technician = data.get("technician")
         service = data.get("service")
+
+        # Unique assignment check
+        if TechnicianAssignment.objects.filter(
+            service=service, technician=technician
+        ).exists():
+            raise serializers.ValidationError(
+                f"Technician {technician.get_full_name()} is already assigned to this service."
+            )
 
         if not service.scheduled_date or not service.scheduled_time:
             raise serializers.ValidationError(
