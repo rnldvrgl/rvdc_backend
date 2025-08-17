@@ -41,7 +41,7 @@ class ApplianceStatus(models.TextChoices):
 class ServiceMode(models.TextChoices):
     IN_SHOP = "in_shop", _("In-Shop")
     HOME_SERVICE = "home_service", _("Home Service")
-    PICKUP = "pickup", _("Pickup and Return")
+    PULL_OUT_RETURN = "pull_out_return", _("Pull-Out & Return")
 
 
 class BankChoices(models.TextChoices):

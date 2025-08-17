@@ -15,6 +15,11 @@ class AirconBrandSerializer(serializers.ModelSerializer):
         model = AirconBrand
         fields = ["id", "name"]
 
+    def validate_name(self, value):
+        if AirconBrand.objects.filter(name__iexact=value).exists():
+            raise serializers.ValidationError("This aircon brand already exists.")
+        return value
+
 
 class AirconModelSerializer(serializers.ModelSerializer):
     brand = AirconBrandSerializer(read_only=True)
@@ -33,6 +38,16 @@ class AirconModelSerializer(serializers.ModelSerializer):
             "aircon_type",
             "is_inverter",
         ]
+
+    def validate(self, data):
+        brand = data.get("brand")
+        name = data.get("name")
+
+        if AirconModel.objects.filter(brand=brand, name__iexact=name).exists():
+            raise serializers.ValidationError(
+                f"Model '{name}' already exists under this brand."
+            )
+        return data
 
 
 class AirconUnitSerializer(serializers.ModelSerializer):
@@ -68,6 +83,11 @@ class AirconUnitSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
+    def validate_serial_number(self, value):
+        if AirconUnit.objects.filter(serial_number__iexact=value).exists():
+            raise serializers.ValidationError("This serial number is already in use.")
+        return value
+
 
 class AirconItemUsedSerializer(serializers.ModelSerializer):
     class Meta:
@@ -84,3 +104,16 @@ class AirconInstallationSerializer(serializers.ModelSerializer):
     class Meta:
         model = AirconInstallation
         fields = "__all__"
+
+    def validate(self, data):
+        service = data.get("service")
+        unit = data.get("unit", None)
+
+        if (
+            unit
+            and AirconInstallation.objects.filter(service=service, unit=unit).exists()
+        ):
+            raise serializers.ValidationError(
+                f"Aircon unit '{unit}' is already linked to this service."
+            )
+        return data
