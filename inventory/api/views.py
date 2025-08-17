@@ -36,10 +36,10 @@ from inventory.api.serializers import (
 from utils.filters.role_filters import get_role_based_filter_response
 from utils.filters.options import (
     get_status_options,
-    get_technician_options,
     get_unit_of_measure_options,
     get_stall_options,
     get_product_category_options,
+    get_user_options,
 )
 
 from utils.query import filter_by_date_range, get_transfer_role_filtered_queryset
@@ -392,7 +392,9 @@ class StockTransferViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):
         filters_config = {
-            "technician": {"options": get_technician_options},
+            "technician": {
+                "options": lambda: get_user_options(include_roles=["technician"])
+            },
             "is_finalized": {
                 "options": lambda: [
                     {"label": "Finalized", "value": "true"},

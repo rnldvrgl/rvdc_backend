@@ -3,7 +3,7 @@ from inventory.models import Item, Stall, ProductCategory
 from django.db.models.functions import Concat
 from django.db.models import F, Value
 from users.models import CustomUser
-from utils.enums import BankChoices
+from utils.enums import BankChoices, ServiceStatus, ServiceType
 
 
 def get_status_options() -> List[Dict[str, str]]:
@@ -25,18 +25,27 @@ def get_unit_of_measure_options() -> List[Dict[str, str]]:
     return [{"label": u, "value": u} for u in units]
 
 
-def get_technician_options() -> List[Dict[str, str]]:
-    technicians = (
-        CustomUser.objects.filter(role="technician", is_deleted=False)
-        .annotate(full_name=Concat(F("first_name"), Value(" "), F("last_name")))
-        .values("id", "full_name")
-    )
-    return [{"label": t["full_name"], "value": str(t["id"])} for t in technicians]
-
-
 def get_stall_options() -> List[Dict[str, str]]:
     stalls = Stall.objects.filter(is_deleted=False).values("id", "name")
     return [{"label": s["name"], "value": str(s["id"])} for s in stalls]
+
+
+def get_client_options(include_number: bool = False) -> List[Dict[str, str]]:
+    clients = (
+        CustomUser.objects.filter(role="client", is_deleted=False)
+        .annotate(full_name=Concat(F("first_name"), Value(" "), F("last_name")))
+        .values("id", "full_name", "contact_number")
+    )
+
+    results = []
+    for c in clients:
+        label = c["full_name"]
+        if include_number and c["contact_number"]:
+            label = f"{label} ({c['contact_number']})"
+
+        results.append({"label": label, "value": str(c["id"])})
+
+    return results
 
 
 def get_user_options(
@@ -64,3 +73,11 @@ def get_product_category_options() -> List[Dict[str, str]]:
 
 def get_bank_options() -> List[Dict[str, str]]:
     return [{"value": choice.value, "label": choice.label} for choice in BankChoices]
+
+
+def get_service_status_options():
+    return [{"label": label, "value": value} for value, label in ServiceStatus.choices]
+
+
+def get_service_type_options():
+    return [{"label": label, "value": value} for value, label in ServiceType.choices]

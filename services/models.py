@@ -1,5 +1,5 @@
 from django.db import models
-import uuid
+from datetime import datetime, timedelta
 
 from inventory.models import Item
 from clients.models import Client
@@ -24,7 +24,6 @@ class BaseItemUsed(models.Model):
 # ApplianceType
 # ----------------------------------
 class ApplianceType(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100, unique=True)
 
     class Meta:
@@ -40,7 +39,6 @@ class ApplianceType(models.Model):
 # Service
 # ----------------------------------
 class Service(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     client = models.ForeignKey(
         Client, on_delete=models.PROTECT, related_name="services"
     )
@@ -55,6 +53,7 @@ class Service(models.Model):
     override_contact_number = models.CharField(max_length=20, blank=True, null=True)
     scheduled_date = models.DateField(blank=True, null=True)
     scheduled_time = models.TimeField(blank=True, null=True)
+    estimated_duration = models.PositiveIntegerField(default=60)  # minutes
     pickup_date = models.DateField(blank=True, null=True)
     delivery_date = models.DateField(blank=True, null=True)
     status = models.CharField(
@@ -83,10 +82,17 @@ class Service(models.Model):
         )
         return appliance_costs + parts_costs
 
+    @property
+    def scheduled_end_time(self):
+        """Calculate end time using start + estimated_duration (if available)."""
+        if self.scheduled_date and self.scheduled_time:
+            dt = datetime.combine(self.scheduled_date, self.scheduled_time)
+            return (dt + timedelta(minutes=self.estimated_duration)).time()
+        return None
+
 
 # ----------------------------------
 # Technician Assignment
-# (merged ServiceTechnician & ApplianceTechnician for flexibility)
 # ----------------------------------
 class TechnicianAssignment(models.Model):
     service = models.ForeignKey(
@@ -106,7 +112,6 @@ class TechnicianAssignment(models.Model):
     class Meta:
         verbose_name = "Technician Assignment"
         verbose_name_plural = "Technician Assignments"
-        unique_together = ("service", "appliance", "technician")
 
     def __str__(self):
         target = self.appliance or self.service
@@ -114,31 +119,9 @@ class TechnicianAssignment(models.Model):
 
 
 # ----------------------------------
-# Technician Availability
-# ----------------------------------
-class TechnicianAvailability(models.Model):
-    technician = models.ForeignKey(
-        CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician"}
-    )
-    date = models.DateField()
-    time_start = models.TimeField()
-    time_end = models.TimeField()
-    is_available = models.BooleanField(default=True)
-
-    class Meta:
-        unique_together = ("technician", "date", "time_start", "time_end")
-        ordering = ["-date", "time_start"]
-
-    def __str__(self):
-        status = "Available" if self.is_available else "Unavailable"
-        return f"{self.technician.get_full_name()} on {self.date} ({self.time_start}-{self.time_end}) - {status}"
-
-
-# ----------------------------------
 # Service Appliance
 # ----------------------------------
 class ServiceAppliance(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     service = models.ForeignKey(
         Service, on_delete=models.CASCADE, related_name="appliances"
     )

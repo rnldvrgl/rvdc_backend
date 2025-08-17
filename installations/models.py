@@ -31,9 +31,6 @@ class AirconModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        unique_together = ("brand", "name")
-
     def __str__(self):
         return f"{self.brand.name} {self.name} ({self.get_aircon_type_display()})"
 
@@ -159,9 +156,6 @@ class AirconUnit(models.Model):
     def __str__(self):
         return f"{self.model} (SN: {self.serial_number})"
 
-    class Meta:
-        unique_together = ("model", "serial_number")
-
 
 class AirconItemUsed(models.Model):
     unit = models.ForeignKey(
@@ -180,6 +174,3 @@ class AirconItemUsed(models.Model):
 
     def __str__(self):
         return f"{self.item.name} x{self.total_quantity_used} for unit {self.unit.serial_number}"
-
-    class Meta:
-        unique_together = ("unit", "item")
