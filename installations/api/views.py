@@ -9,7 +9,6 @@ from installations.api.serializers import (
     AirconModelSerializer,
     AirconInstallationSerializer,
     AirconUnitSerializer,
-    AirconItemUsedSerializer,
 )
 from installations.api.filters import (
     AirconBrandFilter,
@@ -22,7 +21,6 @@ from installations.models import (
     AirconModel,
     AirconInstallation,
     AirconUnit,
-    AirconItemUsed,
 )
 from utils.query import (
     get_role_filtered_queryset,
@@ -31,9 +29,7 @@ from utils.filters.role_filters import get_role_based_filter_response
 from utils.filters.options import (
     get_aircon_brand_options,
     get_aircon_model_options,
-    get_aircon_unit_options,
     get_aircon_installation_options,
-    get_item_options,
 )
 
 
