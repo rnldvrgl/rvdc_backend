@@ -1,16 +1,9 @@
 from django_filters import rest_framework as filters
 from installations.models import (
-    AirconBrand,
     AirconModel,
     AirconInstallation,
     AirconUnit,
 )
-
-
-class AirconBrandFilter(filters.FilterSet):
-    class Meta:
-        model = AirconBrand
-        fields = ["name"]
 
 
 class AirconModelFilter(filters.FilterSet):

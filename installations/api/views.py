@@ -1,7 +1,6 @@
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
-from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters as drf_filters
 from installations.api.serializers import (
@@ -11,7 +10,6 @@ from installations.api.serializers import (
     AirconUnitSerializer,
 )
 from installations.api.filters import (
-    AirconBrandFilter,
     AirconModelFilter,
     AirconInstallationFilter,
     AirconUnitFilter,
@@ -29,7 +27,6 @@ from utils.filters.role_filters import get_role_based_filter_response
 from utils.filters.options import (
     get_aircon_brand_options,
     get_aircon_model_options,
-    get_aircon_installation_options,
 )
 
 
@@ -42,22 +39,11 @@ class AirconBrandViewSet(viewsets.ModelViewSet):
         drf_filters.SearchFilter,
         drf_filters.OrderingFilter,
     ]
-    filterset_class = AirconBrandFilter
     search_fields = ["name"]
     ordering_fields = ["name"]
 
     def get_queryset(self):
         return get_role_filtered_queryset(self.request, super().get_queryset())
-
-    @action(detail=False, methods=["get"], url_path="filters")
-    def get_filters(self, request):
-        filters_config = {
-            "name": {"options": get_aircon_brand_options},
-        }
-        ordering_config = [
-            {"label": "Name", "value": "name"},
-        ]
-        return get_role_based_filter_response(request, filters_config, ordering_config)
 
 
 class AirconModelViewSet(viewsets.ModelViewSet):
@@ -116,7 +102,7 @@ class AirconUnitViewSet(viewsets.ModelViewSet):
         filters_config = {
             "model": {"options": get_aircon_model_options},
             "sale": {"options": lambda: []},
-            "installation": {"options": get_aircon_installation_options},
+            "installation": {"options": lambda: []},
             "reserved_by": {"options": lambda: []},
         }
         ordering_config = [

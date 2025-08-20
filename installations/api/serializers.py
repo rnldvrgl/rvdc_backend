@@ -6,7 +6,6 @@ from installations.models import (
     AirconUnit,
     AirconItemUsed,
 )
-from inventory.models import Item
 from services.models import Service
 
 
