@@ -27,6 +27,7 @@ from utils.filters.role_filters import get_role_based_filter_response
 from utils.filters.options import (
     get_aircon_brand_options,
     get_aircon_model_options,
+    get_aircon_type_options,
 )
 
 
@@ -66,8 +67,14 @@ class AirconModelViewSet(viewsets.ModelViewSet):
     def get_filters(self, request):
         filters_config = {
             "brand": {"options": get_aircon_brand_options},
-            "aircon_type": {"options": lambda: []},
+            "aircon_type": {"options": get_aircon_type_options},
             "is_inverter": {
+                "options": lambda: [
+                    {"label": "Yes", "value": "true"},
+                    {"label": "No", "value": "false"},
+                ]
+            },
+            "has_discount": {
                 "options": lambda: [
                     {"label": "Yes", "value": "true"},
                     {"label": "No", "value": "false"},

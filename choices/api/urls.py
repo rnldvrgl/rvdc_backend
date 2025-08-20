@@ -7,6 +7,8 @@ from choices.api.views import (
     TechnicianChoicesAPIView,
     UsersChoicesAPIView,
     BanksChoicesAPIView,
+    AirconTypesChoicesAPIView,
+    AirconBrandsChoicesAPIView,
 )
 
 urlpatterns = [
@@ -21,4 +23,14 @@ urlpatterns = [
     path("technicians/", TechnicianChoicesAPIView.as_view(), name="technician_choices"),
     path("users/", UsersChoicesAPIView.as_view(), name="users_choices"),
     path("banks/", BanksChoicesAPIView.as_view(), name="banks_choices"),
+    path(
+        "aircon-types/",
+        AirconTypesChoicesAPIView.as_view(),
+        name="aircon_types_choices",
+    ),
+    path(
+        "aircon-brands/",
+        AirconBrandsChoicesAPIView.as_view(),
+        name="aircon_brands_choices",
+    ),
 ]

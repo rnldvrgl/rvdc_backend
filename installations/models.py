@@ -2,6 +2,7 @@ from django.db import models
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
+from decimal import Decimal
 
 from services.models import Service
 from utils.enums import AirconType, ServiceType
@@ -21,11 +22,17 @@ class AirconModel(models.Model):
     brand = models.ForeignKey(AirconBrand, on_delete=models.CASCADE)
     name = models.CharField(max_length=100)
     retail_price = models.DecimalField(max_digits=10, decimal_places=2)
+    discount_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Discount percentage applied to retail price (0–100).",
+    )
     aircon_type = models.CharField(
         max_length=30, choices=AirconType.choices, default=AirconType.WINDOW
     )
     is_inverter = models.BooleanField(
-        default=False, help_text="Uses inverter technology"
+        default=False, help_text="Uses inverter technology."
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -33,6 +40,20 @@ class AirconModel(models.Model):
 
     def __str__(self):
         return f"{self.brand.name} {self.name} ({self.get_aircon_type_display()})"
+
+    @property
+    def has_discount(self) -> bool:
+        """Returns True if the model has a valid discount applied."""
+        return self.discount_percentage > 0
+
+    @property
+    def promo_price(self) -> Decimal:
+        """Final price after applying discount, if any."""
+        if self.has_discount:
+            discount_fraction = self.discount_percentage / Decimal("100")
+            discount_amount = self.retail_price * discount_fraction
+            return self.retail_price - discount_amount
+        return self.retail_price
 
 
 class AirconInstallation(models.Model):
