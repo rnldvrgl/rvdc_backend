@@ -91,12 +91,12 @@ def get_aircon_type_options():
 def get_aircon_brand_options():
     return [
         {"label": brand.name, "value": str(brand.id)}
-        for brand in AirconBrand.objects.filter(is_deleted=False)
+        for brand in AirconBrand.objects.all()
     ]
 
 
 def get_aircon_model_options():
     return [
         {"label": model.name, "value": str(model.id)}
-        for model in AirconModel.objects.filter(is_deleted=False)
+        for model in AirconModel.objects.all()
     ]
