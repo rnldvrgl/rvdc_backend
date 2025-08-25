@@ -130,9 +130,15 @@ class AirconUnit(models.Model):
         if run_clean:
             self.full_clean()
 
-        if self.sale and self.sale.created_at:
+        # Determine warranty start logic
+        if self.installation and self.installation.date_installed:
+            self.warranty_start_date = self.installation.date_installed
+        elif self.sale and self.sale.created_at:
             self.warranty_start_date = self.sale.created_at.date()
+        else:
+            self.warranty_start_date = None  # Not yet started
 
+        # Clear reservation once sold or installed
         if self.sale or self.installation:
             self.reserved_by = None
             self.reserved_at = None
@@ -158,8 +164,12 @@ class AirconUnit(models.Model):
 
     @property
     def warranty_status(self):
-        if not self.warranty_start_date:
+        if self.warranty_period_months == 0:
             return "No Warranty"
+
+        if not self.warranty_start_date:
+            return "Warranty Not Started"
+
         return "Under Warranty" if self.is_under_warranty else "Expired"
 
     @property
