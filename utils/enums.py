@@ -9,7 +9,6 @@ class AirconType(models.TextChoices):
     CASSETTE = "cassette", _("Cassette Type")
     PORTABLE = "portable", _("Portable")
     CENTRALIZED = "centralized", _("Centralized")
-    OTHERS = "others", _("Others")
 
 
 class ServiceType(models.TextChoices):

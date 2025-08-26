@@ -6,7 +6,6 @@ from installations.models import (
     AirconUnit,
     AirconItemUsed,
 )
-from inventory.models import Item
 from services.models import Service
 
 
@@ -26,6 +25,7 @@ class AirconModelSerializer(serializers.ModelSerializer):
     brand_id = serializers.PrimaryKeyRelatedField(
         source="brand", queryset=AirconBrand.objects.all(), write_only=True
     )
+    has_discount = serializers.ReadOnlyField()
 
     class Meta:
         model = AirconModel
@@ -36,14 +36,21 @@ class AirconModelSerializer(serializers.ModelSerializer):
             "name",
             "retail_price",
             "aircon_type",
+            "discount_percentage",
             "is_inverter",
+            "has_discount",
         ]
 
     def validate(self, data):
         brand = data.get("brand")
         name = data.get("name")
 
-        if AirconModel.objects.filter(brand=brand, name__iexact=name).exists():
+        # Exclude the current instance if updating
+        qs = AirconModel.objects.filter(brand=brand, name__iexact=name)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+
+        if qs.exists():
             raise serializers.ValidationError(
                 f"Model '{name}' already exists under this brand."
             )

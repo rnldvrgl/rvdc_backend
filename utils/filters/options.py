@@ -4,7 +4,7 @@ from django.db.models.functions import Concat
 from django.db.models import F, Value
 from installations.models import AirconBrand, AirconModel
 from users.models import CustomUser
-from utils.enums import BankChoices, ServiceStatus, ServiceType
+from utils.enums import AirconType, BankChoices, ServiceStatus, ServiceType
 
 
 def get_status_options() -> List[Dict[str, str]]:
@@ -84,15 +84,19 @@ def get_service_type_options():
     return [{"label": label, "value": value} for value, label in ServiceType.choices]
 
 
+def get_aircon_type_options():
+    return [{"label": label, "value": value} for value, label in AirconType.choices]
+
+
 def get_aircon_brand_options():
     return [
         {"label": brand.name, "value": str(brand.id)}
-        for brand in AirconBrand.objects.filter(is_deleted=False)
+        for brand in AirconBrand.objects.all()
     ]
 
 
 def get_aircon_model_options():
     return [
         {"label": model.name, "value": str(model.id)}
-        for model in AirconModel.objects.filter(is_deleted=False)
+        for model in AirconModel.objects.all()
     ]

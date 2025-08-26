@@ -1,22 +1,30 @@
 from django_filters import rest_framework as filters
+from django.db.models import Q
 from installations.models import (
-    AirconBrand,
     AirconModel,
     AirconInstallation,
     AirconUnit,
 )
 
 
-class AirconBrandFilter(filters.FilterSet):
-    class Meta:
-        model = AirconBrand
-        fields = ["name"]
-
-
 class AirconModelFilter(filters.FilterSet):
+    has_discount = filters.BooleanFilter(method="filter_has_discount")
+
     class Meta:
         model = AirconModel
-        fields = ["brand", "aircon_type", "is_inverter"]
+        fields = ["brand", "aircon_type", "is_inverter", "has_discount"]
+
+    def filter_has_discount(self, queryset, name, value):
+        """
+        Filters aircon models by whether they have a discount.
+        True -> discount_percentage > 0
+        False -> discount_percentage = 0
+        """
+        if value:
+            return queryset.filter(discount_percentage__gt=0)
+        return queryset.filter(
+            Q(discount_percentage=0) | Q(discount_percentage__isnull=True)
+        )
 
 
 class AirconUnitFilter(filters.FilterSet):
