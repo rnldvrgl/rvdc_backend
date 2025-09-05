@@ -8,11 +8,11 @@ class ActiveClientManager(models.Manager):
 
 class Client(models.Model):
     full_name = models.CharField(max_length=100)
-    contact_number = models.CharField(max_length=15)
+    contact_number = models.CharField(max_length=15, null=True, blank=True)
     province = models.CharField(max_length=50)
     city = models.CharField(max_length=50)
-    barangay = models.CharField(max_length=50)
-    address = models.CharField(max_length=255)
+    barangay = models.CharField(max_length=50, null=True, blank=True)
+    address = models.CharField(max_length=255, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_deleted = models.BooleanField(default=False)
