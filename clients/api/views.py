@@ -33,7 +33,9 @@ class ClientViewSet(
     ordering_fields = "__all__"
 
     def get_queryset(self):
-        return filter_by_date_range(self.request, super().get_queryset())
+        # Apply role/date-based filtering
+        qs = super().get_queryset()
+        return filter_by_date_range(self.request, qs)
 
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):
@@ -50,17 +52,28 @@ class ClientViewSet(
                     {"label": "Not Deleted", "value": "false"},
                 ],
             },
+            "province": {
+                "options": lambda: Client.objects.values_list("province", flat=True)
+                .distinct()
+                .order_by("province"),
+            },
+            "city": {
+                "options": lambda: Client.objects.values_list("city", flat=True)
+                .distinct()
+                .order_by("city"),
+            },
         }
         ordering_config = [
             {"label": "Full Name", "value": "full_name"},
             {"label": "Created Date", "value": "created_at"},
             {"label": "City", "value": "city"},
+            {"label": "Province", "value": "province"},
         ]
         return get_role_based_filter_response(request, filters_config, ordering_config)
 
     def perform_create(self, serializer):
         full_name = serializer.validated_data.get("full_name")
-        contact_number = serializer.validated_data.get("contact_number")
+        contact_number = serializer.validated_data.get("contact_number") or None
 
         if Client.objects.filter(
             full_name=full_name, contact_number=contact_number
@@ -73,7 +86,10 @@ class ClientViewSet(
                 }
             )
 
-        if Client.objects.filter(contact_number=contact_number).exists():
+        if (
+            contact_number
+            and Client.objects.filter(contact_number=contact_number).exists()
+        ):
             raise serializers.ValidationError(
                 {
                     "non_field_errors": [
@@ -82,4 +98,4 @@ class ClientViewSet(
                 }
             )
 
-        serializer.save()
+        serializer.save(contact_number=contact_number)
