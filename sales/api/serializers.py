@@ -4,7 +4,6 @@ from rest_framework.exceptions import ValidationError
 from inventory.models import Stock
 from sales.models import SalesTransaction, SalesItem, SalesPayment
 from inventory.api.serializers import ItemSerializer, StallSerializer
-from utils.inventory import record_stock_movement
 from clients.api.serializers import ClientSerializer
 from inventory.models import Item
 
@@ -128,15 +127,6 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
 
                 SalesItem.objects.create(transaction=sale_txn, **item_data)
 
-                record_stock_movement(
-                    item=item,
-                    stall=stall,
-                    quantity=-qty,
-                    movement_type="sale",
-                    related_object=sale_txn,
-                    note=f"Sale transaction #{sale_txn.id} to {sale_txn.client.full_name if sale_txn.client else 'N/A'}",
-                )
-
             # Create payments if any
             for payment_data in payments_data:
                 SalesPayment.objects.create(transaction=sale_txn, **payment_data)
@@ -193,13 +183,6 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
                         )
                         stock.quantity -= change
                         stock.save()
-                        record_stock_movement(
-                            item=item,
-                            stall=stall,
-                            quantity=-change,
-                            movement_type="sale",
-                            related_object=instance,
-                        )
 
             # Apply basic field updates
             for attr, value in validated_data.items():

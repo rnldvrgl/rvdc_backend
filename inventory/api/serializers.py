@@ -10,11 +10,9 @@ from inventory.models import (
     StockTransfer,
     StockTransferItem,
 )
-from utils.logger import log_activity
 from utils.inventory import (
     create_stall_with_initial_stocks,
     create_item_with_initial_stock,
-    record_stock_movement,
 )
 from expenses.models import Expense
 
@@ -81,12 +79,16 @@ class StockReadSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
     stock_room_quantity = serializers.SerializerMethodField()
     stock_room_status = serializers.SerializerMethodField()
+    reserved_quantity = serializers.IntegerField(read_only=True)
+    available_quantity = serializers.SerializerMethodField()
 
     class Meta:
         model = Stock
         fields = [
             "id",
             "quantity",
+            "reserved_quantity",
+            "available_quantity",
             "low_stock_threshold",
             "item",
             "updated_at",
@@ -107,6 +109,9 @@ class StockReadSerializer(serializers.ModelSerializer):
     def get_stock_room_status(self, obj):
         stock_room = StockRoomStock.objects.filter(item=obj.item).first()
         return stock_room.status() if stock_room else "no_stock"
+
+    def get_available_quantity(self, obj):
+        return obj.quantity - obj.reserved_quantity
 
 
 class StockWriteSerializer(serializers.ModelSerializer):
@@ -149,55 +154,8 @@ class StockPatchSerializer(serializers.ModelSerializer):
         fields = ["quantity", "low_stock_threshold", "is_deleted", "track_stock"]
 
     def update(self, instance, validated_data):
-        user = self.context["request"].user
-        original_qty = instance.quantity
-        original_threshold = instance.low_stock_threshold
-
-        with transaction.atomic():
-            if "quantity" in validated_data:
-                new_qty = validated_data["quantity"]
-                diff = new_qty - original_qty
-                instance.quantity = new_qty
-                record_stock_movement(instance.item, instance.stall, diff, "adjustment")
-                log_activity(
-                    user,
-                    instance,
-                    "update_stock",
-                    f"Updated quantity from {original_qty} to {new_qty}",
-                )
-
-            if "low_stock_threshold" in validated_data:
-                new_threshold = validated_data["low_stock_threshold"]
-                instance.low_stock_threshold = new_threshold
-                log_activity(
-                    user,
-                    instance,
-                    "update_threshold",
-                    f"Updated threshold from {original_threshold} to {new_threshold}",
-                )
-
-            if "track_stock" in validated_data:
-                instance.track_stock = validated_data["track_stock"]
-                action = "untrack_stock" if instance.track_stock else "track_stock"
-                log_activity(
-                    user,
-                    instance,
-                    action,
-                    f"{'Untracked' if instance.track_stock else 'Tracked'} stock",
-                )
-
-            if "is_deleted" in validated_data:
-                instance.is_deleted = validated_data["is_deleted"]
-                action = "deleted_stock" if instance.is_deleted else "restored_stock"
-                log_activity(
-                    user,
-                    instance,
-                    action,
-                    f"{'Deleted' if instance.is_deleted else 'Restored'} stock",
-                )
-
-            instance.is_low_stock = instance.quantity <= instance.low_stock_threshold
-            instance.save()
+        instance.is_low_stock = instance.quantity <= instance.low_stock_threshold
+        instance.save()
 
         return instance
 
@@ -385,31 +343,3 @@ class StockTransferSerializer(serializers.ModelSerializer):
             )
         to_stock.quantity -= qty
         to_stock.save()
-
-    def _create_stock_movements(self, transfer):
-        for item_data in transfer.items.all():
-            item, qty = item_data.item, item_data.quantity
-            if transfer.from_stall:
-                record_stock_movement(
-                    item=item,
-                    stall=transfer.from_stall,
-                    quantity=-qty,
-                    movement_type="transfer_out",
-                    related_object=transfer,
-                )
-            else:
-                record_stock_movement(
-                    item=item,
-                    stall=None,
-                    quantity=-qty,
-                    movement_type="transfer_out",
-                    related_object=transfer,
-                )
-
-            record_stock_movement(
-                item=item,
-                stall=transfer.to_stall,
-                quantity=qty,
-                movement_type="transfer_in",
-                related_object=transfer,
-            )

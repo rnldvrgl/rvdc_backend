@@ -4,15 +4,12 @@ from clients.api.serializers import ClientSerializer
 from django_filters.rest_framework import DjangoFilterBackend
 from utils.filters.role_filters import get_role_based_filter_response
 from utils.query import filter_by_date_range
-from utils.mixins import LogCreateMixin, LogUpdateMixin, LogSoftDeleteMixin
 from clients.api.filters import ClientFilter
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
 
-class ClientViewSet(
-    LogCreateMixin, LogUpdateMixin, LogSoftDeleteMixin, viewsets.ModelViewSet
-):
+class ClientViewSet(viewsets.ModelViewSet):
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
     permission_classes = [permissions.IsAuthenticated]

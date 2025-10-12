@@ -45,9 +45,7 @@ from utils.filters.options import (
 from utils.query import filter_by_date_range, get_transfer_role_filtered_queryset
 from utils.inventory import (
     user_can_manage_stall,
-    record_stock_movement,
 )
-from utils.logger import log_activity
 from django_filters.rest_framework import DjangoFilterBackend
 from utils.query import get_role_filtered_queryset
 from rest_framework.exceptions import ValidationError
@@ -217,47 +215,9 @@ class StockViewSet(viewsets.ModelViewSet):
         stock_room_stock.quantity -= quantity
         stock_room_stock.save()
 
-        restock_out = Restock.objects.create(
-            item=stock.item,
-            quantity=quantity,
-            created_by=request.user,
-        )
-
-        record_stock_movement(
-            item=stock.item,
-            stall=None,
-            quantity=-quantity,
-            movement_type="transfer_out",
-            related_object=restock_out,
-            note=f"Stock room ➔ Stall '{stock.stall.name}': -{quantity} {stock.item.unit_of_measure} '{stock.item.name}'",
-        )
-
         # Add to stall
-        original_quantity = stock.quantity
         stock.quantity += quantity
         stock.save()
-
-        restock_in = Restock.objects.create(
-            item=stock.item,
-            quantity=quantity,
-            created_by=request.user,
-        )
-
-        record_stock_movement(
-            item=stock.item,
-            stall=stock.stall,
-            quantity=quantity,
-            movement_type="transfer_in",
-            related_object=restock_in,
-            note=f"Stock room ➔ Stall '{stock.stall.name}': +{quantity} {stock.item.unit_of_measure} '{stock.item.name}'",
-        )
-
-        log_activity(
-            request.user,
-            stock,
-            "restock",
-            f"Restocked '{stock.item.name}' at '{stock.stall.name}' from {original_quantity} to {stock.quantity}.",
-        )
 
         manager_user = (
             get_user_model()
@@ -328,31 +288,8 @@ class StockRoomStockViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         quantity = serializer.validated_data["quantity"]
 
-        original_quantity = stock_room_stock.quantity
         stock_room_stock.quantity += quantity
         stock_room_stock.save()
-
-        restock = Restock.objects.create(
-            item=stock_room_stock.item,
-            quantity=quantity,
-            created_by=request.user,
-        )
-
-        record_stock_movement(
-            item=stock_room_stock.item,
-            stall=None,
-            quantity=quantity,
-            movement_type="purchase",
-            related_object=restock,
-            note=f"Supplier ➔ Stock room: +{quantity} {stock_room_stock.item.unit_of_measure} '{stock_room_stock.item.name}'",
-        )
-
-        log_activity(
-            request.user,
-            stock_room_stock,
-            "restock_stock_room",
-            f"Restocked stock room for '{stock_room_stock.item.name}' from {original_quantity} to {stock_room_stock.quantity}.",
-        )
 
         return Response(
             {

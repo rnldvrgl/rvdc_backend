@@ -109,27 +109,36 @@ class Stall(models.Model):
 
 class Stock(models.Model):
     item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="stocks")
-    low_stock_threshold = models.PositiveIntegerField(default=0)
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE, related_name="stocks")
     quantity = models.PositiveIntegerField(default=0)
+    reserved_quantity = models.PositiveIntegerField(default=0)
+    low_stock_threshold = models.PositiveIntegerField(default=0)
     track_stock = models.BooleanField(default=True)
+    is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    is_deleted = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["item__name"]
 
+    @property
+    def available_quantity(self):
+        """Quantity that can still be sold or used for new services."""
+        return max(self.quantity - self.reserved_quantity, 0)
+
     def status(self):
         if self.quantity == 0:
             return "no_stock"
-        elif self.quantity <= self.low_stock_threshold:
+        elif self.available_quantity <= self.low_stock_threshold:
             return "low_stock"
         else:
             return "high_stock"
 
     def __str__(self):
-        return f"{self.item.name} @ {self.stall.name} - {self.quantity} {self.item.unit_of_measure}"
+        return (
+            f"{self.item.name} @ {self.stall.name} - "
+            f"{self.quantity} total / {self.available_quantity} available"
+        )
 
 
 class StockRoomStock(models.Model):
@@ -201,7 +210,6 @@ class StockTransfer(models.Model):
 
     def finalize(self, user):
         from notifications.models import Notification
-        from utils.inventory import record_stock_movement
         from expenses.models import Expense, ExpenseItem
 
         if self.is_finalized:
@@ -233,36 +241,6 @@ class StockTransfer(models.Model):
                     item=t_item.item,
                     quantity=t_item.quantity,
                     total_price=item_total,
-                )
-
-                # 4. Create stock movements (audit only, do NOT adjust stocks)
-                if self.from_stall:
-                    record_stock_movement(
-                        item=t_item.item,
-                        stall=self.from_stall,
-                        quantity=-t_item.quantity,
-                        movement_type="transfer_out",
-                        related_object=self,
-                        note=f"Finalized transfer OUT: {t_item.quantity} {t_item.item.unit_of_measure} of {t_item.item.name}",
-                    )
-                else:
-                    # from stock room
-                    record_stock_movement(
-                        item=t_item.item,
-                        stall=None,
-                        quantity=-t_item.quantity,
-                        movement_type="transfer_out",
-                        related_object=self,
-                        note=f"Finalized transfer OUT from Stock Room",
-                    )
-
-                record_stock_movement(
-                    item=t_item.item,
-                    stall=self.to_stall,
-                    quantity=t_item.quantity,
-                    movement_type="transfer_in",
-                    related_object=self,
-                    note=f"Finalized transfer IN: {t_item.quantity} {t_item.item.unit_of_measure} of {t_item.item.name}",
                 )
 
             # 5. Update expense total
