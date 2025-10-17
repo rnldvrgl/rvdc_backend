@@ -19,7 +19,6 @@ from inventory.models import (
     StockRoomStock,
     ProductCategory,
     StockTransfer,
-    Restock,
 )
 from inventory.api.serializers import (
     ItemSerializer,
