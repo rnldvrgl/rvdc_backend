@@ -68,6 +68,7 @@ class StallSerializer(serializers.ModelSerializer):
     class Meta:
         model = Stall
         exclude = ["updated_at", "is_deleted"]
+        read_only_fields = ["inventory_enabled", "is_system"]
 
     def create(self, validated_data):
         return create_stall_with_initial_stocks(validated_data)
@@ -319,11 +320,13 @@ class StockTransferSerializer(serializers.ModelSerializer):
             room_stock.quantity -= qty
             room_stock.save()
 
-        to_stock, _ = Stock.objects.get_or_create(
-            stall=transfer.to_stall, item=item, defaults={"quantity": 0}
-        )
-        to_stock.quantity += qty
-        to_stock.save()
+        # Only create/add quantity to the receiving stall if it is an inventory owner
+        if transfer.to_stall and getattr(transfer.to_stall, "inventory_enabled", False):
+            to_stock, _ = Stock.objects.get_or_create(
+                stall=transfer.to_stall, item=item, defaults={"quantity": 0}
+            )
+            to_stock.quantity += qty
+            to_stock.save()
 
     def _reverse_stock(self, transfer_item, transfer):
         item, qty = transfer_item.item, transfer_item.quantity
@@ -336,10 +339,12 @@ class StockTransferSerializer(serializers.ModelSerializer):
             room_stock.quantity += qty
             room_stock.save()
 
-        to_stock = Stock.objects.get(stall=transfer.to_stall, item=item)
-        if to_stock.quantity < qty:
-            raise ValidationError(
-                f"Cannot rollback {qty} from {item.name} at {transfer.to_stall.name}, only {to_stock.quantity} available."
-            )
-        to_stock.quantity -= qty
-        to_stock.save()
+        # Only attempt to adjust receiver stock if it is an inventory owner
+        if transfer.to_stall and getattr(transfer.to_stall, "inventory_enabled", False):
+            to_stock = Stock.objects.get(stall=transfer.to_stall, item=item)
+            if to_stock.quantity < qty:
+                raise ValidationError(
+                    f"Cannot rollback {qty} from {item.name} at {transfer.to_stall.name}, only {to_stock.quantity} available."
+                )
+            to_stock.quantity -= qty
+            to_stock.save()

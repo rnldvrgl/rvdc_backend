@@ -10,6 +10,8 @@ from services.models import (
 from inventory.models import (
     Stock,
 )
+from inventory.models import StockTransfer, StockTransferItem
+from sales.models import SalesTransaction, SalesItem
 
 
 # -------------------------------
@@ -61,12 +63,84 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         stock = self._validated_stock
         qty = validated_data["quantity"]
+        # Determine the appliance and its service
+        appliance = validated_data.get("appliance")
+        service = getattr(appliance, "service", None)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
 
         with transaction.atomic():
-            stock.quantity -= qty
-            stock.save()
+            # If stock is from a different stall than the service's main stall,
+            # create a StockTransfer (from sub-stall -> main stall) and finalize it.
+            if service and service.stall and stock.stall != service.stall:
+                transfer = StockTransfer.objects.create(
+                    from_stall=stock.stall,
+                    to_stall=service.stall,
+                    transferred_by=user,
+                    used_for=f"Service #{service.id}",
+                )
 
-            aiu = super().create(validated_data)
+                StockTransferItem.objects.create(
+                    transfer=transfer, item=stock.item, quantity=qty
+                )
+
+                # decrement supplying stall stock
+                stock.quantity -= qty
+                stock.save()
+
+                # finalize will create Expense for to_stall and SalesTransaction for from_stall
+                transfer.finalize(user)
+
+                aiu = super().create(validated_data)
+
+                # link expense created by transfer to the appliance item used
+                try:
+                    aiu.expense = transfer.expense
+                    aiu.stall_stock = stock
+                    aiu.save()
+                except Exception:
+                    pass
+
+                # Ensure a SalesTransaction exists for the service (main stall) and add a SalesItem for the part
+                if service and service.stall:
+                    sales_txn = service.related_transaction
+                    if not sales_txn:
+                        sales_txn = SalesTransaction.objects.create(
+                            stall=service.stall, client=service.client, sales_clerk=user
+                        )
+                        service.related_transaction = sales_txn
+                        service.save(update_fields=["related_transaction"])
+
+                    SalesItem.objects.create(
+                        transaction=sales_txn,
+                        item=aiu.item,
+                        quantity=aiu.quantity,
+                        final_price_per_unit=aiu.item.retail_price,
+                    )
+
+            else:
+                # same-stall consumption: decrement and create normally
+                stock.quantity -= qty
+                stock.save()
+
+                aiu = super().create(validated_data)
+
+                # Add sale line for the consuming stall (service)
+                if service and service.stall:
+                    sales_txn = service.related_transaction
+                    if not sales_txn:
+                        sales_txn = SalesTransaction.objects.create(
+                            stall=service.stall, client=service.client, sales_clerk=user
+                        )
+                        service.related_transaction = sales_txn
+                        service.save(update_fields=["related_transaction"])
+
+                    SalesItem.objects.create(
+                        transaction=sales_txn,
+                        item=aiu.item,
+                        quantity=aiu.quantity,
+                        final_price_per_unit=aiu.item.retail_price,
+                    )
 
         return aiu
 
@@ -77,18 +151,72 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
         diff = new_qty - old_qty
 
         with transaction.atomic():
+            appliance = instance.appliance
+            service = getattr(appliance, "service", None)
+            request = self.context.get("request")
+            user = getattr(request, "user", None)
+
             if diff > 0:  # need more stock
                 if stock.quantity < diff:
                     raise ValidationError(
                         f"Not enough stock in {stock.stall.name}. "
                         f"Available: {stock.quantity}"
                     )
-                stock.quantity -= diff
+
+                # If cross-stall (stock comes from different stall than service), create transfer for the diff
+                if service and service.stall and stock.stall != service.stall:
+                    transfer = StockTransfer.objects.create(
+                        from_stall=stock.stall,
+                        to_stall=service.stall,
+                        transferred_by=user,
+                        used_for=f"Service #{service.id}",
+                    )
+                    StockTransferItem.objects.create(
+                        transfer=transfer, item=stock.item, quantity=diff
+                    )
+
+                    # decrement supplying stall stock
+                    stock.quantity -= diff
+                    stock.save()
+
+                    transfer.finalize(user)
+
+                    # attach expense if not set
+                    if not instance.expense and getattr(transfer, "expense", None):
+                        instance.expense = transfer.expense
+
+                else:
+                    stock.quantity -= diff
+                    stock.save()
+
             elif diff < 0:  # return stock
                 stock.quantity += abs(diff)
-            stock.save()
+                stock.save()
 
             instance = super().update(instance, validated_data)
+
+            # If service exists and has stall, ensure related sale line exists/updated
+            if service and service.stall:
+                sales_txn = service.related_transaction
+                if not sales_txn:
+                    sales_txn = SalesTransaction.objects.create(
+                        stall=service.stall, client=service.client, sales_clerk=user
+                    )
+                    service.related_transaction = sales_txn
+                    service.save(update_fields=["related_transaction"])
+
+                # Try to update an existing SalesItem matching this item, else create
+                s_item = sales_txn.items.filter(item=instance.item).first()
+                if s_item:
+                    s_item.quantity = s_item.quantity - old_qty + instance.quantity
+                    s_item.save()
+                else:
+                    SalesItem.objects.create(
+                        transaction=sales_txn,
+                        item=instance.item,
+                        quantity=instance.quantity,
+                        final_price_per_unit=instance.item.retail_price,
+                    )
 
         return instance
 

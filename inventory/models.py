@@ -96,6 +96,12 @@ class Item(models.Model):
 class Stall(models.Model):
     name = models.CharField(max_length=100)
     location = models.CharField(max_length=255)
+    # Only stalls that are inventory owners should have Stock rows.
+    # For this project we keep a single inventory owner (sub-stall).
+    inventory_enabled = models.BooleanField(default=False)
+    # Marks stalls that are system-configured (main/sub) and should not be
+    # created/edited/deleted via public CRUD endpoints.
+    is_system = models.BooleanField(default=False)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -211,6 +217,8 @@ class StockTransfer(models.Model):
     def finalize(self, user):
         from notifications.models import Notification
         from expenses.models import Expense, ExpenseItem
+        # Import sales models here to avoid circular imports at module import time
+        from sales.models import SalesTransaction, SalesItem
 
         if self.is_finalized:
             return
@@ -221,8 +229,18 @@ class StockTransfer(models.Model):
             self.finalized_at = timezone.now()
             self.save()
 
-            # 2. Create Expense record
+            # 2. Decrement stock on the from_stall (if present) and create a SalesTransaction
+            #    for the from_stall so the supplying stall records a sale.
+            sales_txn = None
+            if self.from_stall:
+                sales_txn = SalesTransaction.objects.create(
+                    stall=self.from_stall,
+                    client=None,
+                    sales_clerk=user,
+                )
+
             total_price = 0
+            # 3. Create Expense record (for receiving stall) and SalesItem entries (for supplying stall)
             expense = Expense.objects.create(
                 stall=self.to_stall,
                 total_price=0,  # will update below
@@ -232,10 +250,11 @@ class StockTransfer(models.Model):
                 transfer=self,
             )
 
-            # 3. Create Expense Items & compute total
             for t_item in self.items.select_related("item"):
                 item_total = t_item.item.retail_price * t_item.quantity
                 total_price += item_total
+
+                # Create ExpenseItem for receiver
                 ExpenseItem.objects.create(
                     expense=expense,
                     item=t_item.item,
@@ -243,7 +262,26 @@ class StockTransfer(models.Model):
                     total_price=item_total,
                 )
 
-            # 5. Update expense total
+                # Decrement stock from the supplying stall (if recorded)
+                if self.from_stall:
+                    try:
+                        stock = Stock.objects.get(stall=self.from_stall, item=t_item.item)
+                        stock.quantity = max(stock.quantity - t_item.quantity, 0)
+                        stock.save()
+                    except Stock.DoesNotExist:
+                        # If no stock row exists, skip - transfer records the movement
+                        pass
+
+                # Create SalesItem for the supplying stall's SalesTransaction
+                if sales_txn:
+                    SalesItem.objects.create(
+                        transaction=sales_txn,
+                        item=t_item.item,
+                        quantity=t_item.quantity,
+                        final_price_per_unit=t_item.item.retail_price,
+                    )
+
+            # 4. Update expense total
             expense.total_price = total_price
             expense.save()
 

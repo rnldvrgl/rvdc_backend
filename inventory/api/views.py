@@ -118,6 +118,8 @@ class StallViewSet(viewsets.ModelViewSet):
     queryset = Stall.objects.all()
     serializer_class = StallSerializer
     permission_classes = [IsAdminUser]
+    # Disable create/update/delete through this viewset — stalls are system-managed.
+    http_method_names = ["get", "head", "options"]
     filter_backends = [
         DjangoFilterBackend,
         filters.SearchFilter,

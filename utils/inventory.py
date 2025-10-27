@@ -42,8 +42,8 @@ def create_item_with_initial_stock(validated_data, user=None):
         low_stock_threshold=low_stock_threshold,
     )
 
-    # Create zero Stock entries for each stall (no stock movement needed)
-    for stall in Stall.objects.filter(is_deleted=False):
+    # Create zero Stock entries only for stalls that are inventory owners
+    for stall in Stall.objects.filter(is_deleted=False, inventory_enabled=True):
         Stock.objects.create(
             item=item,
             stall=stall,
@@ -68,15 +68,19 @@ def create_stall_with_initial_stocks(validated_data):
     stall = Stall.objects.create(
         name=validated_data["name"],
         location=validated_data["location"],
+        inventory_enabled=validated_data.get("inventory_enabled", False),
+        is_system=validated_data.get("is_system", False),
     )
 
-    for item in Item.objects.filter(is_deleted=False):
-        Stock.objects.create(
-            item=item,
-            stall=stall,
-            quantity=0,
-            low_stock_threshold=low_stock_threshold,
-        )
+    # Only create Stock rows for this stall if it is an inventory owner
+    if stall.inventory_enabled:
+        for item in Item.objects.filter(is_deleted=False):
+            Stock.objects.create(
+                item=item,
+                stall=stall,
+                quantity=0,
+                low_stock_threshold=low_stock_threshold,
+            )
 
     return stall
 
