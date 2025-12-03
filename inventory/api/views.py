@@ -1,54 +1,54 @@
-from rest_framework import viewsets, status, filters
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.permissions import IsAdminUser, IsAuthenticated
-from django.db import transaction
-from notifications.models import Notification
 from django.contrib.auth import get_user_model
+from django.db import transaction
+from django.utils import timezone
+from django_filters.rest_framework import DjangoFilterBackend
 from inventory.api.filters import (
     ItemFilter,
     StockFilter,
     StockRoomFilter,
     StockTransferFilter,
 )
-
+from inventory.api.serializers import (
+    ItemSerializer,
+    ProductCategorySerializer,
+    StallSerializer,
+    StockPatchSerializer,
+    StockReadSerializer,
+    StockRestockSerializer,
+    StockRoomStockSerializer,
+    StockTransferSerializer,
+    StockWriteSerializer,
+)
 from inventory.models import (
     Item,
+    ProductCategory,
     Stall,
     Stock,
     StockRoomStock,
-    ProductCategory,
     StockTransfer,
 )
-from inventory.api.serializers import (
-    ItemSerializer,
-    StallSerializer,
-    StockRoomStockSerializer,
-    ProductCategorySerializer,
-    StockTransferSerializer,
-    StockRestockSerializer,
-    StockReadSerializer,
-    StockWriteSerializer,
-    StockPatchSerializer,
-)
-
-from utils.filters.role_filters import get_role_based_filter_response
+from notifications.models import Notification
+from rest_framework import filters, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
+from rest_framework.response import Response
 from utils.filters.options import (
+    get_product_category_options,
+    get_stall_options,
     get_status_options,
     get_unit_of_measure_options,
-    get_stall_options,
-    get_product_category_options,
     get_user_options,
 )
-
-from utils.query import filter_by_date_range, get_transfer_role_filtered_queryset
+from utils.filters.role_filters import get_role_based_filter_response
 from utils.inventory import (
     user_can_manage_stall,
 )
-from django_filters.rest_framework import DjangoFilterBackend
-from utils.query import get_role_filtered_queryset
-from rest_framework.exceptions import ValidationError
-from django.utils import timezone
+from utils.query import (
+    filter_by_date_range,
+    get_role_filtered_queryset,
+    get_transfer_role_filtered_queryset,
+)
 
 
 class ItemViewSet(viewsets.ModelViewSet):
@@ -65,6 +65,39 @@ class ItemViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
+
+    # Explicit handlers to provide a clear message for disallowed methods
+    def create(self, request, *args, **kwargs):
+        return Response(
+            {
+                "detail": "Stalls are system-managed (read-only). Creation is not allowed."
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def update(self, request, *args, **kwargs):
+        return Response(
+            {
+                "detail": "Stalls are system-managed (read-only). Updates are not allowed."
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def partial_update(self, request, *args, **kwargs):
+        return Response(
+            {
+                "detail": "Stalls are system-managed (read-only). Updates are not allowed."
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {
+                "detail": "Stalls are system-managed (read-only). Deletion is not allowed."
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):
