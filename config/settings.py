@@ -49,7 +49,6 @@ INSTALLED_APPS = [
     "users",
     "clients",
     "inventory",
-    "logs",
     "sales",
     "expenses",
     "notifications",

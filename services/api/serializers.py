@@ -1,34 +1,231 @@
-from datetime import datetime, timedelta
+from django.db import transaction
 from rest_framework import serializers
+from rest_framework.exceptions import ValidationError
+
 from services.models import (
     Service,
     ServiceAppliance,
     ApplianceItemUsed,
-    TechnicianAssignment,
-    ServiceStatusHistory,
-    ApplianceStatusHistory,
 )
+from inventory.models import (
+    Stock,
+)
+from inventory.models import StockTransfer, StockTransferItem
+from sales.models import SalesTransaction, SalesItem
 
 
-# --------------------------
-# Appliance Item Used
-# --------------------------
+# -------------------------------
+# Appliance Item Used (Parts consumed)
+# -------------------------------
 class ApplianceItemUsedSerializer(serializers.ModelSerializer):
+    stall_stock_id = serializers.PrimaryKeyRelatedField(
+        queryset=Stock.objects.all(),
+        source="stall_stock",
+        write_only=True,
+        required=True,
+        help_text="Stall stock to consume from",
+    )
+
     item_name = serializers.CharField(source="item.name", read_only=True)
     item_price = serializers.DecimalField(
-        source="item.price", read_only=True, max_digits=10, decimal_places=2
+        source="item.retail_price", read_only=True, max_digits=10, decimal_places=2
     )
 
     class Meta:
         model = ApplianceItemUsed
-        fields = ["id", "appliance", "item", "item_name", "item_price", "quantity"]
+        fields = [
+            "id",
+            "appliance",
+            "item",
+            "item_name",
+            "item_price",
+            "quantity",
+            "stall_stock_id",
+        ]
+
+    def validate(self, data):
+        stock = data["stall_stock"]
+        item = data["item"]
+        qty = data["quantity"]
+
+        if stock.item != item:
+            raise ValidationError("Selected stall does not hold this item.")
+
+        if qty > stock.quantity:
+            raise ValidationError(
+                f"Not enough stock of {item.name} in stall {stock.stall.name}. "
+                f"Available: {stock.quantity}"
+            )
+
+        self._validated_stock = stock
+        return data
+
+    def create(self, validated_data):
+        stock = self._validated_stock
+        qty = validated_data["quantity"]
+        # Determine the appliance and its service
+        appliance = validated_data.get("appliance")
+        service = getattr(appliance, "service", None)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        with transaction.atomic():
+            # If stock is from a different stall than the service's main stall,
+            # create a StockTransfer (from sub-stall -> main stall) and finalize it.
+            if service and service.stall and stock.stall != service.stall:
+                transfer = StockTransfer.objects.create(
+                    from_stall=stock.stall,
+                    to_stall=service.stall,
+                    transferred_by=user,
+                    used_for=f"Service #{service.id}",
+                )
+
+                StockTransferItem.objects.create(
+                    transfer=transfer, item=stock.item, quantity=qty
+                )
+
+                # decrement supplying stall stock
+                stock.quantity -= qty
+                stock.save()
+
+                # finalize will create Expense for to_stall and SalesTransaction for from_stall
+                transfer.finalize(user)
+
+                aiu = super().create(validated_data)
+
+                # link expense created by transfer to the appliance item used
+                try:
+                    aiu.expense = transfer.expense
+                    aiu.stall_stock = stock
+                    aiu.save()
+                except Exception:
+                    pass
+
+                # Ensure a SalesTransaction exists for the service (main stall) and add a SalesItem for the part
+                if service and service.stall:
+                    sales_txn = service.related_transaction
+                    if not sales_txn:
+                        sales_txn = SalesTransaction.objects.create(
+                            stall=service.stall, client=service.client, sales_clerk=user
+                        )
+                        service.related_transaction = sales_txn
+                        service.save(update_fields=["related_transaction"])
+
+                    SalesItem.objects.create(
+                        transaction=sales_txn,
+                        item=aiu.item,
+                        quantity=aiu.quantity,
+                        final_price_per_unit=aiu.item.retail_price,
+                    )
+
+            else:
+                # same-stall consumption: decrement and create normally
+                stock.quantity -= qty
+                stock.save()
+
+                aiu = super().create(validated_data)
+
+                # Add sale line for the consuming stall (service)
+                if service and service.stall:
+                    sales_txn = service.related_transaction
+                    if not sales_txn:
+                        sales_txn = SalesTransaction.objects.create(
+                            stall=service.stall, client=service.client, sales_clerk=user
+                        )
+                        service.related_transaction = sales_txn
+                        service.save(update_fields=["related_transaction"])
+
+                    SalesItem.objects.create(
+                        transaction=sales_txn,
+                        item=aiu.item,
+                        quantity=aiu.quantity,
+                        final_price_per_unit=aiu.item.retail_price,
+                    )
+
+        return aiu
+
+    def update(self, instance, validated_data):
+        stock = self._validated_stock
+        old_qty = instance.quantity
+        new_qty = validated_data.get("quantity", old_qty)
+        diff = new_qty - old_qty
+
+        with transaction.atomic():
+            appliance = instance.appliance
+            service = getattr(appliance, "service", None)
+            request = self.context.get("request")
+            user = getattr(request, "user", None)
+
+            if diff > 0:  # need more stock
+                if stock.quantity < diff:
+                    raise ValidationError(
+                        f"Not enough stock in {stock.stall.name}. "
+                        f"Available: {stock.quantity}"
+                    )
+
+                # If cross-stall (stock comes from different stall than service), create transfer for the diff
+                if service and service.stall and stock.stall != service.stall:
+                    transfer = StockTransfer.objects.create(
+                        from_stall=stock.stall,
+                        to_stall=service.stall,
+                        transferred_by=user,
+                        used_for=f"Service #{service.id}",
+                    )
+                    StockTransferItem.objects.create(
+                        transfer=transfer, item=stock.item, quantity=diff
+                    )
+
+                    # decrement supplying stall stock
+                    stock.quantity -= diff
+                    stock.save()
+
+                    transfer.finalize(user)
+
+                    # attach expense if not set
+                    if not instance.expense and getattr(transfer, "expense", None):
+                        instance.expense = transfer.expense
+
+                else:
+                    stock.quantity -= diff
+                    stock.save()
+
+            elif diff < 0:  # return stock
+                stock.quantity += abs(diff)
+                stock.save()
+
+            instance = super().update(instance, validated_data)
+
+            # If service exists and has stall, ensure related sale line exists/updated
+            if service and service.stall:
+                sales_txn = service.related_transaction
+                if not sales_txn:
+                    sales_txn = SalesTransaction.objects.create(
+                        stall=service.stall, client=service.client, sales_clerk=user
+                    )
+                    service.related_transaction = sales_txn
+                    service.save(update_fields=["related_transaction"])
+
+                # Try to update an existing SalesItem matching this item, else create
+                s_item = sales_txn.items.filter(item=instance.item).first()
+                if s_item:
+                    s_item.quantity = s_item.quantity - old_qty + instance.quantity
+                    s_item.save()
+                else:
+                    SalesItem.objects.create(
+                        transaction=sales_txn,
+                        item=instance.item,
+                        quantity=instance.quantity,
+                        final_price_per_unit=instance.item.retail_price,
+                    )
+
+        return instance
 
 
-# --------------------------
+# -------------------------------
 # Service Appliance
-# --------------------------
+# -------------------------------
 class ServiceApplianceSerializer(serializers.ModelSerializer):
-    items_used = ApplianceItemUsedSerializer(many=True, read_only=True)
+    items_used = ApplianceItemUsedSerializer(many=True, required=False)
 
     class Meta:
         model = ServiceAppliance
@@ -36,156 +233,106 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "id",
             "service",
             "appliance_type",
-            "brand",
-            "model",
-            "issue_reported",
-            "diagnosis_notes",
-            "status",
-            "labor_fee",
+            "serial_number",
+            "issues_reported",
+            "diagnosis",
             "items_used",
         ]
 
-    def validate(self, data):
-        service = data.get("service")
-        appliance_type = data.get("appliance_type")
-        brand = data.get("brand")
-        model = data.get("model")
-
-        if ServiceAppliance.objects.filter(
-            service=service,
-            appliance_type=appliance_type,
-            brand=brand,
-            model=model,
-        ).exists():
-            raise serializers.ValidationError(
-                f"This appliance ({appliance_type}, {brand}, {model}) "
-                f"already exists for this service."
-            )
-        return data
-
     def create(self, validated_data):
-        appliance = super().create(validated_data)
-        ApplianceStatusHistory.objects.create(
-            service_appliance=appliance,
-            status=appliance.status,
-        )
+        items_data = validated_data.pop("items_used", [])
+        with transaction.atomic():
+            appliance = ServiceAppliance.objects.create(**validated_data)
+            for item_data in items_data:
+                item_data["appliance"] = appliance
+                serializer = ApplianceItemUsedSerializer(
+                    data=item_data, context=self.context
+                )
+                serializer.is_valid(raise_exception=True)
+                serializer.save()
         return appliance
 
     def update(self, instance, validated_data):
-        old_status = instance.status
-        appliance = super().update(instance, validated_data)
-        if appliance.status != old_status:
-            ApplianceStatusHistory.objects.create(
-                service_appliance=appliance,
-                status=appliance.status,
-            )
-        return appliance
+        items_data = validated_data.pop("items_used", None)
+        with transaction.atomic():
+            instance = super().update(instance, validated_data)
+
+            if items_data is not None:
+                # delete old items + restore stock
+                for old in instance.items_used.all():
+                    stock = Stock.objects.get(
+                        stall=old.stall_stock.stall, item=old.item
+                    )
+                    stock.quantity += old.quantity
+                    stock.save()
+
+                    old.delete()
+
+                # add new items
+                for item_data in items_data:
+                    item_data["appliance"] = instance
+                    serializer = ApplianceItemUsedSerializer(
+                        data=item_data, context=self.context
+                    )
+                    serializer.is_valid(raise_exception=True)
+                    serializer.save()
+        return instance
 
 
-# --------------------------
-# Technician Assignment
-# --------------------------
-class TechnicianAssignmentSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = TechnicianAssignment
-        fields = "__all__"
-
-    def validate(self, data):
-        technician = data.get("technician")
-        service = data.get("service")
-
-        # Unique assignment check
-        if TechnicianAssignment.objects.filter(
-            service=service, technician=technician
-        ).exists():
-            raise serializers.ValidationError(
-                f"Technician {technician.get_full_name()} is already assigned to this service."
-            )
-
-        if not service.scheduled_date or not service.scheduled_time:
-            raise serializers.ValidationError(
-                "Service must have a scheduled date and time before assigning a technician."
-            )
-
-        # Compute service datetime range
-        service_start = datetime.combine(service.scheduled_date, service.scheduled_time)
-        service_end = service_start + timedelta(minutes=service.estimated_duration)
-
-        # Find technician's other assignments
-        conflicts = TechnicianAssignment.objects.filter(technician=technician).exclude(
-            service=service
-        )
-
-        for assignment in conflicts:
-            other = assignment.service
-            if not other.scheduled_date or not other.scheduled_time:
-                continue
-
-            other_start = datetime.combine(other.scheduled_date, other.scheduled_time)
-            other_end = other_start + timedelta(minutes=other.estimated_duration)
-
-            # Check overlap
-            if service_start < other_end and other_start < service_end:
-                raise serializers.ValidationError(
-                    f"Technician {technician.get_full_name()} is already assigned "
-                    f"to another service ({other.id}) that overlaps this schedule."
-                )
-
-        return data
-
-
-# --------------------------
+# -------------------------------
 # Service
-# --------------------------
+# -------------------------------
 class ServiceSerializer(serializers.ModelSerializer):
-    client_name = serializers.CharField(source="client.name", read_only=True)
-    appliances = ServiceApplianceSerializer(many=True, read_only=True)
-    technician_assignments = TechnicianAssignmentSerializer(many=True, read_only=True)
-    total_cost = serializers.DecimalField(
-        max_digits=10, decimal_places=2, read_only=True
-    )
+    appliances = ServiceApplianceSerializer(many=True, required=False)
 
     class Meta:
         model = Service
         fields = [
             "id",
-            "client",
-            "client_name",
-            "service_type",
-            "service_mode",
-            "description",
-            "override_address",
-            "override_contact_person",
-            "override_contact_number",
-            "scheduled_date",
-            "scheduled_time",
-            "pickup_date",
-            "delivery_date",
+            "customer",
+            "technician",
             "status",
+            "scheduled_date",
+            "completed_date",
             "remarks",
-            "notes",
-            "created_at",
-            "updated_at",
             "appliances",
-            "technician_assignments",
-            "total_cost",
-            "estimated_duration",
         ]
 
     def create(self, validated_data):
-        service = super().create(validated_data)
-        ServiceStatusHistory.objects.create(
-            service=service,
-            status=service.status,
-        )
+        appliances_data = validated_data.pop("appliances", [])
+        with transaction.atomic():
+            service = Service.objects.create(**validated_data)
+            for appliance_data in appliances_data:
+                appliance_data["service"] = service
+                serializer = ServiceApplianceSerializer(
+                    data=appliance_data, context=self.context
+                )
+                serializer.is_valid(raise_exception=True)
+                serializer.save()
         return service
 
     def update(self, instance, validated_data):
-        old_status = instance.status
-        service = super().update(instance, validated_data)
-        if service.status != old_status:
-            ServiceStatusHistory.objects.create(
-                service=service,
-                status=service.status,
-            )
-        return service
+        appliances_data = validated_data.pop("appliances", None)
+        with transaction.atomic():
+            instance = super().update(instance, validated_data)
+
+            if appliances_data is not None:
+                for appliance_data in appliances_data:
+                    appliance_id = appliance_data.get("id", None)
+                    if appliance_id:
+                        appliance = ServiceAppliance.objects.get(
+                            id=appliance_id, service=instance
+                        )
+                        serializer = ServiceApplianceSerializer(
+                            appliance, data=appliance_data, context=self.context
+                        )
+                        serializer.is_valid(raise_exception=True)
+                        serializer.save()
+                    else:
+                        appliance_data["service"] = instance
+                        serializer = ServiceApplianceSerializer(
+                            data=appliance_data, context=self.context
+                        )
+                        serializer.is_valid(raise_exception=True)
+                        serializer.save()
+        return instance

@@ -1,41 +1,6 @@
 from django.db import transaction
-
-
-def record_stock_movement(
-    item,
-    stall,
-    quantity,
-    movement_type,
-    note="",
-    related_object=None,
-):
-    from inventory.models import StockMovement
-
-    MOVEMENT_TYPE_CHOICES = {
-        "sale",
-        "purchase",
-        "transfer_in",
-        "transfer_out",
-        "adjustment",
-        "return",
-        "restore_sale",
-        "void_sale",
-    }
-
-    if movement_type not in MOVEMENT_TYPE_CHOICES:
-        raise ValueError(
-            f"Invalid movement_type '{movement_type}'. "
-            f"Allowed: {sorted(MOVEMENT_TYPE_CHOICES)}"
-        )
-
-    return StockMovement.objects.create(
-        item=item,
-        stall=stall,
-        quantity=quantity,
-        note=note,
-        movement_type=movement_type,
-        related_object=related_object,
-    )
+from inventory.models import Stock
+from rest_framework.exceptions import ValidationError
 
 
 def user_can_manage_stall(user, stall):
@@ -50,8 +15,7 @@ def create_item_with_initial_stock(validated_data, user=None):
     from inventory.models import Item, StockRoomStock, Stock, Stall
 
     """
-    Creates an Item, initializes StockRoomStock with initial quantity,
-    logs StockMovement, and sets zero stock for all stalls.
+    Creates an Item, initializes StockRoomStock with initial quantity, and sets zero stock for all stalls.
 
     validated_data: dict with keys:
         - name, category, retail_price
@@ -78,18 +42,8 @@ def create_item_with_initial_stock(validated_data, user=None):
         low_stock_threshold=low_stock_threshold,
     )
 
-    # Log StockMovement for initial stock only in stock room
-    if initial_stock_quantity > 0:
-        record_stock_movement(
-            item=item,
-            stall=None,
-            quantity=initial_stock_quantity,
-            movement_type="purchase",
-            note="Initial stock in stock room",
-        )
-
-    # Create zero Stock entries for each stall (no stock movement needed)
-    for stall in Stall.objects.filter(is_deleted=False):
+    # Create zero Stock entries only for stalls that are inventory owners
+    for stall in Stall.objects.filter(is_deleted=False, inventory_enabled=True):
         Stock.objects.create(
             item=item,
             stall=stall,
@@ -114,14 +68,49 @@ def create_stall_with_initial_stocks(validated_data):
     stall = Stall.objects.create(
         name=validated_data["name"],
         location=validated_data["location"],
+        inventory_enabled=validated_data.get("inventory_enabled", False),
+        is_system=validated_data.get("is_system", False),
     )
 
-    for item in Item.objects.filter(is_deleted=False):
-        Stock.objects.create(
-            item=item,
-            stall=stall,
-            quantity=0,
-            low_stock_threshold=low_stock_threshold,
-        )
+    # Only create Stock rows for this stall if it is an inventory owner
+    if stall.inventory_enabled:
+        for item in Item.objects.filter(is_deleted=False):
+            Stock.objects.create(
+                item=item,
+                stall=stall,
+                quantity=0,
+                low_stock_threshold=low_stock_threshold,
+            )
 
     return stall
+
+
+@transaction.atomic
+def reserve_stock(item, stall, quantity):
+    stock = Stock.objects.select_for_update().get(item=item, stall=stall)
+    if stock.available_quantity < quantity:
+        raise ValidationError(
+            f"Not enough available stock to reserve {quantity} of {item.name}."
+        )
+    stock.reserved_quantity += quantity
+    stock.save(update_fields=["reserved_quantity"])
+    return stock
+
+
+@transaction.atomic
+def unreserve_stock(item, stall, quantity):
+    stock = Stock.objects.select_for_update().get(item=item, stall=stall)
+    stock.reserved_quantity = max(stock.reserved_quantity - quantity, 0)
+    stock.save(update_fields=["reserved_quantity"])
+    return stock
+
+
+@transaction.atomic
+def consume_reserved_stock(item, stall, quantity):
+    stock = Stock.objects.select_for_update().get(item=item, stall=stall)
+    if stock.reserved_quantity < quantity:
+        raise ValidationError(f"Reserved stock mismatch for {item.name}")
+    stock.quantity -= quantity
+    stock.reserved_quantity -= quantity
+    stock.save(update_fields=["quantity", "reserved_quantity"])
+    return stock
