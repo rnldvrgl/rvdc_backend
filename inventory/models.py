@@ -1,9 +1,11 @@
-from django.db import models, transaction
-from django.conf import settings
 import uuid
+
+from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes import fields
+from django.contrib.contenttypes import models as contenttypes_models
+from django.db import models, transaction
 from django.utils import timezone
-from django.contrib.contenttypes import fields, models as contenttypes_models
 from django.utils.translation import gettext_lazy as _
 
 
@@ -115,17 +117,46 @@ class Stall(models.Model):
 
 class Stock(models.Model):
     item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="stocks")
+
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE, related_name="stocks")
+
     quantity = models.PositiveIntegerField(default=0)
+
     reserved_quantity = models.PositiveIntegerField(default=0)
+
     low_stock_threshold = models.PositiveIntegerField(default=0)
+
     track_stock = models.BooleanField(default=True)
+
     is_deleted = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["item__name"]
+
+    def clean(self):
+        """
+        Enforce single stockroom source of truth:
+        - Only the Sub stall (Parts) may hold Stock rows.
+        """
+        if self.stall:
+            # Require system-managed Sub stall as the only inventory owner
+            if not getattr(self.stall, "is_system", False):
+                raise ValueError(
+                    "Stock can only be associated with system-managed Sub stall."
+                )
+            if not getattr(self.stall, "inventory_enabled", False):
+                raise ValueError(
+                    "Stock can only be associated with the Sub stall (inventory_enabled=True)."
+                )
+            # Optional: strict by name/location if flags are misconfigured
+            if (self.stall.name or "").strip() != "Sub" or (
+                self.stall.location or ""
+            ).strip() != "Parts":
+                raise ValueError("Stock must be in Sub (Parts) stall only.")
 
     @property
     def available_quantity(self):
@@ -151,17 +182,53 @@ class StockRoomStock(models.Model):
     item = models.OneToOneField(
         Item, on_delete=models.CASCADE, related_name="stockroom_stock"
     )
+
     quantity = models.PositiveIntegerField(default=0)
+
     low_stock_threshold = models.PositiveIntegerField(default=0)
+
     is_deleted = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
+
     updated_at = models.DateTimeField(auto_now=True)
+
+    def clean(self):
+        """
+        Single source-of-truth validation:
+        - quantity and low_stock_threshold must be non-negative
+        - Only the Sub (Parts) stall may hold tracked Stock rows. If any other
+          stall has tracked Stock for this item, raise an error.
+        """
+        if self.quantity < 0:
+            raise ValueError("Stock room quantity cannot be negative.")
+        if self.low_stock_threshold < 0:
+            raise ValueError("Stock room low stock threshold cannot be negative.")
+
+        # Ensure no tracked stock exists outside the Sub (Parts) stall
+        # Note: Using in-file Stock class to avoid circular imports
+        invalid_stall_stock_exists = (
+            Stock.objects.filter(
+                item=self.item,
+                is_deleted=False,
+                track_stock=True,
+            )
+            .exclude(stall__name="Sub", stall__location="Parts", stall__is_system=True)
+            .exists()
+        )
+
+        if invalid_stall_stock_exists:
+            raise ValueError(
+                "Tracked Stock for this item exists outside the Sub (Parts) stall. "
+                "Move quantities back to the stock room or the Sub stall to maintain a single source of truth."
+            )
 
     def status(self):
         if self.quantity == 0:
             return "no_stock"
         elif self.quantity <= self.low_stock_threshold:
             return "low_stock"
+
         else:
             return "high_stock"
 
@@ -169,6 +236,7 @@ class StockRoomStock(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["item"], name="unique_item_stockroom")
         ]
+
         ordering = ["item__name"]
 
     def __str__(self):
@@ -215,10 +283,11 @@ class StockTransfer(models.Model):
         return False
 
     def finalize(self, user):
-        from notifications.models import Notification
         from expenses.models import Expense, ExpenseItem
+        from notifications.models import Notification
+
         # Import sales models here to avoid circular imports at module import time
-        from sales.models import SalesTransaction, SalesItem
+        from sales.models import SalesItem, SalesTransaction
 
         if self.is_finalized:
             return
@@ -265,7 +334,9 @@ class StockTransfer(models.Model):
                 # Decrement stock from the supplying stall (if recorded)
                 if self.from_stall:
                     try:
-                        stock = Stock.objects.get(stall=self.from_stall, item=t_item.item)
+                        stock = Stock.objects.get(
+                            stall=self.from_stall, item=t_item.item
+                        )
                         stock.quantity = max(stock.quantity - t_item.quantity, 0)
                         stock.save()
                     except Stock.DoesNotExist:
