@@ -66,38 +66,7 @@ class ItemViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
 
-    # Explicit handlers to provide a clear message for disallowed methods
-    def create(self, request, *args, **kwargs):
-        return Response(
-            {
-                "detail": "Stalls are system-managed (read-only). Creation is not allowed."
-            },
-            status=status.HTTP_405_METHOD_NOT_ALLOWED,
-        )
-
-    def update(self, request, *args, **kwargs):
-        return Response(
-            {
-                "detail": "Stalls are system-managed (read-only). Updates are not allowed."
-            },
-            status=status.HTTP_405_METHOD_NOT_ALLOWED,
-        )
-
-    def partial_update(self, request, *args, **kwargs):
-        return Response(
-            {
-                "detail": "Stalls are system-managed (read-only). Updates are not allowed."
-            },
-            status=status.HTTP_405_METHOD_NOT_ALLOWED,
-        )
-
-    def destroy(self, request, *args, **kwargs):
-        return Response(
-            {
-                "detail": "Stalls are system-managed (read-only). Deletion is not allowed."
-            },
-            status=status.HTTP_405_METHOD_NOT_ALLOWED,
-        )
+    # (moved) explicit disallowed-method handlers belong to StallViewSet, not ItemViewSet.
 
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):
@@ -149,21 +118,62 @@ class ItemViewSet(viewsets.ModelViewSet):
 
 class StallViewSet(viewsets.ModelViewSet):
     queryset = Stall.objects.all()
+
     serializer_class = StallSerializer
+
     permission_classes = [IsAdminUser]
+
     # Disable create/update/delete through this viewset — stalls are system-managed.
+
     http_method_names = ["get", "head", "options"]
+
     filter_backends = [
         DjangoFilterBackend,
         filters.SearchFilter,
         filters.OrderingFilter,
     ]
+
     filterset_fields = ["name"]
+
     search_fields = ["name"]
+
     ordering_fields = "__all__"
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
+
+    # Explicit handlers to provide a clear message for disallowed methods on stalls
+    def create(self, request, *args, **kwargs):
+        return Response(
+            {
+                "detail": "Stalls are system-managed (read-only). Creation is not allowed."
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def update(self, request, *args, **kwargs):
+        return Response(
+            {
+                "detail": "Stalls are system-managed (read-only). Updates are not allowed."
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def partial_update(self, request, *args, **kwargs):
+        return Response(
+            {
+                "detail": "Stalls are system-managed (read-only). Updates are not allowed."
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {
+                "detail": "Stalls are system-managed (read-only). Deletion is not allowed."
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
 
 class StockViewSet(viewsets.ModelViewSet):
