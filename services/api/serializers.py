@@ -1,17 +1,17 @@
 from django.db import transaction
-from rest_framework import serializers
-from rest_framework.exceptions import ValidationError
-
-from services.models import (
-    Service,
-    ServiceAppliance,
-    ApplianceItemUsed,
-)
 from inventory.models import (
     Stock,
+    StockTransfer,
+    StockTransferItem,
 )
-from inventory.models import StockTransfer, StockTransferItem
-from sales.models import SalesTransaction, SalesItem
+from rest_framework import serializers
+from rest_framework.exceptions import ValidationError
+from sales.models import SalesItem, SalesTransaction
+from services.models import (
+    ApplianceItemUsed,
+    Service,
+    ServiceAppliance,
+)
 
 
 # -------------------------------
@@ -25,10 +25,12 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
         required=True,
         help_text="Stall stock to consume from",
     )
-
     item_name = serializers.CharField(source="item.name", read_only=True)
     item_price = serializers.DecimalField(
         source="item.retail_price", read_only=True, max_digits=10, decimal_places=2
+    )
+    line_discount_rate = serializers.DecimalField(
+        write_only=True, required=False, max_digits=5, decimal_places=2, default=0
     )
 
     class Meta:
@@ -39,6 +41,7 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
             "item",
             "item_name",
             "item_price",
+            "line_discount_rate",
             "quantity",
             "stall_stock_id",
         ]
@@ -50,7 +53,6 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
 
         if stock.item != item:
             raise ValidationError("Selected stall does not hold this item.")
-
         if qty > stock.quantity:
             raise ValidationError(
                 f"Not enough stock of {item.name} in stall {stock.stall.name}. "
@@ -63,37 +65,45 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         stock = self._validated_stock
         qty = validated_data["quantity"]
+        line_disc = validated_data.get("line_discount_rate", 0)
+
         # Determine the appliance and its service
         appliance = validated_data.get("appliance")
         service = getattr(appliance, "service", None)
         request = self.context.get("request")
         user = getattr(request, "user", None)
 
+        # Optional order-level rate passed in request
+        order_rate = None
+        if request is not None:
+            try:
+                order_rate = request.data.get("order_discount_rate", None)
+                if order_rate is not None:
+                    order_rate = float(order_rate)
+            except Exception:
+                order_rate = None
+
         with transaction.atomic():
-            # If stock is from a different stall than the service's main stall,
-            # create a StockTransfer (from sub-stall -> main stall) and finalize it.
             if service and service.stall and stock.stall != service.stall:
+                # Cross-stall: create transfer and finalize
                 transfer = StockTransfer.objects.create(
                     from_stall=stock.stall,
                     to_stall=service.stall,
                     transferred_by=user,
                     used_for=f"Service #{service.id}",
                 )
-
                 StockTransferItem.objects.create(
                     transfer=transfer, item=stock.item, quantity=qty
                 )
 
-                # decrement supplying stall stock
                 stock.quantity -= qty
                 stock.save()
 
-                # finalize will create Expense for to_stall and SalesTransaction for from_stall
                 transfer.finalize(user)
 
                 aiu = super().create(validated_data)
 
-                # link expense created by transfer to the appliance item used
+                # Link created expense and stall stock
                 try:
                     aiu.expense = transfer.expense
                     aiu.stall_stock = stock
@@ -101,46 +111,50 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
                 except Exception:
                     pass
 
-                # Ensure a SalesTransaction exists for the service (main stall) and add a SalesItem for the part
-                if service and service.stall:
-                    sales_txn = service.related_transaction
-                    if not sales_txn:
-                        sales_txn = SalesTransaction.objects.create(
-                            stall=service.stall, client=service.client, sales_clerk=user
-                        )
-                        service.related_transaction = sales_txn
-                        service.save(update_fields=["related_transaction"])
-
-                    SalesItem.objects.create(
-                        transaction=sales_txn,
-                        item=aiu.item,
-                        quantity=aiu.quantity,
-                        final_price_per_unit=aiu.item.retail_price,
+                # Ensure SalesTransaction exists and mirror discounts
+                sales_txn = service.related_transaction
+                if not sales_txn:
+                    sales_txn = SalesTransaction.objects.create(
+                        stall=service.stall, client=service.client, sales_clerk=user
                     )
+                    service.related_transaction = sales_txn
+                    service.save(update_fields=["related_transaction"])
+                if order_rate is not None:
+                    sales_txn.order_discount_rate = order_rate
+                    sales_txn.save(update_fields=["order_discount_rate"])
 
+                SalesItem.objects.create(
+                    transaction=sales_txn,
+                    item=aiu.item,
+                    quantity=aiu.quantity,
+                    final_price_per_unit=aiu.item.retail_price,
+                    line_discount_rate=line_disc,
+                )
             else:
-                # same-stall consumption: decrement and create normally
+                # Same-stall consumption
                 stock.quantity -= qty
                 stock.save()
 
                 aiu = super().create(validated_data)
 
-                # Add sale line for the consuming stall (service)
-                if service and service.stall:
-                    sales_txn = service.related_transaction
-                    if not sales_txn:
-                        sales_txn = SalesTransaction.objects.create(
-                            stall=service.stall, client=service.client, sales_clerk=user
-                        )
-                        service.related_transaction = sales_txn
-                        service.save(update_fields=["related_transaction"])
-
-                    SalesItem.objects.create(
-                        transaction=sales_txn,
-                        item=aiu.item,
-                        quantity=aiu.quantity,
-                        final_price_per_unit=aiu.item.retail_price,
+                sales_txn = service.related_transaction
+                if not sales_txn:
+                    sales_txn = SalesTransaction.objects.create(
+                        stall=service.stall, client=service.client, sales_clerk=user
                     )
+                    service.related_transaction = sales_txn
+                    service.save(update_fields=["related_transaction"])
+                if order_rate is not None:
+                    sales_txn.order_discount_rate = order_rate
+                    sales_txn.save(update_fields=["order_discount_rate"])
+
+                SalesItem.objects.create(
+                    transaction=sales_txn,
+                    item=aiu.item,
+                    quantity=aiu.quantity,
+                    final_price_per_unit=aiu.item.retail_price,
+                    line_discount_rate=line_disc,
+                )
 
         return aiu
 
@@ -195,28 +209,38 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
 
             instance = super().update(instance, validated_data)
 
-            # If service exists and has stall, ensure related sale line exists/updated
-            if service and service.stall:
-                sales_txn = service.related_transaction
-                if not sales_txn:
-                    sales_txn = SalesTransaction.objects.create(
-                        stall=service.stall, client=service.client, sales_clerk=user
-                    )
-                    service.related_transaction = sales_txn
-                    service.save(update_fields=["related_transaction"])
+            # Ensure SalesTransaction exists and mirror order-level discount if provided
+            sales_txn = service.related_transaction
+            if not sales_txn:
+                sales_txn = SalesTransaction.objects.create(
+                    stall=service.stall, client=service.client, sales_clerk=user
+                )
+                service.related_transaction = sales_txn
+                service.save(update_fields=["related_transaction"])
 
-                # Try to update an existing SalesItem matching this item, else create
-                s_item = sales_txn.items.filter(item=instance.item).first()
-                if s_item:
-                    s_item.quantity = s_item.quantity - old_qty + instance.quantity
-                    s_item.save()
-                else:
-                    SalesItem.objects.create(
-                        transaction=sales_txn,
-                        item=instance.item,
-                        quantity=instance.quantity,
-                        final_price_per_unit=instance.item.retail_price,
-                    )
+            if request is not None:
+                try:
+                    order_rate = request.data.get("order_discount_rate", None)
+                    if order_rate is not None:
+                        order_rate = float(order_rate)
+                        sales_txn.order_discount_rate = order_rate
+                        sales_txn.save(update_fields=["order_discount_rate"])
+                except Exception:
+                    pass
+
+            # Update or create SalesItem line
+            s_item = sales_txn.items.filter(item=instance.item).first()
+            if s_item:
+                s_item.quantity = s_item.quantity - old_qty + instance.quantity
+                s_item.save()
+            else:
+                SalesItem.objects.create(
+                    transaction=sales_txn,
+                    item=instance.item,
+                    quantity=instance.quantity,
+                    final_price_per_unit=instance.item.retail_price,
+                    line_discount_rate=validated_data.get("line_discount_rate", 0),
+                )
 
         return instance
 
