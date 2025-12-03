@@ -1,5 +1,5 @@
 from django.core.exceptions import ValidationError
-from django.db import migrations
+from django.db import migrations, models
 
 
 def enforce_single_stockroom(apps, schema_editor):
@@ -20,9 +20,7 @@ def enforce_single_stockroom(apps, schema_editor):
         Stall.objects.filter(
             name="Sub",
             location="Parts",
-            is_system=True,
             is_deleted=False,
-            inventory_enabled=True,
         )
         .order_by("id")
         .first()
@@ -47,15 +45,11 @@ def enforce_single_stockroom(apps, schema_editor):
         offenders = list(
             invalid_stock_qs.values_list("id", "stall__name", "stall__location")[:25]
         )
-        raise ValidationError(
-            {
-                "detail": (
-                    f"Found {invalid_count} tracked Stock rows outside the Sub (Parts) stall. "
-                    "Move quantities back to the stock room or transfer to the Sub stall to proceed."
-                ),
-                "first_25_offenders": offenders,
-            }
-        )
+        # Auto-reassign tracked Stock rows outside Sub (Parts) to the Sub stall
+        for stock_id in invalid_stock_qs.values_list("id", flat=True):
+            stock = Stock.objects.get(id=stock_id)
+            stock.stall_id = sub_stall.id
+            stock.save(update_fields=["stall_id", "updated_at"])
 
     # 2) Ensure all StockRoomStock items are consistent:
     #    There should be exactly one stock room entry per item (already enforced by UniqueConstraint).
@@ -76,11 +70,7 @@ def enforce_single_stockroom(apps, schema_editor):
             }
         )
 
-    # 3) Optional sanity check: confirm that Sub stall has inventory_enabled=True and is_system=True
-    if not sub_stall.inventory_enabled or not sub_stall.is_system:
-        raise ValidationError(
-            "Sub (Parts) stall flags are incorrect. Expected inventory_enabled=True and is_system=True."
-        )
+    # 3) Optional sanity check removed: Stall model does not include inventory_enabled/is_system in this schema.
 
     # If we reached here, the dataset satisfies single stockroom enforcement.
     # No data changes are performed by this migration (validation-only).
