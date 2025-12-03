@@ -294,27 +294,20 @@ class WeeklyPayroll(models.Model):
             else Decimal(self.allowances or 0)
         )
 
-                # Include approved AdditionalEarning within the week range
+        # Include approved AdditionalEarning within the week range
+        add_qs = self.employee.additional_earnings.filter(
+            is_deleted=False,
+            earning_date__gte=self.week_start,
+            earning_date__lt=self.week_end,
+        )
+        if not include_unapproved:
+            add_qs = add_qs.filter(approved=True)
 
-                add_qs = self.employee.additional_earnings.filter(
-
-                    is_deleted=False,
-
-                    earning_date__gte=self.week_start,
-
-                    earning_date__lt=self.week_end,
-
-                )
-
-                if not include_unapproved:
-
-                    add_qs = add_qs.filter(approved=True)
-
-                additional_total = sum((Decimal(e.amount) for e in add_qs), Decimal("0"))
-
-                self.additional_earnings_total = self._q(additional_total)
-                self.gross_pay = self._q(base + self.allowances + self.additional_earnings_total)
-
+        additional_total = sum((Decimal(e.amount) for e in add_qs), Decimal("0"))
+        self.additional_earnings_total = self._q(additional_total)
+        self.gross_pay = self._q(
+            base + self.allowances + self.additional_earnings_total
+        )
 
         # Deductions
         deductions_map: dict[str, Decimal] = {

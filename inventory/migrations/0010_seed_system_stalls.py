@@ -4,40 +4,59 @@ from django.db import migrations
 def seed_system_stalls(apps, schema_editor):
     Stall = apps.get_model("inventory", "Stall")
 
-    # Helper to get or create stall by name (case-sensitive), excluding soft-deleted
     def ensure_stall(
         name: str, location: str, inventory_enabled: bool, is_system: bool
     ):
+        # Determine available fields on Stall to avoid passing unknown kwargs
+        field_names = {f.name for f in Stall._meta.get_fields()}
+        create_kwargs = {"name": name, "location": location}
+        if "inventory_enabled" in field_names:
+            create_kwargs["inventory_enabled"] = inventory_enabled
+        if "is_system" in field_names:
+            create_kwargs["is_system"] = is_system
+
         # Try to find an active stall with this name
+
         stall = Stall.objects.filter(name=name, is_deleted=False).first()
+
         if stall is None:
-            stall = Stall.objects.create(
-                name=name,
-                location=location,
-                inventory_enabled=inventory_enabled,
-                is_system=is_system,
-            )
+            # Create with only supported fields
+            stall = Stall.objects.create(**create_kwargs)
+
         else:
-            # Update flags to enforce system-managed behavior
+            # Update flags to enforce system-managed behavior, only if fields exist
+
             updated = False
-            if stall.location != location:
+
+            if getattr(stall, "location", None) != location:
                 stall.location = location
+
                 updated = True
-            if stall.inventory_enabled != inventory_enabled:
+
+            if (
+                "inventory_enabled" in field_names
+                and getattr(stall, "inventory_enabled", None) != inventory_enabled
+            ):
                 stall.inventory_enabled = inventory_enabled
+
                 updated = True
-            if stall.is_system != is_system:
+
+            if (
+                "is_system" in field_names
+                and getattr(stall, "is_system", None) != is_system
+            ):
                 stall.is_system = is_system
+
                 updated = True
+
             if updated:
-                stall.save(
-                    update_fields=[
-                        "location",
-                        "inventory_enabled",
-                        "is_system",
-                        "updated_at",
-                    ]
-                )
+                update_fields = ["location"]
+                if "inventory_enabled" in field_names:
+                    update_fields.append("inventory_enabled")
+                if "is_system" in field_names:
+                    update_fields.append("is_system")
+                update_fields.append("updated_at")
+                stall.save(update_fields=update_fields)
         return stall
 
     # Seed the two system-managed stalls:

@@ -1,9 +1,22 @@
 from decimal import Decimal
 
 from django.contrib import admin
-from django.utils import timezone
 
-from .models import AdditionalEarning, TimeEntry, WeeklyPayroll
+from .models import AdditionalEarning, PayrollSettings, TimeEntry, WeeklyPayroll
+
+
+@admin.register(PayrollSettings)
+class PayrollSettingsAdmin(admin.ModelAdmin):
+    list_display = (
+        "shift_start",
+        "shift_end",
+        "grace_minutes",
+        "auto_close_enabled",
+        "holiday_special_pct",
+        "holiday_regular_pct",
+        "updated_at",
+    )
+    readonly_fields = ("updated_at",)
 
 
 @admin.register(TimeEntry)
@@ -32,25 +45,13 @@ class TimeEntryAdmin(admin.ModelAdmin):
     list_select_related = ("employee",)
     list_per_page = 25
 
-
-@admin.register(PayrollSettings)
-class PayrollSettingsAdmin(admin.ModelAdmin):
-    list_display = (
-        "shift_start",
-        "shift_end",
-        "grace_minutes",
-        "auto_close_enabled",
-        "holiday_special_pct",
-        "holiday_regular_pct",
-        "updated_at",
-    )
-
     readonly_fields = (
+        "work_date",
+        "effective_hours_readonly",
         "created_at",
         "updated_at",
-        "effective_hours_readonly",
-        "work_date",
     )
+
     fieldsets = (
         (
             "Entry",
@@ -70,21 +71,27 @@ class PayrollSettingsAdmin(admin.ModelAdmin):
             "Computed",
             {
                 "classes": ("collapse",),
-                "fields": ("work_date", "effective_hours_readonly"),
+                "fields": (
+                    "work_date",
+                    "effective_hours_readonly",
+                ),
             },
         ),
         (
             "Meta",
             {
                 "classes": ("collapse",),
-                "fields": ("is_deleted", "created_at", "updated_at"),
+                "fields": (
+                    "is_deleted",
+                    "created_at",
+                    "updated_at",
+                ),
             },
         ),
     )
 
     @admin.display(description="Eff. Hours")
     def effective_hours_display(self, obj: TimeEntry) -> str:
-        # Show to 2 decimals in list for readability
         try:
             return f"{(obj.effective_hours or Decimal('0')).quantize(Decimal('0.01'))}"
         except Exception:
@@ -98,24 +105,6 @@ class PayrollSettingsAdmin(admin.ModelAdmin):
             )
         except Exception:
             return "0.0000"
-
-    @admin.action(description="Mark selected entries as approved")
-    def mark_as_approved(self, request, queryset):
-        queryset.update(approved=True)
-
-    @admin.action(description="Mark selected entries as unapproved")
-    def mark_as_unapproved(self, request, queryset):
-        queryset.update(approved=False)
-
-    @admin.action(description="Soft delete selected entries")
-    def soft_delete(self, request, queryset):
-        queryset.update(is_deleted=True)
-
-    @admin.action(description="Restore (clear soft delete) for selected entries")
-    def restore(self, request, queryset):
-        queryset.update(is_deleted=False)
-
-    actions = ("mark_as_approved", "mark_as_unapproved", "soft_delete", "restore")
 
 
 @admin.register(WeeklyPayroll)
@@ -220,7 +209,11 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
             "Meta",
             {
                 "classes": ("collapse",),
-                "fields": ("is_deleted", "created_at", "updated_at"),
+                "fields": (
+                    "is_deleted",
+                    "created_at",
+                    "updated_at",
+                ),
             },
         ),
     )
@@ -249,7 +242,6 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
     def recompute_from_time_entries(self, request, queryset):
         updated = 0
         for payroll in queryset:
-            # Recompute using current configuration and approved entries
             payroll.compute_from_time_entries()
             payroll.save(
                 update_fields=[
@@ -317,6 +309,7 @@ class AdditionalEarningAdmin(admin.ModelAdmin):
     list_per_page = 25
 
     readonly_fields = ("created_at", "updated_at")
+
     fieldsets = (
         (
             "Earning",
@@ -336,7 +329,11 @@ class AdditionalEarningAdmin(admin.ModelAdmin):
             "Meta",
             {
                 "classes": ("collapse",),
-                "fields": ("is_deleted", "created_at", "updated_at"),
+                "fields": (
+                    "is_deleted",
+                    "created_at",
+                    "updated_at",
+                ),
             },
         ),
     )
