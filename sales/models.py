@@ -1,10 +1,10 @@
 import uuid
-from django.db import models
-from django.utils.translation import gettext_lazy as _
-from django.utils import timezone
 
-from inventory.models import Stall, Item
 from clients.models import Client
+from django.db import models
+from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
+from inventory.models import Item, Stall
 from users.models import CustomUser
 
 
@@ -40,6 +40,12 @@ class SalesTransaction(models.Model):
     payment_status = models.CharField(
         max_length=10, choices=PaymentStatus.choices, default=PaymentStatus.UNPAID
     )
+    order_discount_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        help_text="Order-level discount rate (0.00 - 1.00).",
+    )
 
     voided = models.BooleanField(default=False)
     voided_at = models.DateTimeField(null=True, blank=True)
@@ -64,8 +70,14 @@ class SalesTransaction(models.Model):
         return sum(item.quantity for item in self.items.all())
 
     @property
-    def computed_total(self):
+    def subtotal(self):
         return sum(item.line_total for item in self.items.all())
+
+    @property
+    def computed_total(self):
+        subtotal = self.subtotal
+        discount_rate = self.order_discount_rate or 0
+        return subtotal * (1 - discount_rate)
 
     @property
     def total_paid(self):
@@ -139,6 +151,13 @@ class SalesItem(models.Model):
         help_text="Actual unit price charged (auto-set from item if not provided)",
     )
 
+    line_discount_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        help_text="Line-level discount rate (0.00 - 1.00).",
+    )
+
     def save(self, *args, **kwargs):
         if self.item and not self.description:
             self.description = self.item.name
@@ -149,7 +168,9 @@ class SalesItem(models.Model):
 
     @property
     def line_total(self):
-        return self.final_price_per_unit * self.quantity
+        unit = self.final_price_per_unit or 0
+        discount = self.line_discount_rate or 0
+        return (unit * (1 - discount)) * self.quantity
 
     def __str__(self):
         label = self.description or (self.item.name if self.item else "Service Line")
