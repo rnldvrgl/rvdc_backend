@@ -78,8 +78,14 @@ class Service(models.Model):
     class Meta:
         ordering = ["-created_at"]
 
+
     def __str__(self):
-        return f"{self.client.name} - {self.get_service_type_display()} ({self.get_service_mode_display()})"
+
+        client_label = getattr(self.client, "name", None)
+        if not client_label:
+            client_label = str(self.client) if self.client is not None else "Unknown Client"
+        return f"{client_label} - {self.get_service_type_display()} ({self.get_service_mode_display()})"
+
 
     @property
     def total_cost(self):

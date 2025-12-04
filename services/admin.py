@@ -1,0 +1,133 @@
+from django.contrib import admin
+
+from .models import (
+    ApplianceItemUsed,
+    ApplianceStatusHistory,
+    ApplianceType,
+    Service,
+    ServiceAppliance,
+    ServiceStatusHistory,
+    TechnicianAssignment,
+)
+
+
+@admin.register(Service)
+class ServiceAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "client",
+        "stall",
+        "service_type",
+        "service_mode",
+        "scheduled_date",
+        "scheduled_time",
+        "status",
+        "created_at",
+        "updated_at",
+    )
+    list_filter = (
+        "service_type",
+        "service_mode",
+        "status",
+        "stall",
+        "scheduled_date",
+        "created_at",
+    )
+    search_fields = (
+        "client__full_name",
+        "stall__name",
+        "description",
+        "override_address",
+        "override_contact_person",
+        "override_contact_number",
+        "remarks",
+        "notes",
+    )
+    date_hierarchy = "created_at"
+    ordering = ("-created_at",)
+    list_select_related = ("client", "stall")
+    list_per_page = 25
+
+
+@admin.register(ServiceAppliance)
+class ServiceApplianceAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "service",
+        "appliance_type",
+        "brand",
+        "model",
+        "status",
+        "labor_fee",
+        "labor_is_free",
+    )
+    list_filter = ("appliance_type", "status", "labor_is_free")
+    search_fields = ("brand", "model", "service__client__full_name")
+    ordering = ("appliance_type__name", "brand")
+    list_select_related = ("service", "appliance_type")
+    list_per_page = 25
+
+
+@admin.register(ApplianceItemUsed)
+class ApplianceItemUsedAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "appliance",
+        "item",
+        "quantity",
+        "stall_stock",
+        "is_free",
+        "expense",
+    )
+    list_filter = ("is_free", "item")
+    search_fields = ("appliance__service__client__full_name", "item__name")
+    ordering = ("-id",)
+    list_select_related = ("appliance", "item", "stall_stock", "expense")
+    list_per_page = 25
+
+
+@admin.register(TechnicianAssignment)
+class TechnicianAssignmentAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "service",
+        "appliance",
+        "technician",
+        "assignment_type",
+        "note",
+    )
+    list_filter = ("assignment_type",)
+    search_fields = ("technician__username", "technician__first_name", "technician__last_name", "service__client__full_name")
+    ordering = ("-id",)
+    list_select_related = ("service", "appliance", "technician")
+    list_per_page = 25
+
+
+@admin.register(ApplianceType)
+class ApplianceTypeAdmin(admin.ModelAdmin):
+    list_display = ("id", "name")
+    search_fields = ("name",)
+    ordering = ("name",)
+    list_per_page = 25
+
+
+@admin.register(ApplianceStatusHistory)
+class ApplianceStatusHistoryAdmin(admin.ModelAdmin):
+    list_display = ("id", "appliance", "status", "changed_at", "changed_by")
+    list_filter = ("status", "changed_at")
+    search_fields = ("appliance__service__client__full_name", "changed_by__username")
+    date_hierarchy = "changed_at"
+    ordering = ("-changed_at",)
+    list_select_related = ("appliance", "changed_by")
+    list_per_page = 25
+
+
+@admin.register(ServiceStatusHistory)
+class ServiceStatusHistoryAdmin(admin.ModelAdmin):
+    list_display = ("id", "service", "status", "changed_at", "changed_by")
+    list_filter = ("status", "changed_at")
+    search_fields = ("service__client__full_name", "changed_by__username")
+    date_hierarchy = "changed_at"
+    ordering = ("-changed_at",)
+    list_select_related = ("service", "changed_by")
+    list_per_page = 25

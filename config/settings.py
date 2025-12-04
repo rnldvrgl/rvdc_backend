@@ -24,7 +24,7 @@ else:
     raise RuntimeError("DJANGO_ENV_FILE environment variable not set")
 
 SECRET_KEY = config("SECRET_KEY")
-DEBUG = config("DEBUG", default=False, cast=bool)
+DEBUG = config("DEBUG", default=True, cast=bool)
 ALLOWED_HOSTS = config("DJANGO_ALLOWED_HOSTS", default="").split(",")
 
 # ------------------------------------------------------------------------------
@@ -126,16 +126,28 @@ TIME_ZONE = "Asia/Manila"
 USE_I18N = True
 USE_TZ = True
 
+
 # ------------------------------------------------------------------------------
+
 # STATIC & MEDIA FILES
+
 # ------------------------------------------------------------------------------
+
+
 
 STATIC_URL = "/static/"
+
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
 STATICFILES_DIRS = [BASE_DIR / "static"]
 
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
+
 MEDIA_URL = "/media/"
+
 MEDIA_ROOT = BASE_DIR / "media"
+
 
 # ------------------------------------------------------------------------------
 # REST FRAMEWORK & JWT CONFIG
