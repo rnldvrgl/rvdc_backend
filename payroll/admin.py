@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.contrib import admin
 
-from .models import AdditionalEarning, PayrollSettings, TimeEntry, WeeklyPayroll
+from payroll.models import AdditionalEarning, PayrollSettings, TimeEntry, WeeklyPayroll
 
 
 @admin.register(PayrollSettings)
