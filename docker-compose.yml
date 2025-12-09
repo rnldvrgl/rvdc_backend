@@ -1,24 +1,42 @@
-services:
-  web:
-    build:
-      context: .
-    depends_on:
-      - db
-    ports:
-      - "8000:8000"
-    volumes:
-      - static_volume:/usr/src/app/static
-      - media_volume:/usr/src/app/media
-    command: ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
+version: "3.9"
 
-  db:
-    image: postgres:17.4-alpine
-    environment:
-      POSTGRES_USER: rvdc_owner
-      POSTGRES_PASSWORD: daizuke0908
+services:
+    web:
+        build:
+            context: .
+        depends_on:
+            - db
+        environment:
+            DJANGO_ENV_FILE: .env
+        volumes:
+            - static_volume:/usr/src/app/static
+            - media_volume:/usr/src/app/media
+        healthcheck:
+            test:
+                ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+
+    db:
+        image: postgres:17
+        environment:
+            POSTGRES_DB: ${POSTGRES_DB:-rvdc_db}
+            POSTGRES_USER: ${POSTGRES_USER:-rvdc_owner}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-daizuke0908}
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+        healthcheck:
+            test:
+                [
+                    "CMD-SHELL",
+                    "pg_isready -U ${POSTGRES_USER:-rvdc_owner} -d ${POSTGRES_DB:-rvdc_db}",
+                ]
+            interval: 10s
+            timeout: 5s
+            retries: 5
 
 volumes:
-  postgres_data:
-  static_volume:
-  media_volume:
-  
+    postgres_data:
+    static_volume:
+    media_volume:
