@@ -1,137 +1,85 @@
-#!/bin/bash
-# Enhanced deployment script for rvdc_backend
-# - Pulls latest code
-# - Runs Django deploy checks
-# - Builds and updates production container
-# - Runs migrations and collectstatic
-# - Adds safer steps, health checks, and structured logging
-
+#!/usr/bin/env bash
 set -Eeuo pipefail
 
-###############################################
-# Configuration
-###############################################
+############################################
+# Config
+############################################
 APP_NAME="${APP_NAME:-rvdc_backend}"
 PROJECT_DIR="${PROJECT_DIR:-/srv/$APP_NAME}"
 BRANCH="${BRANCH:-master}"
 COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml"
 DOCKER_COMPOSE="docker compose ${COMPOSE_FILES}"
 WEB_SERVICE="${WEB_SERVICE:-web}"
+HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:8000/health}"
 
-# Health-check command: adjust to your app's health endpoint if available
-# Example: HEALTHCHECK_CMD='docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T web curl -fsS http://localhost/healthz'
-HEALTHCHECK_CMD="${HEALTHCHECK_CMD:-$DOCKER_COMPOSE exec -T $WEB_SERVICE curl -fsS http://localhost/health || $DOCKER_COMPOSE exec -T $WEB_SERVICE curl -fsS http://127.0.0.1/health || true}"
+timestamp() { date +'%Y-%m-%d %H:%M:%S'; }
+log() { echo "[$(timestamp)] $*"; }
+err() { echo "[$(timestamp)] ERROR: $*" >&2; }
 
-###############################################
-# Logging helpers
-###############################################
-timestamp() {
-  date +'%Y-%m-%d %H:%M:%S'
-}
-log() {
-  echo "[$(timestamp)] $*"
-}
-ok() {
-  echo "[$(timestamp)] ✅ $*"
-}
-warn() {
-  echo "[$(timestamp)] ⚠️  $*" >&2
-}
-err() {
-  echo "[$(timestamp)] ❌ $*" >&2
-}
-
-###############################################
-# Traps & cleanup
-###############################################
-cleanup() {
-  # Add any cleanup steps here (e.g., removing temp files, unlocking, etc.)
-  :
-}
-trap cleanup EXIT
-
-###############################################
-# Pre-flight checks
-###############################################
-log "Starting deploy for $APP_NAME on branch '$BRANCH'"
+############################################
+# Preconditions
+############################################
+log "Starting deploy for ${APP_NAME} (branch ${BRANCH})"
 
 if ! command -v docker >/dev/null 2>&1; then
-  err "Docker is not installed or not in PATH"
+  err "Docker not found"
   exit 1
 fi
 
-# Validate compose files exist
-for f in docker-compose.yml docker-compose.prod.yml; do
-  if [ ! -f "$PROJECT_DIR/$f" ]; then
-    err "Missing required compose file: $PROJECT_DIR/$f"
-    exit 1
-  fi
-done
-
-if [ ! -d "$PROJECT_DIR" ]; then
-  err "Project directory not found: $PROJECT_DIR"
+if [ ! -d "${PROJECT_DIR}" ]; then
+  err "Project dir not found: ${PROJECT_DIR}"
   exit 1
 fi
 
-cd "$PROJECT_DIR"
+cd "${PROJECT_DIR}"
 
-###############################################
-# Git update
-###############################################
-log "Pulling latest changes from Git..."
-git fetch origin "$BRANCH"
-git reset --hard "origin/$BRANCH"
-ok "Git updated to origin/$BRANCH"
+############################################
+# Pull latest
+############################################
+log "Fetching git updates..."
+git fetch origin "${BRANCH}"
+git reset --hard "origin/${BRANCH}"
+log "Checked out origin/${BRANCH}"
 
-###############################################
-# Django deploy checks (static settings, security, etc.)
-###############################################
-log "Running Django deploy checks..."
-$DOCKER_COMPOSE run --rm "$WEB_SERVICE" python manage.py check --deploy
-ok "Django deploy checks passed"
+############################################
+# Build
+############################################
+log "Building production image(s)..."
+${DOCKER_COMPOSE} build --pull "${WEB_SERVICE}"
+log "Build complete"
 
-###############################################
-# Build production image
-###############################################
-log "Building production containers..."
-$DOCKER_COMPOSE build "$WEB_SERVICE"
-ok "Build complete"
+############################################
+# Run migrations and collectstatic using the built image
+############################################
+log "Running migrations..."
+${DOCKER_COMPOSE} run --rm --no-deps "${WEB_SERVICE}" python manage.py migrate --noinput
+log "Migrations applied"
 
-###############################################
-# Run database migrations
-###############################################
-log "Applying database migrations..."
-$DOCKER_COMPOSE run --rm "$WEB_SERVICE" python manage.py migrate --noinput
-ok "Migrations completed"
-
-###############################################
-# Collect static files
-###############################################
 log "Collecting static files..."
-$DOCKER_COMPOSE run --rm "$WEB_SERVICE" python manage.py collectstatic --noinput
-ok "Static files collected"
+${DOCKER_COMPOSE} run --rm --no-deps "${WEB_SERVICE}" python manage.py collectstatic --noinput
+log "Static collected"
 
-###############################################
-# Update and restart web service
-###############################################
-log "Updating web container..."
-$DOCKER_COMPOSE up -d --no-deps --build "$WEB_SERVICE"
-ok "Web container updated and restarted"
+############################################
+# Deploy: start / update the service (no rebuild)
+############################################
+log "Bringing up web service..."
+${DOCKER_COMPOSE} up -d --no-deps --no-build "${WEB_SERVICE}"
+log "Service up"
 
-###############################################
-# Post-deploy health check
-###############################################
-log "Running post-deploy health check..."
-if eval "$HEALTHCHECK_CMD"; then
-  ok "Health check passed"
+############################################
+# Health check
+############################################
+log "Checking health at ${HEALTHCHECK_URL} ..."
+if curl -fsS --max-time 5 "${HEALTHCHECK_URL}" >/dev/null 2>&1; then
+  log "Health check OK"
 else
-  warn "Health check did not pass; please verify application health manually"
+  err "Health check failed. You should inspect logs: docker compose -f docker-compose.yml -f docker-compose.prod.yml logs ${WEB_SERVICE}"
 fi
 
-###############################################
-# Cleanup dangling images
-###############################################
+############################################
+# Cleanup
+############################################
 log "Cleaning up dangling images..."
-docker image prune -f || warn "Failed to prune images (non-fatal)"
+docker image prune -f || log "image prune failed (non-fatal)"
 
-ok "Deployment complete!"
+log "Deployment finished"
