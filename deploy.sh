@@ -9,7 +9,7 @@ PROJECT_DIR="${PROJECT_DIR:-/srv/$APP_NAME}"
 FRONTEND_DIR="${FRONTEND_DIR:-/srv/rvdc}"
 BRANCH="${BRANCH:-staging}"
 WEB_SERVICE="${WEB_SERVICE:-web}"
-FRONTEND_SERVICE="${FRONTEND_SERVICE:-frontend}"  # matches service name in frontend docker-compose.yml
+FRONTEND_SERVICE="${FRONTEND_SERVICE:-rvdc}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:8000/health}"
 
 timestamp() { date +'%Y-%m-%d %H:%M:%S'; }
@@ -70,7 +70,7 @@ git fetch origin "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 log "Frontend at origin/${BRANCH}"
 
-DOCKER_COMPOSE_FRONTEND="docker compose -f docker-compose.yml"  # frontend has its own compose file
+DOCKER_COMPOSE_FRONTEND="docker compose -f docker-compose.yml"
 
 log "Building frontend Docker image..."
 ${DOCKER_COMPOSE_FRONTEND} build "${FRONTEND_SERVICE}"
