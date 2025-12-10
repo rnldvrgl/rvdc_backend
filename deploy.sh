@@ -12,10 +12,6 @@ WEB_SERVICE="${WEB_SERVICE:-web}"
 FRONTEND_SERVICE="${FRONTEND_SERVICE:-rvdc}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:8000/health}"
 
-# Compose commands for backend and frontend
-BACKEND_COMPOSE="docker compose -f ${PROJECT_DIR}/docker-compose.yml -f ${PROJECT_DIR}/docker-compose.prod.yml"
-FRONTEND_COMPOSE="docker compose -f ${FRONTEND_DIR}/docker-compose.yml"
-
 timestamp() { date +'%Y-%m-%d %H:%M:%S'; }
 log() { echo "[$(timestamp)] $*"; }
 err() { echo "[$(timestamp)] ERROR: $*" >&2; }
@@ -39,6 +35,23 @@ git reset --hard "origin/${BRANCH}"
 log "Backend at origin/${BRANCH}"
 
 ############################################
+# BACKEND: Build and migrate
+############################################
+DOCKER_COMPOSE_BACKEND="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+
+log "Building backend Docker image..."
+${DOCKER_COMPOSE_BACKEND} build --pull "${WEB_SERVICE}"
+
+log "Running migrations..."
+${DOCKER_COMPOSE_BACKEND} run --rm --no-deps "${WEB_SERVICE}" python manage.py migrate --noinput
+
+log "Creating default users..."
+${DOCKER_COMPOSE_BACKEND} run --rm --no-deps "${WEB_SERVICE}" python manage.py create_default_users
+
+log "Collecting static files..."
+${DOCKER_COMPOSE_BACKEND} run --rm --no-deps "${WEB_SERVICE}" python manage.py collectstatic --noinput
+
+############################################
 # FRONTEND: Pull latest
 ############################################
 log "Updating frontend repository..."
@@ -48,36 +61,23 @@ git reset --hard "origin/${BRANCH}"
 log "Frontend at origin/${BRANCH}"
 
 ############################################
-# BUILD BACKEND
+# FRONTEND: Build and deploy
 ############################################
-log "Building backend Docker image..."
-cd "${PROJECT_DIR}"
-${BACKEND_COMPOSE} build --pull "${WEB_SERVICE}"
+DOCKER_COMPOSE_FRONTEND="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
 
-log "Running backend migrations..."
-${BACKEND_COMPOSE} run --rm --no-deps "${WEB_SERVICE}" python manage.py migrate --noinput
-
-log "Creating default users..."
-${BACKEND_COMPOSE} run --rm --no-deps "${WEB_SERVICE}" python manage.py create_default_users
-
-log "Collecting static files..."
-${BACKEND_COMPOSE} run --rm --no-deps "${WEB_SERVICE}" python manage.py collectstatic --noinput
-
-############################################
-# BUILD FRONTEND
-############################################
 log "Building frontend Docker image..."
 cd "${FRONTEND_DIR}"
-${FRONTEND_COMPOSE} build "${FRONTEND_SERVICE}"
+${DOCKER_COMPOSE_FRONTEND} build "${FRONTEND_SERVICE}"
+
+log "Bringing up frontend service..."
+${DOCKER_COMPOSE_FRONTEND} up -d --no-deps --build "${FRONTEND_SERVICE}"
 
 ############################################
-# DEPLOY: Start/Update services
+# BACKEND: Deploy
 ############################################
-log "Bringing up backend and frontend..."
+log "Bringing up backend service..."
 cd "${PROJECT_DIR}"
-${BACKEND_COMPOSE} up -d --no-deps --build "${WEB_SERVICE}"
-cd "${FRONTEND_DIR}"
-${FRONTEND_COMPOSE} up -d --no-deps --build "${FRONTEND_SERVICE}"
+${DOCKER_COMPOSE_BACKEND} up -d --no-deps --build "${WEB_SERVICE}"
 
 ############################################
 # HEALTHCHECK
@@ -86,7 +86,7 @@ log "Checking backend health at ${HEALTHCHECK_URL} ..."
 if curl -fsS --max-time 5 "${HEALTHCHECK_URL}" >/dev/null 2>&1; then
     log "Backend health check OK"
 else
-    err "Backend health check failed! Inspect logs: ${BACKEND_COMPOSE} logs ${WEB_SERVICE}"
+    err "Backend health check failed! Inspect logs: ${DOCKER_COMPOSE_BACKEND} logs ${WEB_SERVICE}"
 fi
 
 ############################################
