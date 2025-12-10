@@ -8,11 +8,13 @@ APP_NAME="${APP_NAME:-rvdc_backend}"
 PROJECT_DIR="${PROJECT_DIR:-/srv/$APP_NAME}"
 FRONTEND_DIR="${FRONTEND_DIR:-/srv/rvdc}"
 BRANCH="${BRANCH:-staging}"
-COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml"
-DOCKER_COMPOSE="docker compose ${COMPOSE_FILES}"
 WEB_SERVICE="${WEB_SERVICE:-web}"
 FRONTEND_SERVICE="${FRONTEND_SERVICE:-rvdc}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-http://127.0.0.1:8000/health}"
+
+# Compose commands for backend and frontend
+BACKEND_COMPOSE="docker compose -f ${PROJECT_DIR}/docker-compose.yml -f ${PROJECT_DIR}/docker-compose.prod.yml"
+FRONTEND_COMPOSE="docker compose -f ${FRONTEND_DIR}/docker-compose.yml"
 
 timestamp() { date +'%Y-%m-%d %H:%M:%S'; }
 log() { echo "[$(timestamp)] $*"; }
@@ -50,30 +52,32 @@ log "Frontend at origin/${BRANCH}"
 ############################################
 log "Building backend Docker image..."
 cd "${PROJECT_DIR}"
-${DOCKER_COMPOSE} build --pull "${WEB_SERVICE}"
+${BACKEND_COMPOSE} build --pull "${WEB_SERVICE}"
 
-log "Running migrations..."
-${DOCKER_COMPOSE} run --rm --no-deps "${WEB_SERVICE}" python manage.py migrate --noinput
+log "Running backend migrations..."
+${BACKEND_COMPOSE} run --rm --no-deps "${WEB_SERVICE}" python manage.py migrate --noinput
 
 log "Creating default users..."
-${DOCKER_COMPOSE} run --rm --no-deps "${WEB_SERVICE}" python manage.py create_default_users
+${BACKEND_COMPOSE} run --rm --no-deps "${WEB_SERVICE}" python manage.py create_default_users
 
 log "Collecting static files..."
-${DOCKER_COMPOSE} run --rm --no-deps "${WEB_SERVICE}" python manage.py collectstatic --noinput
+${BACKEND_COMPOSE} run --rm --no-deps "${WEB_SERVICE}" python manage.py collectstatic --noinput
 
 ############################################
 # BUILD FRONTEND
 ############################################
 log "Building frontend Docker image..."
 cd "${FRONTEND_DIR}"
-${DOCKER_COMPOSE} build "${FRONTEND_SERVICE}"
+${FRONTEND_COMPOSE} build "${FRONTEND_SERVICE}"
 
 ############################################
 # DEPLOY: Start/Update services
 ############################################
 log "Bringing up backend and frontend..."
 cd "${PROJECT_DIR}"
-${DOCKER_COMPOSE} up -d --no-deps --build "${WEB_SERVICE}" "${FRONTEND_SERVICE}"
+${BACKEND_COMPOSE} up -d --no-deps --build "${WEB_SERVICE}"
+cd "${FRONTEND_DIR}"
+${FRONTEND_COMPOSE} up -d --no-deps --build "${FRONTEND_SERVICE}"
 
 ############################################
 # HEALTHCHECK
@@ -82,7 +86,7 @@ log "Checking backend health at ${HEALTHCHECK_URL} ..."
 if curl -fsS --max-time 5 "${HEALTHCHECK_URL}" >/dev/null 2>&1; then
     log "Backend health check OK"
 else
-    err "Backend health check failed! Inspect logs: docker compose logs ${WEB_SERVICE}"
+    err "Backend health check failed! Inspect logs: ${BACKEND_COMPOSE} logs ${WEB_SERVICE}"
 fi
 
 ############################################
