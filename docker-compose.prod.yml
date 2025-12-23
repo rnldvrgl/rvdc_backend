@@ -1,7 +1,7 @@
 version: "3.9"
 
 services:
-    web:
+    api:
         build:
             context: .
             target: production
@@ -9,24 +9,14 @@ services:
             - .env.production
         environment:
             DJANGO_ENV_FILE: .env.production
-        restart: always
-        depends_on:
-            - db
+        command:
+            ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
         volumes:
             - static_volume:/usr/src/app/static
             - media_volume:/usr/src/app/media
         ports:
             - "8000:8000"
 
-    db:
-        image: postgres:17
-        restart: always
-        env_file:
-            - .env.production
-        volumes:
-            - postgres_data:/var/lib/postgresql/data
-
 volumes:
-    postgres_data:
     static_volume:
     media_volume:

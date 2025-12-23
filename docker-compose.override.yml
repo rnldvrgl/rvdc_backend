@@ -1,7 +1,7 @@
 version: "3.9"
 
 services:
-    web:
+    api:
         build:
             target: development
         env_file:
@@ -9,20 +9,7 @@ services:
         environment:
             DJANGO_ENV_FILE: .env.local
         command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
-        volumes:
-            - .:/usr/src/app
-            - static_volume:/usr/src/app/static
-            - media_volume:/usr/src/app/media
-        ports:
-            - "8000:8000"
 
     db:
-        image: postgres:17
-        env_file:
-            - .env.local
-        environment:
-            POSTGRES_DB: ${POSTGRES_DB:-rvdc_db}
-        volumes:
-            - postgres_data:/var/lib/postgresql/data
         ports:
-            - "5433:5432"
+            - "5432:5432"

@@ -2,3 +2,10 @@
 .menv/
 __pycache__/
 db.sqlite3
+.git
+.gitignore
+*.pyc
+.env*
+node_modules/
+staticfiles/
+media/
