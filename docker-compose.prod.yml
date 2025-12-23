@@ -1,6 +1,22 @@
 version: "3.9"
 
 services:
+    db:
+        image: postgres:16
+        env_file:
+            - .env.production
+        environment:
+            POSTGRES_DB: ${DB_NAME}
+            POSTGRES_USER: ${DB_USER}
+            POSTGRES_PASSWORD: ${DB_PASSWORD}
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
     api:
         build:
             context: .
@@ -9,6 +25,10 @@ services:
             - .env.production
         environment:
             DJANGO_ENV_FILE: .env.production
+            DATABASE_URL: ${DATABASE_URL}
+        depends_on:
+            db:
+                condition: service_healthy
         command:
             ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
         volumes:
@@ -18,5 +38,6 @@ services:
             - "8000:8000"
 
 volumes:
+    postgres_data:
     static_volume:
     media_volume:
