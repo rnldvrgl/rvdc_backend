@@ -59,13 +59,15 @@ git fetch origin "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 log "Frontend at origin/${BRANCH}"
 
-DOCKER_COMPOSE_FRONTEND="docker compose -f docker-compose.yml"
+log "Installing frontend deps..."
+npm install
 
-log "Building frontend Docker image..."
-${DOCKER_COMPOSE_FRONTEND} build "${FRONTEND_SERVICE}"
+log "Building frontend..."
+npm run build
 
-log "Bringing up frontend service..."
-${DOCKER_COMPOSE_FRONTEND} up -d --build "${FRONTEND_SERVICE}"
+log "Restarting frontend (PM2)..."
+pm2 restart rvdc-frontend || pm2 start ecosystem.config.js
+
 
 # ---------------- CLEANUP ----------------
 log "Cleaning up dangling Docker images..."
