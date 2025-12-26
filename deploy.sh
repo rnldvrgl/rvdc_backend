@@ -10,7 +10,7 @@ PROJECT_DIR="${PROJECT_DIR:-/srv/$APP_NAME}"
 FRONTEND_DIR="${FRONTEND_DIR:-/srv/rvdc}"
 BRANCH="${BRANCH:-master}"
 WEB_SERVICE="${WEB_SERVICE:-api}"
-FRONTEND_SERVICE="${FRONTEND_SERVICE:-rvdc}"
+FRONTEND_SERVICE="${FRONTEND_SERVICE:-rvdc-frontend}"
 ENV_FILE="${ENV_FILE:-${PROJECT_DIR}/.env.production}"
 
 [ -f "${ENV_FILE}" ] || { err "Env file not found: ${ENV_FILE}"; exit 1; }
@@ -28,29 +28,23 @@ git fetch origin "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 log "Backend at origin/${BRANCH}"
 
-DOCKER_COMPOSE_BACKEND="docker compose \
-  --env-file ${ENV_FILE} \
-  -f docker-compose.yml \
-  -f docker-compose.prod.yml"
-
 log "Ensuring database is running..."
-${DOCKER_COMPOSE_BACKEND} up -d db
+docker compose --env-file "${ENV_FILE}" -f docker-compose.yml -f docker-compose.prod.yml up -d db
 
 log "Building backend Docker image..."
-${DOCKER_COMPOSE_BACKEND} build --pull "${WEB_SERVICE}"
+docker compose --env-file "${ENV_FILE}" -f docker-compose.yml -f docker-compose.prod.yml build --pull "${WEB_SERVICE}"
 
 log "Starting backend service..."
-${DOCKER_COMPOSE_BACKEND} up -d "${WEB_SERVICE}"
+docker compose --env-file "${ENV_FILE}" -f docker-compose.yml -f docker-compose.prod.yml up -d "${WEB_SERVICE}"
 
 log "Running migrations..."
-${DOCKER_COMPOSE_BACKEND} exec -T "${WEB_SERVICE}" python manage.py migrate --noinput
+docker compose --env-file "${ENV_FILE}" -f docker-compose.yml -f docker-compose.prod.yml exec -T "${WEB_SERVICE}" python manage.py migrate --noinput
 
 log "Creating default users..."
-${DOCKER_COMPOSE_BACKEND} exec -T "${WEB_SERVICE}" python manage.py create_default_users
+docker compose --env-file "${ENV_FILE}" -f docker-compose.yml -f docker-compose.prod.yml exec -T "${WEB_SERVICE}" python manage.py create_default_users
 
 log "Collecting static files..."
-${DOCKER_COMPOSE_BACKEND} exec -T "${WEB_SERVICE}" python manage.py collectstatic --noinput
-
+docker compose --env-file "${ENV_FILE}" -f docker-compose.yml -f docker-compose.prod.yml exec -T "${WEB_SERVICE}" python manage.py collectstatic --noinput
 
 # ---------------- FRONTEND ----------------
 log "Updating frontend repository..."
@@ -66,12 +60,10 @@ log "Building frontend..."
 npm run build
 
 log "Restarting frontend (PM2)..."
-pm2 restart rvdc-frontend || pm2 start ecosystem.config.js
-
+pm2 restart "${FRONTEND_SERVICE}" || pm2 start ecosystem.config.js
 
 # ---------------- CLEANUP ----------------
 log "Cleaning up dangling Docker images..."
 docker image prune -f || log "Image prune failed (non-fatal)"
 
 log "Deployment complete ✅"
-
