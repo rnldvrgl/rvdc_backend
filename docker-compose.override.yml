@@ -5,7 +5,7 @@ services:
         env_file:
             - .env.local
         environment:
-            DJANGO_ENV_FILE: .env.local
+            POSTGRES_PASSWORD: ${DB_PASSWORD:-daizuke0908}
         command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
 
     db:
