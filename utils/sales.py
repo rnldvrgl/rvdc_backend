@@ -3,8 +3,6 @@ from django.core.exceptions import ValidationError
 from rest_framework.exceptions import NotFound
 from inventory.models import Stock
 from sales.models import SalesTransaction
-from utils.logger import log_activity
-from utils.inventory import record_stock_movement
 
 
 def void_sales_transaction(transaction_id: int, user, reason: str):
@@ -33,27 +31,11 @@ def void_sales_transaction(transaction_id: int, user, reason: str):
         stock.quantity += qty
         stock.save()
 
-        record_stock_movement(
-            item=item,
-            stall=transaction.stall,
-            quantity=qty,
-            movement_type="void_sale",
-            related_object=transaction,
-            note=f"Void Sale #{transaction.id}",
-        )
-
     # Mark transaction as void
     transaction.voided = True
     transaction.voided_at = now()
     transaction.void_reason = reason
     transaction.save()
-
-    log_activity(
-        user=user,
-        instance=transaction,
-        action=f"Voided Sale #{transaction.id}",
-        note=f"Reason: {reason}",
-    )
 
     return transaction
 
@@ -93,25 +75,9 @@ def unvoid_sales_transaction(transaction_id: int, user):
         stock.quantity -= qty
         stock.save()
 
-        record_stock_movement(
-            item=item,
-            stall=transaction.stall,
-            quantity=-qty,
-            movement_type="restore_sale",
-            related_object=transaction,
-            note=f"Unvoid Sale #{transaction.id}",
-        )
-
     transaction.voided = False
     transaction.voided_at = None
     transaction.void_reason = ""
     transaction.save()
-
-    log_activity(
-        user=user,
-        instance=transaction,
-        action=f"Unvoid Sale #{transaction.id}",
-        note="Reinstated transaction",
-    )
 
     return transaction

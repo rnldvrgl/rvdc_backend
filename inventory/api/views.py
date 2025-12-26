@@ -1,57 +1,54 @@
-from rest_framework import viewsets, status, filters
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.permissions import IsAdminUser, IsAuthenticated
-from django.db import transaction
-from notifications.models import Notification
 from django.contrib.auth import get_user_model
+from django.db import transaction
+from django.utils import timezone
+from django_filters.rest_framework import DjangoFilterBackend
 from inventory.api.filters import (
     ItemFilter,
     StockFilter,
     StockRoomFilter,
     StockTransferFilter,
 )
-
+from inventory.api.serializers import (
+    ItemSerializer,
+    ProductCategorySerializer,
+    StallSerializer,
+    StockPatchSerializer,
+    StockReadSerializer,
+    StockRestockSerializer,
+    StockRoomStockSerializer,
+    StockTransferSerializer,
+    StockWriteSerializer,
+)
 from inventory.models import (
     Item,
+    ProductCategory,
     Stall,
     Stock,
     StockRoomStock,
-    ProductCategory,
     StockTransfer,
-    Restock,
 )
-from inventory.api.serializers import (
-    ItemSerializer,
-    StallSerializer,
-    StockRoomStockSerializer,
-    ProductCategorySerializer,
-    StockTransferSerializer,
-    StockRestockSerializer,
-    StockReadSerializer,
-    StockWriteSerializer,
-    StockPatchSerializer,
-)
-
-from utils.filters.role_filters import get_role_based_filter_response
+from notifications.models import Notification
+from rest_framework import filters, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import IsAdminUser, IsAuthenticated
+from rest_framework.response import Response
 from utils.filters.options import (
+    get_product_category_options,
+    get_stall_options,
     get_status_options,
     get_unit_of_measure_options,
-    get_stall_options,
-    get_product_category_options,
     get_user_options,
 )
-
-from utils.query import filter_by_date_range, get_transfer_role_filtered_queryset
+from utils.filters.role_filters import get_role_based_filter_response
 from utils.inventory import (
     user_can_manage_stall,
-    record_stock_movement,
 )
-from utils.logger import log_activity
-from django_filters.rest_framework import DjangoFilterBackend
-from utils.query import get_role_filtered_queryset
-from rest_framework.exceptions import ValidationError
-from django.utils import timezone
+from utils.query import (
+    filter_by_date_range,
+    get_role_filtered_queryset,
+    get_transfer_role_filtered_queryset,
+)
 
 
 class ItemViewSet(viewsets.ModelViewSet):
@@ -68,6 +65,8 @@ class ItemViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
+
+    # (moved) explicit disallowed-method handlers belong to StallViewSet, not ItemViewSet.
 
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):
@@ -119,19 +118,62 @@ class ItemViewSet(viewsets.ModelViewSet):
 
 class StallViewSet(viewsets.ModelViewSet):
     queryset = Stall.objects.all()
+
     serializer_class = StallSerializer
+
     permission_classes = [IsAdminUser]
+
+    # Disable create/update/delete through this viewset — stalls are system-managed.
+
+    http_method_names = ["get", "head", "options"]
+
     filter_backends = [
         DjangoFilterBackend,
         filters.SearchFilter,
         filters.OrderingFilter,
     ]
+
     filterset_fields = ["name"]
+
     search_fields = ["name"]
+
     ordering_fields = "__all__"
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
+
+    # Explicit handlers to provide a clear message for disallowed methods on stalls
+    def create(self, request, *args, **kwargs):
+        return Response(
+            {
+                "detail": "Stalls are system-managed (read-only). Creation is not allowed."
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def update(self, request, *args, **kwargs):
+        return Response(
+            {
+                "detail": "Stalls are system-managed (read-only). Updates are not allowed."
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def partial_update(self, request, *args, **kwargs):
+        return Response(
+            {
+                "detail": "Stalls are system-managed (read-only). Updates are not allowed."
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        return Response(
+            {
+                "detail": "Stalls are system-managed (read-only). Deletion is not allowed."
+            },
+            status=status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
 
 
 class StockViewSet(viewsets.ModelViewSet):
@@ -217,47 +259,9 @@ class StockViewSet(viewsets.ModelViewSet):
         stock_room_stock.quantity -= quantity
         stock_room_stock.save()
 
-        restock_out = Restock.objects.create(
-            item=stock.item,
-            quantity=quantity,
-            created_by=request.user,
-        )
-
-        record_stock_movement(
-            item=stock.item,
-            stall=None,
-            quantity=-quantity,
-            movement_type="transfer_out",
-            related_object=restock_out,
-            note=f"Stock room ➔ Stall '{stock.stall.name}': -{quantity} {stock.item.unit_of_measure} '{stock.item.name}'",
-        )
-
         # Add to stall
-        original_quantity = stock.quantity
         stock.quantity += quantity
         stock.save()
-
-        restock_in = Restock.objects.create(
-            item=stock.item,
-            quantity=quantity,
-            created_by=request.user,
-        )
-
-        record_stock_movement(
-            item=stock.item,
-            stall=stock.stall,
-            quantity=quantity,
-            movement_type="transfer_in",
-            related_object=restock_in,
-            note=f"Stock room ➔ Stall '{stock.stall.name}': +{quantity} {stock.item.unit_of_measure} '{stock.item.name}'",
-        )
-
-        log_activity(
-            request.user,
-            stock,
-            "restock",
-            f"Restocked '{stock.item.name}' at '{stock.stall.name}' from {original_quantity} to {stock.quantity}.",
-        )
 
         manager_user = (
             get_user_model()
@@ -328,31 +332,8 @@ class StockRoomStockViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         quantity = serializer.validated_data["quantity"]
 
-        original_quantity = stock_room_stock.quantity
         stock_room_stock.quantity += quantity
         stock_room_stock.save()
-
-        restock = Restock.objects.create(
-            item=stock_room_stock.item,
-            quantity=quantity,
-            created_by=request.user,
-        )
-
-        record_stock_movement(
-            item=stock_room_stock.item,
-            stall=None,
-            quantity=quantity,
-            movement_type="purchase",
-            related_object=restock,
-            note=f"Supplier ➔ Stock room: +{quantity} {stock_room_stock.item.unit_of_measure} '{stock_room_stock.item.name}'",
-        )
-
-        log_activity(
-            request.user,
-            stock_room_stock,
-            "restock_stock_room",
-            f"Restocked stock room for '{stock_room_stock.item.name}' from {original_quantity} to {stock_room_stock.quantity}.",
-        )
 
         return Response(
             {

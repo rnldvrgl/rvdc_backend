@@ -25,6 +25,13 @@ class Command(BaseCommand):
 
         for stall_data in default_stalls:
             stall, created = Stall.objects.get_or_create(**stall_data)
+            # Mark system stalls and inventory ownership
+            if stall.name == "Sub Stall":
+                stall.inventory_enabled = True
+            else:
+                stall.inventory_enabled = False
+            stall.is_system = True
+            stall.save()
             stall_map[stall.name] = stall
             msg = (
                 f"🏪 Created Stall: {stall.name}"

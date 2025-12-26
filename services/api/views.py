@@ -18,7 +18,7 @@ from services.api.serializers import (
     ServiceSerializer,
     ServiceApplianceSerializer,
     ApplianceItemUsedSerializer,
-    TechnicianAssignmentSerializer,
+    # TechnicianAssignmentSerializer,
 )
 
 
@@ -81,7 +81,7 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
 # --------------------------
 class TechnicianAssignmentViewSet(viewsets.ModelViewSet):
     queryset = TechnicianAssignment.objects.select_related("service", "technician")
-    serializer_class = TechnicianAssignmentSerializer
+    # serializer_class = TechnicianAssignmentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     @action(detail=False, methods=["get"], url_path="filters")

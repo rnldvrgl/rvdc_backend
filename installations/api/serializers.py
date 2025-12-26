@@ -95,6 +95,17 @@ class AirconUnitSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("This serial number is already in use.")
         return value
 
+    def validate_free_cleaning_redeemed(self, value):
+        """
+        Allow toggling free_cleaning_redeemed only if the unit is installed.
+        """
+        instance = self.instance  # available when updating
+        if value and instance and not instance.installation:
+            raise serializers.ValidationError(
+                "Cannot redeem free cleaning before the unit is installed."
+            )
+        return value
+
 
 class AirconItemUsedSerializer(serializers.ModelSerializer):
     class Meta:

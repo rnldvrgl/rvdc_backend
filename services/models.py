@@ -1,10 +1,10 @@
-from django.db import models
 from datetime import datetime, timedelta
 
-from inventory.models import Item
 from clients.models import Client
+from django.db import models
+from inventory.models import Item, Stock
 from users.models import CustomUser
-from utils.enums import ServiceType, ServiceStatus, ApplianceStatus, ServiceMode
+from utils.enums import ApplianceStatus, ServiceMode, ServiceStatus, ServiceType
 
 
 # ----------------------------------
@@ -42,6 +42,17 @@ class Service(models.Model):
     client = models.ForeignKey(
         Client, on_delete=models.PROTECT, related_name="services"
     )
+    # The stall handling this service (main stall). This is used to
+    # determine which stall should be charged for labor and for which
+    # expenses/sales transactions are created when items are added to the
+    # service. Keep nullable for legacy records.
+    stall = models.ForeignKey(
+        "inventory.Stall",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="services",
+    )
     service_type = models.CharField(max_length=30, choices=ServiceType.choices)
     service_mode = models.CharField(max_length=30, choices=ServiceMode.choices)
     related_transaction = models.ForeignKey(
@@ -67,8 +78,14 @@ class Service(models.Model):
     class Meta:
         ordering = ["-created_at"]
 
+
     def __str__(self):
-        return f"{self.client.name} - {self.get_service_type_display()} ({self.get_service_mode_display()})"
+
+        client_label = getattr(self.client, "name", None)
+        if not client_label:
+            client_label = str(self.client) if self.client is not None else "Unknown Client"
+        return f"{client_label} - {self.get_service_type_display()} ({self.get_service_mode_display()})"
+
 
     @property
     def total_cost(self):
@@ -109,13 +126,27 @@ class TechnicianAssignment(models.Model):
         CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician"}
     )
 
+    # role/type of assignment: repair, pickup (pull-out), delivery, etc.
+    class AssignmentType(models.TextChoices):
+        REPAIR = "repair", "Repair"
+        PICKUP = "pickup", "Pick-up (Pull-Out)"
+        DELIVERY = "delivery", "Delivery/Return"
+        INSPECT = "inspect", "Inspect/On-site"
+
+    assignment_type = models.CharField(
+        max_length=20, choices=AssignmentType.choices, default=AssignmentType.REPAIR
+    )
+
+    # optional free-text note to capture who pulled/delivered/repaired when needed
+    note = models.CharField(max_length=255, blank=True, null=True)
+
     class Meta:
         verbose_name = "Technician Assignment"
         verbose_name_plural = "Technician Assignments"
 
     def __str__(self):
         target = self.appliance or self.service
-        return f"{self.technician.get_full_name()} → {target}"
+        return f"{self.technician.get_full_name()} ({self.get_assignment_type_display()}) → {target}"
 
 
 # ----------------------------------
@@ -139,6 +170,9 @@ class ServiceAppliance(models.Model):
         max_length=20, choices=ApplianceStatus.choices, default=ApplianceStatus.RECEIVED
     )
     labor_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    labor_is_free = models.BooleanField(
+        default=False, help_text="Mark labor for this appliance as free."
+    )
 
     class Meta:
         ordering = ["appliance_type__name", "brand"]
@@ -162,6 +196,33 @@ class ApplianceItemUsed(BaseItemUsed):
     class Meta:
         verbose_name = "Appliance Item Used"
         verbose_name_plural = "Appliance Items Used"
+
+    # Which stall stock was consumed for this item (if applicable).
+    # This enables tracking items taken from a sub-stall when a main stall adds
+    # parts to a service. The `services.api` layer already expects a
+    # `stall_stock` writable field (see serializers). Keep this nullable to
+    # support cases where parts are not taken from a stall-managed stock.
+    stall_stock = models.ForeignKey(
+        Stock,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="appliance_items_used",
+    )
+    is_free = models.BooleanField(
+        default=False, help_text="Mark this part as free to the customer."
+    )
+
+    # Link to an Expense created automatically when items are consumed from
+    # another stall (main stall incurs an expense for parts sourced from
+    # sub-stall). Filled by business logic when creating the transfer/expense.
+    expense = models.ForeignKey(
+        "expenses.Expense",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="service_items",
+    )
 
 
 # ----------------------------------

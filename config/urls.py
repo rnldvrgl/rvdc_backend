@@ -1,7 +1,7 @@
-from django.contrib import admin
-from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from django.contrib import admin
+from django.urls import include, path
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -9,7 +9,6 @@ urlpatterns = [
     path("api/users/", include("users.api.urls"), name="users"),
     path("api/clients/", include("clients.api.urls"), name="clients"),
     path("api/inventory/", include("inventory.api.urls"), name="inventory"),
-    path("api/logs/", include("logs.api.urls"), name="logs"),
     path("api/sales/", include("sales.api.urls"), name="sales"),
     path("api/services/", include("services.api.urls"), name="services"),
     path("api/expenses/", include("expenses.api.urls"), name="expenses"),
@@ -19,4 +18,5 @@ urlpatterns = [
     path("api/remittances/", include("remittances.api.urls"), name="remittances"),
     path("api/receivables/", include("receivables.api.urls"), name="receivables"),
     path("api/installations/", include("installations.api.urls"), name="installations"),
+    path("api/payroll/", include("payroll.api.urls"), name="payroll"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

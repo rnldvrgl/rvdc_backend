@@ -1,9 +1,11 @@
-from django.db import models, transaction
-from django.conf import settings
 import uuid
+
+from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes import fields
+from django.contrib.contenttypes import models as contenttypes_models
+from django.db import models, transaction
 from django.utils import timezone
-from django.contrib.contenttypes import fields, models as contenttypes_models
 from django.utils.translation import gettext_lazy as _
 
 
@@ -96,6 +98,12 @@ class Item(models.Model):
 class Stall(models.Model):
     name = models.CharField(max_length=100)
     location = models.CharField(max_length=255)
+    # Only stalls that are inventory owners should have Stock rows.
+    # For this project we keep a single inventory owner (sub-stall).
+    inventory_enabled = models.BooleanField(default=False)
+    # Marks stalls that are system-configured (main/sub) and should not be
+    # created/edited/deleted via public CRUD endpoints.
+    is_system = models.BooleanField(default=False)
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -109,44 +117,118 @@ class Stall(models.Model):
 
 class Stock(models.Model):
     item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="stocks")
-    low_stock_threshold = models.PositiveIntegerField(default=0)
+
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE, related_name="stocks")
+
     quantity = models.PositiveIntegerField(default=0)
+
+    reserved_quantity = models.PositiveIntegerField(default=0)
+
+    low_stock_threshold = models.PositiveIntegerField(default=0)
+
     track_stock = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+
     is_deleted = models.BooleanField(default=False)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["item__name"]
 
+    def clean(self):
+        """
+        Enforce single stockroom source of truth:
+        - Only the Sub stall (Parts) may hold Stock rows.
+        """
+        if self.stall:
+            # Require system-managed Sub stall as the only inventory owner
+            if not getattr(self.stall, "is_system", False):
+                raise ValueError(
+                    "Stock can only be associated with system-managed Sub stall."
+                )
+            if not getattr(self.stall, "inventory_enabled", False):
+                raise ValueError(
+                    "Stock can only be associated with the Sub stall (inventory_enabled=True)."
+                )
+            # Optional: strict by name/location if flags are misconfigured
+            if (self.stall.name or "").strip() != "Sub" or (
+                self.stall.location or ""
+            ).strip() != "Parts":
+                raise ValueError("Stock must be in Sub (Parts) stall only.")
+
+    @property
+    def available_quantity(self):
+        """Quantity that can still be sold or used for new services."""
+        return max(self.quantity - self.reserved_quantity, 0)
+
     def status(self):
         if self.quantity == 0:
             return "no_stock"
-        elif self.quantity <= self.low_stock_threshold:
+        elif self.available_quantity <= self.low_stock_threshold:
             return "low_stock"
         else:
             return "high_stock"
 
     def __str__(self):
-        return f"{self.item.name} @ {self.stall.name} - {self.quantity} {self.item.unit_of_measure}"
+        return (
+            f"{self.item.name} @ {self.stall.name} - "
+            f"{self.quantity} total / {self.available_quantity} available"
+        )
 
 
 class StockRoomStock(models.Model):
     item = models.OneToOneField(
         Item, on_delete=models.CASCADE, related_name="stockroom_stock"
     )
+
     quantity = models.PositiveIntegerField(default=0)
+
     low_stock_threshold = models.PositiveIntegerField(default=0)
+
     is_deleted = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
+
     updated_at = models.DateTimeField(auto_now=True)
+
+    def clean(self):
+        """
+        Single source-of-truth validation:
+        - quantity and low_stock_threshold must be non-negative
+        - Only the Sub (Parts) stall may hold tracked Stock rows. If any other
+          stall has tracked Stock for this item, raise an error.
+        """
+        if self.quantity < 0:
+            raise ValueError("Stock room quantity cannot be negative.")
+        if self.low_stock_threshold < 0:
+            raise ValueError("Stock room low stock threshold cannot be negative.")
+
+        # Ensure no tracked stock exists outside the Sub (Parts) stall
+        # Note: Using in-file Stock class to avoid circular imports
+        invalid_stall_stock_exists = (
+            Stock.objects.filter(
+                item=self.item,
+                is_deleted=False,
+                track_stock=True,
+            )
+            .exclude(stall__name="Sub", stall__location="Parts", stall__is_system=True)
+            .exists()
+        )
+
+        if invalid_stall_stock_exists:
+            raise ValueError(
+                "Tracked Stock for this item exists outside the Sub (Parts) stall. "
+                "Move quantities back to the stock room or the Sub stall to maintain a single source of truth."
+            )
 
     def status(self):
         if self.quantity == 0:
             return "no_stock"
         elif self.quantity <= self.low_stock_threshold:
             return "low_stock"
+
         else:
             return "high_stock"
 
@@ -154,6 +236,7 @@ class StockRoomStock(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["item"], name="unique_item_stockroom")
         ]
+
         ordering = ["item__name"]
 
     def __str__(self):
@@ -200,9 +283,11 @@ class StockTransfer(models.Model):
         return False
 
     def finalize(self, user):
-        from notifications.models import Notification
-        from utils.inventory import record_stock_movement
         from expenses.models import Expense, ExpenseItem
+        from notifications.models import Notification
+
+        # Import sales models here to avoid circular imports at module import time
+        from sales.models import SalesItem, SalesTransaction
 
         if self.is_finalized:
             return
@@ -213,8 +298,18 @@ class StockTransfer(models.Model):
             self.finalized_at = timezone.now()
             self.save()
 
-            # 2. Create Expense record
+            # 2. Decrement stock on the from_stall (if present) and create a SalesTransaction
+            #    for the from_stall so the supplying stall records a sale.
+            sales_txn = None
+            if self.from_stall:
+                sales_txn = SalesTransaction.objects.create(
+                    stall=self.from_stall,
+                    client=None,
+                    sales_clerk=user,
+                )
+
             total_price = 0
+            # 3. Create Expense record (for receiving stall) and SalesItem entries (for supplying stall)
             expense = Expense.objects.create(
                 stall=self.to_stall,
                 total_price=0,  # will update below
@@ -224,10 +319,11 @@ class StockTransfer(models.Model):
                 transfer=self,
             )
 
-            # 3. Create Expense Items & compute total
             for t_item in self.items.select_related("item"):
                 item_total = t_item.item.retail_price * t_item.quantity
                 total_price += item_total
+
+                # Create ExpenseItem for receiver
                 ExpenseItem.objects.create(
                     expense=expense,
                     item=t_item.item,
@@ -235,37 +331,28 @@ class StockTransfer(models.Model):
                     total_price=item_total,
                 )
 
-                # 4. Create stock movements (audit only, do NOT adjust stocks)
+                # Decrement stock from the supplying stall (if recorded)
                 if self.from_stall:
-                    record_stock_movement(
+                    try:
+                        stock = Stock.objects.get(
+                            stall=self.from_stall, item=t_item.item
+                        )
+                        stock.quantity = max(stock.quantity - t_item.quantity, 0)
+                        stock.save()
+                    except Stock.DoesNotExist:
+                        # If no stock row exists, skip - transfer records the movement
+                        pass
+
+                # Create SalesItem for the supplying stall's SalesTransaction
+                if sales_txn:
+                    SalesItem.objects.create(
+                        transaction=sales_txn,
                         item=t_item.item,
-                        stall=self.from_stall,
-                        quantity=-t_item.quantity,
-                        movement_type="transfer_out",
-                        related_object=self,
-                        note=f"Finalized transfer OUT: {t_item.quantity} {t_item.item.unit_of_measure} of {t_item.item.name}",
-                    )
-                else:
-                    # from stock room
-                    record_stock_movement(
-                        item=t_item.item,
-                        stall=None,
-                        quantity=-t_item.quantity,
-                        movement_type="transfer_out",
-                        related_object=self,
-                        note=f"Finalized transfer OUT from Stock Room",
+                        quantity=t_item.quantity,
+                        final_price_per_unit=t_item.item.retail_price,
                     )
 
-                record_stock_movement(
-                    item=t_item.item,
-                    stall=self.to_stall,
-                    quantity=t_item.quantity,
-                    movement_type="transfer_in",
-                    related_object=self,
-                    note=f"Finalized transfer IN: {t_item.quantity} {t_item.item.unit_of_measure} of {t_item.item.name}",
-                )
-
-            # 5. Update expense total
+            # 4. Update expense total
             expense.total_price = total_price
             expense.save()
 
@@ -309,58 +396,3 @@ class StockTransferItem(models.Model):
 
     def __str__(self):
         return f"{self.quantity} {self.item.unit_of_measure} of {self.item.name}"
-
-
-class Restock(models.Model):
-    item = models.ForeignKey(Item, on_delete=models.CASCADE)
-    quantity = models.PositiveIntegerField()
-    created_at = models.DateTimeField(auto_now_add=True)
-    created_by = models.ForeignKey(
-        "users.CustomUser", on_delete=models.SET_NULL, null=True
-    )
-
-
-class StockMovement(models.Model):
-    MOVEMENT_TYPE_CHOICES = [
-        ("sale", "Sale"),
-        ("purchase", "Purchase"),
-        ("transfer_in", "Transfer In"),
-        ("transfer_out", "Transfer Out"),
-        ("adjustment", "Adjustment"),
-        ("return", "Return"),
-        ("restore_sale", "Restore Sale"),
-        ("void_sale", "Void Sale"),
-    ]
-
-    item = models.ForeignKey(Item, on_delete=models.CASCADE)
-    stall = models.ForeignKey(Stall, on_delete=models.CASCADE, null=True, blank=True)
-    quantity = models.IntegerField(
-        help_text="Positive for stock in, negative for stock out"
-    )
-    movement_type = models.CharField(max_length=50, choices=MOVEMENT_TYPE_CHOICES)
-    note = models.CharField(
-        max_length=255, blank=True, help_text="Optional description / reason"
-    )
-
-    # The magic: link to ANY object
-    content_type = models.ForeignKey(
-        contenttypes_models.ContentType,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-    )
-    object_id = models.PositiveIntegerField(null=True, blank=True)
-    related_object = fields.GenericForeignKey("content_type", "object_id")
-
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        direction = "added" if self.quantity > 0 else "removed"
-        return (
-            f"{abs(self.quantity)} {self.item.unit_of_measure} {self.item.name} "
-            f"{direction} in {self.stall.name if self.stall else 'stockroom'} "
-            f"due to {self.movement_type}"
-        )
-
-    class Meta:
-        ordering = ["-created_at"]
