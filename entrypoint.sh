@@ -28,3 +28,4 @@ echo ">>> PostgreSQL is ready"
 # ---------- Start application ----------
 echo ">>> Starting application with ${GUNICORN_WORKERS} Gunicorn workers"
 exec "$@" --workers "$GUNICORN_WORKERS"
+

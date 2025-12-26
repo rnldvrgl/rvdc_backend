@@ -34,3 +34,4 @@ ENTRYPOINT ["/usr/src/app/entrypoint.sh"]
 
 # Keep CMD simple; entrypoint handles workers
 CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000"]
+
