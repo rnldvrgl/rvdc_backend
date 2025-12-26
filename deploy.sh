@@ -8,7 +8,7 @@ err() { echo "[$(timestamp)] ERROR: $*" >&2; }
 APP_NAME="${APP_NAME:-rvdc_backend}"
 PROJECT_DIR="${PROJECT_DIR:-/srv/$APP_NAME}"
 FRONTEND_DIR="${FRONTEND_DIR:-/srv/rvdc}"
-BRANCH="${BRANCH:-staging}"
+BRANCH="${BRANCH:-master}"
 WEB_SERVICE="${WEB_SERVICE:-api}"
 FRONTEND_SERVICE="${FRONTEND_SERVICE:-rvdc}"
 ENV_FILE="${ENV_FILE:-${PROJECT_DIR}/.env.production}"
