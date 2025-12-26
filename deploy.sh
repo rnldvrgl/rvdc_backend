@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+timestamp() { date +'%Y-%m-%d %H:%M:%S'; }
+log() { echo "[$(timestamp)] $*"; }
+err() { echo "[$(timestamp)] ERROR: $*" >&2; }
+
 APP_NAME="${APP_NAME:-rvdc_backend}"
 PROJECT_DIR="${PROJECT_DIR:-/srv/$APP_NAME}"
 FRONTEND_DIR="${FRONTEND_DIR:-/srv/rvdc}"
 BRANCH="${BRANCH:-staging}"
 WEB_SERVICE="${WEB_SERVICE:-api}"
 FRONTEND_SERVICE="${FRONTEND_SERVICE:-rvdc}"
+ENV_FILE="${ENV_FILE:-${PROJECT_DIR}/.env.production}"
 
-timestamp() { date +'%Y-%m-%d %H:%M:%S'; }
-log() { echo "[$(timestamp)] $*"; }
-err() { echo "[$(timestamp)] ERROR: $*" >&2; }
+[ -f "${ENV_FILE}" ] || { err "Env file not found: ${ENV_FILE}"; exit 1; }
 
 log "Starting deployment for ${APP_NAME} (branch ${BRANCH})"
 
@@ -25,25 +28,29 @@ git fetch origin "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 log "Backend at origin/${BRANCH}"
 
-DOCKER_COMPOSE_BACKEND="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
-
-log "Building backend Docker image..."
-${DOCKER_COMPOSE_BACKEND} build --pull "${WEB_SERVICE}"
+DOCKER_COMPOSE_BACKEND="docker compose \
+  --env-file ${ENV_FILE} \
+  -f docker-compose.yml \
+  -f docker-compose.prod.yml"
 
 log "Ensuring database is running..."
 ${DOCKER_COMPOSE_BACKEND} up -d db
 
+log "Building backend Docker image..."
+${DOCKER_COMPOSE_BACKEND} build --pull "${WEB_SERVICE}"
+
+log "Starting backend service..."
+${DOCKER_COMPOSE_BACKEND} up -d "${WEB_SERVICE}"
+
 log "Running migrations..."
-${DOCKER_COMPOSE_BACKEND} run --rm "${WEB_SERVICE}" python manage.py migrate --noinput
+${DOCKER_COMPOSE_BACKEND} exec -T "${WEB_SERVICE}" python manage.py migrate --noinput
 
 log "Creating default users..."
-${DOCKER_COMPOSE_BACKEND} run --rm "${WEB_SERVICE}" python manage.py create_default_users
+${DOCKER_COMPOSE_BACKEND} exec -T "${WEB_SERVICE}" python manage.py create_default_users
 
 log "Collecting static files..."
-${DOCKER_COMPOSE_BACKEND} run --rm "${WEB_SERVICE}" python manage.py collectstatic --noinput
+${DOCKER_COMPOSE_BACKEND} exec -T "${WEB_SERVICE}" python manage.py collectstatic --noinput
 
-log "Bringing up backend service..."
-${DOCKER_COMPOSE_BACKEND} up -d --no-deps "${WEB_SERVICE}"
 
 # ---------------- FRONTEND ----------------
 log "Updating frontend repository..."
