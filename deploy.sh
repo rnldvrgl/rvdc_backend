@@ -57,6 +57,7 @@ git reset --hard "origin/${BRANCH}"
 log "Frontend at origin/${BRANCH}"
 
 log "Installing frontend deps..."
+rm -rf node_modules package-lock.json
 npm install || { err "npm install failed"; exit 1; }
 
 log "Building frontend..."
