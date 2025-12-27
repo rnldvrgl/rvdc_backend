@@ -2,11 +2,8 @@ import uuid
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.contrib.contenttypes import fields
-from django.contrib.contenttypes import models as contenttypes_models
 from django.db import models, transaction
 from django.utils import timezone
-from django.utils.translation import gettext_lazy as _
 
 
 # =========== MANAGERS ===========

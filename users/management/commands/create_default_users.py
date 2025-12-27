@@ -1,5 +1,5 @@
-from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
+from django.core.management.base import BaseCommand
 from inventory.models import Stall
 
 User = get_user_model()
@@ -12,11 +12,11 @@ class Command(BaseCommand):
         # Step 1: Create default stalls
         default_stalls = [
             {
-                "name": "Main Stall",
+                "name": "Main",
                 "location": "A-02 MRL Building, Mc. Arthur Hiway, Mabiga, Mabalacat City, Pampanga",
             },
             {
-                "name": "Sub Stall",
+                "name": "Sub",
                 "location": "A-03 MRL Building, Mc. Arthur Hiway, Mabiga, Mabalacat City, Pampanga",
             },
         ]
@@ -26,7 +26,7 @@ class Command(BaseCommand):
         for stall_data in default_stalls:
             stall, created = Stall.objects.get_or_create(**stall_data)
             # Mark system stalls and inventory ownership
-            if stall.name == "Sub Stall":
+            if stall.name == "Sub":
                 stall.inventory_enabled = True
             else:
                 stall.inventory_enabled = False
@@ -68,7 +68,7 @@ class Command(BaseCommand):
                 "first_name": "Abigail Joy",
                 "last_name": "Pare",
                 "role": "manager",
-                "assigned_stall": stall_map.get("Main Stall"),
+                "assigned_stall": stall_map.get("Main"),
             },
             {
                 "username": "rosamae",
@@ -76,7 +76,7 @@ class Command(BaseCommand):
                 "first_name": "Rosa Mae",
                 "last_name": "Repiso",
                 "role": "clerk",
-                "assigned_stall": stall_map.get("Sub Stall"),
+                "assigned_stall": stall_map.get("Sub"),
             },
         ]
 
