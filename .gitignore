@@ -13,7 +13,7 @@ media/profile_images/
 # === Environment Files ===
 .env
 .env.local
-.env.prod
+.env.production
 .env.db
 .venv/
 venv/
