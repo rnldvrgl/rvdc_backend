@@ -1,5 +1,5 @@
 from django.db import transaction
-from inventory.models import Stock
+from inventory.models import Item, Stall, Stock
 from rest_framework.exceptions import ValidationError
 
 
@@ -12,7 +12,7 @@ def user_can_manage_stall(user, stall):
 
 @transaction.atomic
 def create_item_with_initial_stock(validated_data, user=None):
-    from inventory.models import Item, StockRoomStock, Stock, Stall
+    from inventory.models import Item, Stall, Stock, StockRoomStock
 
     """
     Creates an Item, initializes StockRoomStock with initial quantity, and sets zero stock for all stalls.
@@ -56,7 +56,7 @@ def create_item_with_initial_stock(validated_data, user=None):
 
 @transaction.atomic
 def create_stall_with_initial_stocks(validated_data):
-    from inventory.models import Item, Stock, Stall
+    from inventory.models import Item, Stall, Stock
 
     """
     Creates a Stall and sets up zero stock for all existing items.
@@ -114,3 +114,26 @@ def consume_reserved_stock(item, stall, quantity):
     stock.reserved_quantity -= quantity
     stock.save(update_fields=["quantity", "reserved_quantity"])
     return stock
+
+
+@transaction.atomic
+def ensure_sub_stall_stock():
+    try:
+        sub_stall = Stall.objects.get(name="Sub")
+    except Stall.DoesNotExist:
+        print("Sub Stall not found")
+        return
+
+    low_stock_threshold = 5
+    created_count = 0
+
+    for item in Item.objects.filter(is_deleted=False):
+        stock, created = Stock.objects.get_or_create(
+            item=item,
+            stall=sub_stall,
+            defaults={"quantity": 0, "low_stock_threshold": low_stock_threshold},
+        )
+        if created:
+            created_count += 1
+
+    print(f"Created {created_count} stock records for Sub Stall")
