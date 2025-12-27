@@ -29,7 +29,7 @@ git fetch origin "${BRANCH}"
 git reset --hard "origin/${BRANCH}"
 log "Backend at origin/${BRANCH}"
 
-DOCKER_COMPOSE="docker compose --env-file ${ENV_FILE} -f docker-compose.yml -f docker-compose.prod.yml"
+DOCKER_COMPOSE="docker-compose --env-file ${ENV_FILE} -f docker-compose.yml -f docker-compose.prod.yml"
 
 log "Ensuring database is running..."
 ${DOCKER_COMPOSE} up -d db || { err "Failed to start database"; exit 1; }
