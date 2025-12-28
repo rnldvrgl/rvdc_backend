@@ -18,7 +18,7 @@ ENV_FILE="${ENV_FILE:-${PROJECT_DIR}/.env.production}"
 log "Starting deployment for ${APP_NAME} (branch ${BRANCH})"
 
 command -v docker >/dev/null 2>&1 || { err "Docker not found"; exit 1; }
-command -v docker-compose >/dev/null 2>&1 || { err "docker-compose not found"; exit 1; }
+command -v docker compose >/dev/null 2>&1 || { err "docker compose not found"; exit 1; }
 [ -d "${PROJECT_DIR}" ] || { err "Backend project dir not found: ${PROJECT_DIR}"; exit 1; }
 [ -d "${FRONTEND_DIR}" ] || { err "Frontend project dir not found: ${FRONTEND_DIR}"; exit 1; }
 
