@@ -1,4 +1,4 @@
-name: Backend Deploy
+name: Build & Deploy Backend
 
 on:
   push:
@@ -16,7 +16,8 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - run: |
+      - name: Build and push
+        run: |
           docker build -t rnldvrgl/rvdc_backend:latest .
           docker push rnldvrgl/rvdc_backend:latest
 
@@ -25,14 +26,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - run: |
-          sudo apt-get update
-          sudo apt-get install -y sshpass
+      - name: Install sshpass
+        run: sudo apt-get update && sudo apt-get install -y sshpass
 
-      - run: |
-          sshpass -p "${{ secrets.SSH_PASSWORD }}" \
+      - name: Deploy to droplet
+        run: |
+          sshpass -p "${{ secrets.DROPLET_PASSWORD }}" \
           ssh -o StrictHostKeyChecking=no \
-          ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
+          root@${{ secrets.DROPLET_HOST }} << 'EOF'
             cd /srv/rvdc_backend
             docker compose pull api
             docker compose up -d api
