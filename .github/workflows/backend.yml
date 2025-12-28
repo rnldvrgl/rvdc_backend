@@ -17,21 +17,24 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - run: |
-          docker build -t yourdockerhub/rvdc-backend:latest .
-          docker push yourdockerhub/rvdc-backend:latest
+          docker build -t rnldvrgl/rvdc_backend:latest .
+          docker push rnldvrgl/rvdc_backend:latest
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
 
     steps:
-      - uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          script: |
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - run: |
+          sshpass -p "${{ secrets.SSH_PASSWORD }}" \
+          ssh -o StrictHostKeyChecking=no \
+          ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
             cd /srv/rvdc_backend
             docker compose pull api
             docker compose up -d api
             docker image prune -f
+          EOF
