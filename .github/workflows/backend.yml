@@ -9,33 +9,31 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      # 1. Checkout your repository
+      - uses: actions/checkout@v4
 
-      - name: Log in to DockerHub
-        uses: docker/login-action@v3
+      # 2. Login to Docker Hub
+      - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push backend image
+      # 3. Build and push Docker image
+      - name: Build & Push Backend Docker Image
         run: |
           docker build -t rnldvrgl/rvdc_backend:latest .
           docker push rnldvrgl/rvdc_backend:latest
 
+      # 4. Install sshpass to run remote commands via password
       - name: Install sshpass
         run: sudo apt-get update && sudo apt-get install -y sshpass
 
-      - name: Deploy to droplet
+      # 5. Run deploy.sh on the droplet
+      - name: Deploy to Droplet
         run: |
-          scp -o StrictHostKeyChecking=no .env.production root@${{ secrets.DROPLET_HOST }}:/srv/rvdc_backend/
           sshpass -p "${{ secrets.DROPLET_PASSWORD }}" \
           ssh -o StrictHostKeyChecking=no root@${{ secrets.DROPLET_HOST }} << 'EOF'
             cd /srv/rvdc_backend
-            docker compose --env-file .env.production pull
-            docker compose --env-file .env.production up -d
-            docker compose --env-file .env.production exec -T api python manage.py collectstatic --noinput
-            docker compose --env-file .env.production exec -T api python manage.py migrate --noinput
-            docker image prune -f
+            chmod +x ./deploy.sh
+            ./deploy.sh
           EOF
-
