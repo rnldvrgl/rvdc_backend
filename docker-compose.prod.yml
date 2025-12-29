@@ -17,8 +17,8 @@ services:
                 "60",
             ]
         volumes:
-            - ./staticfiles:/usr/src/app/staticfiles
-            - ./media:/usr/src/app/media
+            - /srv/rvdc_backend/staticfiles:/usr/src/app/staticfiles
+            - /srv/rvdc_backend/media:/usr/src/app/media
         ports:
             - "8000:8000"
         depends_on:
