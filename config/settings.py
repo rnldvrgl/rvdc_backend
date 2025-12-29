@@ -18,7 +18,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config("SECRET_KEY")
 DEBUG = config("DEBUG", default=True, cast=bool)
 ALLOWED_HOSTS = config("DJANGO_ALLOWED_HOSTS", default="").split(",")
-
+CSRF_TRUSTED_ORIGINS = config("CSRF_TRUSTED_ORIGINS", default="").split(",")
 # ------------------------------------------------------------------------------
 # APPLICATION DEFINITION
 # ------------------------------------------------------------------------------
@@ -192,3 +192,5 @@ CORS_ALLOWED_ORIGINS = config("CORS_ALLOWED_ORIGINS", default="").split(",")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# UNCOMMENT THE FOLLOWING LINE IF USING A REVERSE PROXY WITH HTTPS
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
