@@ -19,8 +19,8 @@ services:
                 "60",
             ]
         volumes:
-            - staticfiles:/usr/src/app/staticfiles
-            - media:/usr/src/app/media
+            - ./staticfiles:/usr/src/app/staticfiles
+            - ./media:/usr/src/app/media
         ports:
             - "8000:8000"
         depends_on:
