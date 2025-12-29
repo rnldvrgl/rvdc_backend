@@ -11,7 +11,7 @@ ENV_FILE="${PROJECT_DIR}/.env.production"
 
 [ -f "${ENV_FILE}" ] || { err "Env file not found: ${ENV_FILE}"; exit 1; }
 
-log "Starting backend deployment (pull-only mode)"
+log "Starting backend deployment"
 
 command -v docker >/dev/null 2>&1 || { err "Docker not installed"; exit 1; }
 command -v docker compose >/dev/null 2>&1 || { err "docker compose missing"; exit 1; }
@@ -29,10 +29,13 @@ ${COMPOSE} up -d db
 log "Starting API..."
 ${COMPOSE} up -d api
 
+log "Waiting a few seconds for API to be ready..."
+sleep 5
+
 log "Running migrations..."
 ${COMPOSE} exec -T api python manage.py migrate --noinput
 
-log "Collecting static files..."
+log "Collecting static files on droplet..."
 ${COMPOSE} exec -T api python manage.py collectstatic --noinput
 
 log "Backend deployment complete ✅"
