@@ -28,25 +28,14 @@ jobs:
 
       - name: Deploy to droplet
         run: |
+          scp -o StrictHostKeyChecking=no .env.production root@${{ secrets.DROPLET_HOST }}:/srv/rvdc_backend/
           sshpass -p "${{ secrets.DROPLET_PASSWORD }}" \
           ssh -o StrictHostKeyChecking=no root@${{ secrets.DROPLET_HOST }} << 'EOF'
             cd /srv/rvdc_backend
-
-            # Pull latest images
-            docker compose pull
-
-            # Start database first
-            docker compose up -d db
-
-            # Start API
-            docker compose up -d api
-
-            # Run migrations
-            docker compose exec -T api python manage.py migrate --noinput
-
-            # Collect static files
-            docker compose exec -T api python manage.py collectstatic --noinput
-
-            # Clean dangling images
+            docker compose --env-file .env.production pull
+            docker compose --env-file .env.production up -d
+            docker compose --env-file .env.production exec -T api python manage.py collectstatic --noinput
+            docker compose --env-file .env.production exec -T api python manage.py migrate --noinput
             docker image prune -f
           EOF
+
