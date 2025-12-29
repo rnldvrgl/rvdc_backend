@@ -1,10 +1,10 @@
 
 from django.core.management.base import BaseCommand
-from inventory.models import Item, Stall, StockRoomStock
+from inventory.models import Item, Stall, Stock
 
 
 class Command(BaseCommand):
-    help = "Create StockroomStock records for all items in the Sub Stall"
+    help = "Create SStock records for all items in the Sub Stall"
 
     def handle(self, *args, **options):
         try:
@@ -23,7 +23,7 @@ class Command(BaseCommand):
         skipped_count = 0
 
         for item in items:
-            stock_record, created = StockRoomStock.objects.get_or_create(
+            stock_record, created = Stock.objects.get_or_create(
                 stall=sub_stall,
                 item=item,
                 defaults={
