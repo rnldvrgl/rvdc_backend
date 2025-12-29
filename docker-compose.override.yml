@@ -1,15 +1,14 @@
 services:
     api:
         build:
+            context: .
             target: development
-        # UNCOMMENT IN LOCAL
-        # env_file:
-        #     - .env.local
-        environment:
-            POSTGRES_PASSWORD: ${DB_PASSWORD:-daizuke0908}
+        env_file:
+            - .env.local
         command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
 
     db:
+        env_file:
+            - .env.local
         ports:
             - "5432:5432"
-
