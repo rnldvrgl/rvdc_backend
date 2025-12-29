@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
     api:
         image: rnldvrgl/rvdc_backend:latest
@@ -17,10 +19,12 @@ services:
                 "60",
             ]
         volumes:
-            - ./staticfiles:/usr/src/app/staticfiles
-            - ./media:/usr/src/app/media
+            - staticfiles:/usr/src/app/staticfiles
+            - media:/usr/src/app/media
         ports:
             - "8000:8000"
+        depends_on:
+            - db
 
     db:
         image: postgres:16
@@ -28,7 +32,8 @@ services:
             - .env.production
         volumes:
             - postgres_data:/var/lib/postgresql/data
-            - ./staticfiles:/usr/src/app/staticfiles
 
 volumes:
     postgres_data:
+    staticfiles:
+    media:
