@@ -8,7 +8,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         try:
-            sub_stall = Stall.objects.get(name="Sub ")
+            sub_stall = Stall.objects.get(name="Sub")
         except Stall.DoesNotExist:
             self.stderr.write(self.style.ERROR("❌ Sub Stall not found"))
             return
