@@ -16,8 +16,18 @@ services:
                 "--timeout",
                 "60",
             ]
+        volumes:
+            - ./staticfiles:/usr/src/app/staticfiles
+            - ./media:/usr/src/app/media
+        ports:
+            - "8000:8000"
 
     db:
         image: postgres:16
         env_file:
             - .env.production
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+
+volumes:
+    postgres_data:
