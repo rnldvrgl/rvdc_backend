@@ -1,6 +1,6 @@
 
 from django.core.management.base import BaseCommand
-from inventory.models import Item, Stall, StockroomStock
+from inventory.models import Item, Stall, StockRoomStock
 
 
 class Command(BaseCommand):
@@ -23,7 +23,7 @@ class Command(BaseCommand):
         skipped_count = 0
 
         for item in items:
-            stock_record, created = StockroomStock.objects.get_or_create(
+            stock_record, created = StockRoomStock.objects.get_or_create(
                 stall=sub_stall,
                 item=item,
                 defaults={
