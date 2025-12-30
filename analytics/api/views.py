@@ -1,36 +1,32 @@
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from django.db.models.functions import TruncDay
-from django.utils.timezone import now
-from django.utils.dateparse import parse_date
 from datetime import datetime, time, timedelta
+
+from clients.models import Client
 from django.db.models import (
-    Avg,
-    Sum,
+    Count,
+    ExpressionWrapper,
     F,
     FloatField,
-    ExpressionWrapper,
     Sum,
-    F,
-    Count,
 )
-
-from sales.models import SalesItem, SalesTransaction, SalesPayment
+from django.db.models.functions import TruncDay
+from django.utils import timezone
+from django.utils.dateparse import parse_date
 from expenses.models import Expense
-from inventory.models import StockTransfer, StockRoomStock
-from clients.models import Client
+from inventory.models import StockRoomStock
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from sales.models import SalesItem, SalesPayment, SalesTransaction
 
 
 def get_date_range(request):
     start = request.query_params.get("start_date")
     end = request.query_params.get("end_date")
 
-    start_date = parse_date(start) if start else (now().date() - timedelta(days=30))
-    end_date = parse_date(end) if end else now().date()
+    start_date = parse_date(start) if start else (timezone.now().date() - timedelta(days=30))
+    end_date = parse_date(end) if end else timezone.now().date()
 
-    # convert to datetime objects with proper range inclusion
-    start_dt = datetime.combine(start_date, time.min)
-    end_dt = datetime.combine(end_date, time.max)
+    start_dt = timezone.make_aware(datetime.combine(start_date, time.min))
+    end_dt = timezone.make_aware(datetime.combine(end_date, time.max))
 
     return start_dt, end_dt
 
