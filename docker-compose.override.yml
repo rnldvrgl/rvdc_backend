@@ -3,6 +3,8 @@ services:
         build:
             context: .
             target: development
+        environment:
+            DJAGO_ENV_FILE: .env.local
         env_file:
             - .env.local
         command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
