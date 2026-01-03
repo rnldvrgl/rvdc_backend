@@ -1,20 +1,22 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 from django.conf import settings
-from django.db.models import Q, QuerySet
+from django.db.models import QuerySet
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from payroll.api.serializers import (
     AdditionalEarningSerializer,
+    OvertimeRequestApproveSerializer,
+    OvertimeRequestSerializer,
     TimeEntryBulkCreateSerializer,
     TimeEntrySerializer,
     WeeklyPayrollSerializer,
 )
-from payroll.models import AdditionalEarning, TimeEntry, WeeklyPayroll
+from payroll.models import AdditionalEarning, OvertimeRequest, TimeEntry, WeeklyPayroll
 from rest_framework import filters, generics, permissions, status
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
@@ -89,9 +91,89 @@ def _apply_date_range(
     return qs
 
 
+
+# ------------------------------------------------------------------------------
+
+# Overtime Requests
+# ------------------------------------------------------------------------------
+
+class OvertimeRequestListCreateView(generics.ListCreateAPIView):
+    serializer_class = OvertimeRequestSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = OvertimeRequest.objects.all().select_related("employee")
+
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+
+    filterset_fields = [
+        "employee",
+        "approved",
+        "date",
+        "employee__assigned_stall",
+    ]
+    search_fields = [
+        "reason",
+        "employee__username",
+        "employee__first_name",
+        "employee__last_name",
+    ]
+    ordering_fields = "__all__"
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        # inclusive date range filtering on 'date' field
+        if filter_by_date_range is not None:
+            qs = filter_by_date_range(self.request, qs, field="date", is_date_field=True)  # type: ignore
+        else:
+            qs = _apply_date_range(qs, self.request, field="date", is_date_field=True)
+        return qs
+
+    def perform_create(self, serializer: OvertimeRequestSerializer) -> None:
+        instance: OvertimeRequest = serializer.save()
+        # Newly created OT requests are unapproved by default; no extra actions needed.
+        instance.save(update_fields=["updated_at"])
+
+
+class OvertimeRequestDetailView(generics.RetrieveDestroyAPIView):
+    serializer_class = OvertimeRequestSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = OvertimeRequest.objects.all().select_related("employee")
+
+    def get_object(self) -> OvertimeRequest:
+        try:
+            obj = super().get_object()
+            return obj
+        except OvertimeRequest.DoesNotExist:
+            raise NotFound(detail="Overtime request not found.")
+
+    def perform_destroy(self, instance: OvertimeRequest) -> None:
+        # Hard delete aligns with request lifecycle; change to soft-delete if policy requires.
+        instance.delete()
+
+
+class OvertimeRequestApproveView(generics.UpdateAPIView):
+    serializer_class = OvertimeRequestApproveSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = OvertimeRequest.objects.all().select_related("employee")
+
+    def get_object(self) -> OvertimeRequest:
+        try:
+            obj = super().get_object()
+            return obj
+        except OvertimeRequest.DoesNotExist:
+            raise NotFound(detail="Overtime request not found.")
+
+    def perform_update(self, serializer: OvertimeRequestApproveSerializer) -> None:
+        # Only managers should approve; enforce via custom permission in production if needed.
+        serializer.save()
+
 # ------------------------------------------------------------------------------
 # Time Entries
 # ------------------------------------------------------------------------------
+
 
 
 class TimeEntryListCreateView(generics.ListCreateAPIView):

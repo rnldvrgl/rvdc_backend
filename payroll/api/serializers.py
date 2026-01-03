@@ -5,7 +5,7 @@ from typing import Any, Dict, Mapping, Optional
 
 from django.contrib.auth import get_user_model
 from django.utils import timezone
-from payroll.models import AdditionalEarning, TimeEntry, WeeklyPayroll
+from payroll.models import AdditionalEarning, OvertimeRequest, TimeEntry, WeeklyPayroll
 from rest_framework import serializers
 
 User = get_user_model()
@@ -242,6 +242,67 @@ class AdditionalEarningBulkCreateSerializer(serializers.Serializer):
         return attrs
 
 
+class OvertimeRequestSerializer(serializers.ModelSerializer):
+    employee_detail = MinimalUserSerializer(source="employee", read_only=True)
+    employee = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=True)
+
+    class Meta:
+        model = OvertimeRequest
+        fields = [
+            "id",
+            "employee",
+            "employee_detail",
+            "date",
+            "time_start",
+            "time_end",
+            "reason",
+            "approved",
+            "approved_by",
+            "approved_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "approved",
+            "approved_by",
+            "approved_at",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+        time_start = attrs.get("time_start", getattr(self.instance, "time_start", None))
+        time_end = attrs.get("time_end", getattr(self.instance, "time_end", None))
+        if time_start and time_end and time_end <= time_start:
+            raise serializers.ValidationError({"time_end": "time_end must be after time_start."})
+        return attrs
+
+
+class OvertimeRequestApproveSerializer(serializers.ModelSerializer):
+    approved = serializers.BooleanField(required=True)
+    approved_by = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False)
+
+    class Meta:
+        model = OvertimeRequest
+        fields = ["id", "approved", "approved_by", "approved_at"]
+        read_only_fields = ["id", "approved_at"]
+
+    def update(self, instance: OvertimeRequest, validated_data: Dict[str, Any]) -> OvertimeRequest:
+        approved = validated_data.get("approved", instance.approved)
+        instance.approved = approved
+        # Set approver from context request user if not explicitly provided
+        request = self.context.get("request")
+        approver = validated_data.get("approved_by")
+        if not approver and request and getattr(request, "user", None) and request.user.is_authenticated:
+            approver = request.user
+        instance.approved_by = approver
+        # Set timestamp when approved toggled to True
+        if approved and not instance.approved_at:
+            instance.approved_at = timezone.now()
+        instance.save(update_fields=["approved", "approved_by", "approved_at", "updated_at"])
+        return instance
+
 class DeductionsField(serializers.Field):
     """
     Validates a mapping of {string: number} and normalizes to {string: Decimal('0.00')}.
@@ -297,42 +358,86 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
         queryset=User.objects.all(), required=True
     )
 
+
     class Meta:
+
         model = WeeklyPayroll
+
         fields = [
+
             "id",
+
             "employee",
+
             "employee_detail",
+
             "week_start",
+
             "week_end",
+
             "hourly_rate",
+
             "overtime_threshold",
+
             "overtime_multiplier",
+
             "regular_hours",
+
             "overtime_hours",
+
+            "night_diff_hours",
+            "approved_ot_hours",
             "total_hours",
             "allowances",
+
             "gross_pay",
+
+            "night_diff_pay",
+            "approved_ot_pay",
             "deductions",
+
             "total_deductions",
+
             "net_pay",
+
             "status",
+
             "notes",
+
             "is_deleted",
+
             "created_at",
+
             "updated_at",
+
         ]
+
+
         read_only_fields = [
+
             "id",
+
             "regular_hours",
+
             "overtime_hours",
+
+            "night_diff_hours",
+            "approved_ot_hours",
             "total_hours",
             "gross_pay",
+
+            "night_diff_pay",
+            "approved_ot_pay",
             "total_deductions",
+
             "net_pay",
+
             "created_at",
+
             "updated_at",
+
         ]
+
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         hourly_rate = attrs.get(

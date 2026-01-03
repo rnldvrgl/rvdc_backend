@@ -142,13 +142,58 @@ class AdditionalEarning(models.Model):
         return f"{self.employee_id} | {self.category} | {self.earning_date} | {self.amount}"
 
 
+
+class OvertimeRequest(models.Model):
+    """
+    An employee-filed overtime request that must be approved by management
+    before inclusion in salary computation.
+
+    - time_start / time_end: precise datetime window of the OT.
+    - approved: gate for payroll inclusion.
+    """
+    employee = models.ForeignKey(
+        "users.CustomUser",
+        on_delete=models.CASCADE,
+        related_name="overtime_requests",
+    )
+    date = models.DateField()
+    time_start = models.DateTimeField()
+    time_end = models.DateTimeField()
+    reason = models.TextField(blank=True)
+    approved = models.BooleanField(default=False)
+    approved_by = models.ForeignKey(
+        "users.CustomUser",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="approved_overtime_requests",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["employee", "date"]),
+            models.Index(fields=["approved"]),
+        ]
+        ordering = ["-date", "employee_id"]
+
+    def __str__(self):
+        return f"OT {self.employee_id} | {self.date} | {self.time_start}—{self.time_end}"
+
+
 class WeeklyPayroll(models.Model):
+
     """
     A weekly payroll summary for an employee.
 
     - week_start: The date representing the start of the payroll week (e.g., Monday).
     - Computation is weekly: regular up to overtime_threshold hours; remainder = overtime.
     - Deductions can include percent and flat components by name in the JSON field.
+    - Night differential: 22:00–06:00 hours × hourly_rate × 0.10
+    - Approved OT: approved overtime requests × hourly_rate × 1.25
 
     Use compute_from_time_entries() to recompute based on approved TimeEntry rows.
     """
@@ -183,6 +228,20 @@ class WeeklyPayroll(models.Model):
     )
     overtime_hours = models.DecimalField(
         max_digits=6, decimal_places=2, default=Decimal("0.00")
+    )
+    # Night differential fields (computed)
+    night_diff_hours = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal("0.00")
+    )
+    night_diff_pay = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
+    )
+    # Approved overtime request aggregation (computed)
+    approved_ot_hours = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal("0.00")
+    )
+    approved_ot_pay = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
     )
 
     allowances = models.DecimalField(
@@ -265,6 +324,10 @@ class WeeklyPayroll(models.Model):
         - allowances: override allowances for this computation (optional).
         - extra_flat_deductions: dict of additional flat deductions.
         - percent_deductions: dict of percentage rates to apply on gross (e.g., {'Tax': 0.12}).
+
+        Also computes:
+        - Night differential hours (22:00–06:00) and pay at 10% of hourly rate.
+        - Approved overtime request hours and pay at 1.25× hourly rate.
         """
         start_dt = self._week_start_as_datetime(self.week_start)
         end_dt = self._week_start_as_datetime(self.week_end)
@@ -284,10 +347,53 @@ class WeeklyPayroll(models.Model):
         self.regular_hours = self._q(reg_hours)
         self.overtime_hours = self._q(ot_hours)
 
-        # Gross
+        # Night differential hours: compute overlap with 22:00–06:00 per TimeEntry
+        def _overlap(a_start: datetime, a_end: datetime, b_start: datetime, b_end: datetime) -> timedelta:
+            start = max(a_start, b_start)
+            end = min(a_end, b_end)
+            return max(timedelta(0), end - start)
+
+        night_hours_total = Decimal("0")
+        for e in entries:
+            # Iterate per day spanned by the entry
+            cur_start = e.clock_in
+            cur_end = e.clock_out
+            # Normalize to aware datetimes
+            a_start = timezone.localtime(cur_start) if timezone.is_aware(cur_start) else cur_start
+            a_end = timezone.localtime(cur_end) if timezone.is_aware(cur_end) else cur_end
+            cur = a_start
+            while cur < a_end:
+                day = cur.date()
+                tz = timezone.get_current_timezone() if settings.USE_TZ else None
+                # 22:00–24:00 of day
+                night1_start = datetime.combine(day, time(22, 0))
+                night1_end = datetime.combine(day, time(23, 59, 59)) + timedelta(seconds=1)
+                # 00:00–06:00 of next day
+                next_day = day + timedelta(days=1)
+                night2_start = datetime.combine(next_day, time(0, 0))
+                night2_end = datetime.combine(next_day, time(6, 0))
+                # If using TZ, localize windows
+                if settings.USE_TZ and tz:
+                    night1_start = tz.localize(night1_start)
+                    night1_end = tz.localize(night1_end)
+                    night2_start = tz.localize(night2_start)
+                    night2_end = tz.localize(night2_end)
+                seg1 = _overlap(a_start, a_end, night1_start, night1_end)
+                seg2 = _overlap(a_start, a_end, night2_start, night2_end)
+                night_hours_total += Decimal(seg1.total_seconds() + seg2.total_seconds()) / Decimal(3600)
+                # advance to next_day 06:00 to avoid infinite loop
+                cur = night2_end
+
+        self.night_diff_hours = self._q(night_hours_total, places=2)
+
+        # Gross (regular + weekly overtime threshold)
         hr = Decimal(self.hourly_rate or 0)
         ot_mult = Decimal(self.overtime_multiplier or Decimal("1.50"))
         base = (self.regular_hours * hr) + (self.overtime_hours * hr * ot_mult)
+
+        # Night diff pay: 10% of hourly rate per night hours
+        self.night_diff_pay = self._q(self.night_diff_hours * hr * Decimal("0.10"))
+
         self.allowances = self._q(
             Decimal(allowances)
             if allowances is not None
@@ -305,8 +411,32 @@ class WeeklyPayroll(models.Model):
 
         additional_total = sum((Decimal(e.amount) for e in add_qs), Decimal("0"))
         self.additional_earnings_total = self._q(additional_total)
+
+        # Approved Overtime Requests in range: compute hours and pay (1.25x)
+        try:
+            from payroll.models import (
+                OvertimeRequest,  # local import to avoid circular issues during migrations
+            )
+            ot_req_qs = OvertimeRequest.objects.filter(
+                employee=self.employee,
+                approved=True,
+                time_start__gte=start_dt,
+                time_end__lt=end_dt,
+            )
+            approved_ot_hours_total = Decimal("0")
+            for req in ot_req_qs:
+                span = req.time_end - req.time_start
+                approved_ot_hours_total += Decimal(span.total_seconds()) / Decimal(3600)
+            self.approved_ot_hours = self._q(approved_ot_hours_total, places=2)
+            self.approved_ot_pay = self._q(self.approved_ot_hours * hr * Decimal("1.25"))
+        except Exception:
+            # If model not ready yet (during initial migration), default to zero
+            self.approved_ot_hours = self._q(Decimal("0"), places=2)
+            self.approved_ot_pay = self._q(Decimal("0"))
+
+        # Final gross = base + allowances + additional earnings + night diff + approved OT
         self.gross_pay = self._q(
-            base + self.allowances + self.additional_earnings_total
+            base + self.allowances + self.additional_earnings_total + self.night_diff_pay + self.approved_ot_pay
         )
 
         # Deductions
