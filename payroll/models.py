@@ -5,6 +5,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
+from django.utils.timezone import get_current_timezone, make_aware
 
 
 class TimeEntry(models.Model):
@@ -320,18 +321,18 @@ class WeeklyPayroll(models.Model):
             for name, amt in extra_flat_deductions.items():
                 deductions_map[name] = self._q(Decimal(amt or 0))
 
-        self.deductions = {k: self._q(v) for k, v in deductions_map.items()}
+        self.deductions = {k: float(self._q(v)) for k, v in deductions_map.items()}
         self.total_deductions = self._q(sum(self.deductions.values()))
         self.net_pay = self._q(self.gross_pay - self.total_deductions)
 
     def _week_start_as_datetime(self, d: date) -> datetime:
         """
-        Convert a date to a timezone-aware start-of-day datetime according to settings.TIME_ZONE.
+        Convert a date to a timezone-aware start-of-day datetime.
         """
         dt = datetime.combine(d, time.min)
         if settings.USE_TZ:
-            tz = timezone.get_current_timezone()
-            return tz.localize(dt)
+            # Use make_aware instead of tz.localize
+            return make_aware(dt, timezone=get_current_timezone())
         return dt
 
     @staticmethod

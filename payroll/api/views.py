@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
-from django.conf import settings
-from django.db.models import Q, QuerySet
-from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from payroll.api.serializers import (
     AdditionalEarningSerializer,
@@ -19,75 +15,7 @@ from rest_framework import filters, generics, permissions, status
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
-try:
-    # If available in the project, you can use it in get_queryset overrides.
-    from utils.query import filter_by_date_range  # type: ignore
-except Exception:  # pragma: no cover - fallback if not present
-    filter_by_date_range = None  # type: ignore
-
-
-# ------------------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------------------
-
-
-def _parse_date(value: Optional[str]) -> Optional[date]:
-    if not value:
-        return None
-    try:
-        return date.fromisoformat(value)
-    except Exception:
-        return None
-
-
-def _start_of_day(dt: date) -> datetime:
-    base = datetime.combine(dt, time.min)
-    if settings.USE_TZ:
-        tz = timezone.get_current_timezone()
-        return tz.localize(base)
-    return base
-
-
-def _end_of_day(dt: date) -> datetime:
-    base = datetime.combine(dt, time.max)
-    if settings.USE_TZ:
-        tz = timezone.get_current_timezone()
-        return tz.localize(base)
-    return base
-
-
-def _apply_date_range(
-    qs: QuerySet, request, *, field: str, is_date_field: bool = False
-) -> QuerySet:
-    """
-    Apply inclusive date range filtering using start_date/end_date query params.
-    - If field is DateTimeField: use [start_of_day, end_of_day]
-    - If field is DateField: use [start_date, end_date]
-    """
-    start_param = request.query_params.get("start_date")
-    end_param = request.query_params.get("end_date")
-
-    start = _parse_date(start_param)
-    end = _parse_date(end_param)
-
-    if start and end and end < start:
-        # Swap to avoid empty range on invalid ordering
-        start, end = end, start
-
-    if start:
-        if is_date_field:
-            qs = qs.filter(**{f"{field}__gte": start})
-        else:
-            qs = qs.filter(**{f"{field}__gte": _start_of_day(start)})
-    if end:
-        if is_date_field:
-            qs = qs.filter(**{f"{field}__lte": end})
-        else:
-            qs = qs.filter(**{f"{field}__lte": _end_of_day(end)})
-
-    return qs
-
+from utils.query import filter_by_date_range
 
 # ------------------------------------------------------------------------------
 # Time Entries
@@ -119,16 +47,13 @@ class TimeEntryListCreateView(generics.ListCreateAPIView):
     ]
     ordering_fields = "__all__"
 
+
+
     def get_queryset(self):
-        qs = super().get_queryset()
-        # Prefer the project's filter_by_date_range if available
-        if filter_by_date_range is not None:
-            qs = filter_by_date_range(self.request, qs, field="clock_in")
-        else:
-            qs = _apply_date_range(
-                qs, self.request, field="clock_in", is_date_field=False
-            )
-        return qs
+        return filter_by_date_range(
+            self.request, super().get_queryset(), "clock_in"
+        )
+
 
     def perform_destroy(self, instance: TimeEntry) -> None:
         # Soft delete safeguard if destroy is ever called through this view
@@ -230,15 +155,12 @@ class AdditionalEarningListCreateView(generics.ListCreateAPIView):
     ]
     ordering_fields = "__all__"
 
+
     def get_queryset(self):
-        qs = super().get_queryset()
-        if filter_by_date_range is not None:
-            qs = filter_by_date_range(self.request, qs, date_field="earning_date")
-        else:
-            qs = _apply_date_range(
-                qs, self.request, field="earning_date", is_date_field=True
-            )
-        return qs
+        return filter_by_date_range(
+            self.request, super().get_queryset(), "earning_date"
+        )
+
 
     def perform_destroy(self, instance: AdditionalEarning) -> None:
         instance.is_deleted = True
@@ -296,18 +218,13 @@ class WeeklyPayrollListCreateView(generics.ListCreateAPIView):
     ]
     ordering_fields = "__all__"
 
+
+
     def get_queryset(self):
-        qs = super().get_queryset()
-        # Prefer the project's filter_by_date_range if available
-        if filter_by_date_range is not None:
-            qs = filter_by_date_range(
-                self.request, qs, field="week_start", is_date_field=True
-            )  # type: ignore
-        else:
-            qs = _apply_date_range(
-                qs, self.request, field="week_start", is_date_field=True
-            )
-        return qs
+        return filter_by_date_range(
+            self.request, super().get_queryset(), "week_start"
+        )
+
 
     def perform_create(self, serializer: WeeklyPayrollSerializer) -> None:
         instance: WeeklyPayroll = serializer.save()
@@ -511,14 +428,9 @@ class SessionsReviewListView(generics.ListAPIView):
     ordering_fields = "__all__"
 
     def get_queryset(self):
-        qs = super().get_queryset()
-        if filter_by_date_range is not None:
-            qs = filter_by_date_range(self.request, qs, field="clock_in")
-        else:
-            qs = _apply_date_range(
-                qs, self.request, field="clock_in", is_date_field=False
-            )
-        return qs
+        return filter_by_date_range(
+            self.request, super().get_queryset(), "clock_in"
+        )
 
 
 class SessionReviewDetailPatchView(generics.UpdateAPIView):
