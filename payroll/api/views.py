@@ -4,6 +4,11 @@ from decimal import Decimal
 from typing import Dict, Optional
 
 from django_filters.rest_framework import DjangoFilterBackend
+from payroll.api.filters import (
+    AdditionalEarningFilter,
+    TimeEntryFilter,
+    WeeklyPayrollFilter,
+)
 from payroll.api.serializers import (
     AdditionalEarningSerializer,
     TimeEntryBulkCreateSerializer,
@@ -15,6 +20,10 @@ from rest_framework import filters, generics, permissions, status
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from utils.filters.options import (
+    get_user_options,
+)
+from utils.filters.role_filters import get_role_based_filter_response
 from utils.query import filter_by_date_range
 
 # ------------------------------------------------------------------------------
@@ -33,12 +42,9 @@ class TimeEntryListCreateView(generics.ListCreateAPIView):
         filters.OrderingFilter,
     ]
 
-    filterset_fields = [
-        "employee",
-        "approved",
-        "source",
-        "employee__assigned_stall",
-    ]
+
+    filterset_class = TimeEntryFilter
+
     search_fields = [
         "notes",
         "employee__username",
@@ -135,17 +141,22 @@ class AdditionalEarningListCreateView(generics.ListCreateAPIView):
         "employee"
     )
 
+
     filter_backends = [
+
         DjangoFilterBackend,
+
         filters.SearchFilter,
+
         filters.OrderingFilter,
+
     ]
-    filterset_fields = [
-        "employee",
-        "category",
-        "approved",
-        "employee__assigned_stall",
-    ]
+
+
+
+    filterset_class = AdditionalEarningFilter
+
+
     search_fields = [
         "description",
         "reference",
@@ -193,23 +204,36 @@ class AdditionalEarningDetailView(generics.RetrieveUpdateDestroyAPIView):
 # ------------------------------------------------------------------------------
 
 
+
 class WeeklyPayrollListCreateView(generics.ListCreateAPIView):
+
     serializer_class = WeeklyPayrollSerializer
+
     permission_classes = [permissions.IsAuthenticated]
+
     queryset = WeeklyPayroll.objects.filter(is_deleted=False).select_related("employee")
 
+
+
+    filterset_class = WeeklyPayrollFilter
+
+
+
     filter_backends = [
+
         DjangoFilterBackend,
+
         filters.SearchFilter,
+
         filters.OrderingFilter,
+
     ]
 
-    filterset_fields = [
-        "employee",
-        "status",
-        "week_start",
-        "employee__assigned_stall",
-    ]
+
+
+    # filterset_fields handled via WeeklyPayrollFilter
+
+
     search_fields = [
         "notes",
         "employee__username",
@@ -281,7 +305,37 @@ class WeeklyPayrollDetailView(generics.RetrieveUpdateDestroyAPIView):
         instance.save(update_fields=["is_deleted"])
 
 
+
+class WeeklyPayrollFiltersView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    filters_config = {
+        "employee": {"options": lambda: get_user_options()},
+        "status": {
+            "options": lambda: [
+                {"label": "Draft", "value": "draft"},
+                {"label": "Approved", "value": "approved"},
+                {"label": "Paid", "value": "paid"},
+            ]
+        },
+    }
+
+    ordering_config = [
+        {"label": "Week Start", "value": "week_start"},
+        {"label": "Regular Hours", "value": "regular_hours"},
+        {"label": "OT Hours", "value": "overtime_hours"},
+        {"label": "Net Pay", "value": "net_pay"},
+    ]
+
+    def get(self, request, *args, **kwargs):
+        return get_role_based_filter_response(
+            request,
+            self.filters_config,
+            self.ordering_config,
+        )
+
 class WeeklyPayrollRecomputeView(APIView):
+
     """
     POST to recompute a WeeklyPayroll from its time entries.
 

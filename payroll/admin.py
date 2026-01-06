@@ -2,7 +2,13 @@ from decimal import Decimal
 
 from django.contrib import admin
 
-from payroll.models import AdditionalEarning, PayrollSettings, TimeEntry, WeeklyPayroll
+from payroll.models import (
+    AdditionalEarning,
+    DeductionRate,
+    PayrollSettings,
+    TimeEntry,
+    WeeklyPayroll,
+)
 
 
 @admin.register(PayrollSettings)
@@ -255,6 +261,23 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
                     "updated_at",
                 ]
             )
+
+        @admin.register(DeductionRate)
+        class DeductionRateAdmin(admin.ModelAdmin):
+            list_display = (
+                "name",
+                "amount",
+                "effective_start",
+                "effective_end",
+                "is_active",
+                "created_by",
+                "created_at",
+            )
+            list_filter = ("name", "is_active", "effective_start", "effective_end")
+            search_fields = ("name",)
+            date_hierarchy = "effective_start"
+            ordering = ("name", "-effective_start")
+            readonly_fields = ("created_at",)
             updated += 1
         self.message_user(request, f"Recomputed {updated} payroll record(s).")
 

@@ -21,17 +21,31 @@ urlpatterns = [
         views.WeeklyPayrollListCreateView.as_view(),
         name="weeklypayroll-list",
     ),
-    path(
-        "weekly-payrolls/<int:pk>/",
-        views.WeeklyPayrollDetailView.as_view(),
-        name="weeklypayroll-detail",
-    ),
-    # Recompute a weekly payroll from its time entries
-    path(
-        "weekly-payrolls/<int:pk>/recompute/",
-        views.WeeklyPayrollRecomputeView.as_view(),
-        name="weeklypayroll-recompute",
-    ),
+
+        path(
+
+            "weekly-payrolls/<int:pk>/",
+
+            views.WeeklyPayrollDetailView.as_view(),
+
+            name="weeklypayroll-detail",
+
+        ),
+
+        # Weekly payroll filters
+        path(
+            "weekly-payrolls/filters/",
+            views.WeeklyPayrollFiltersView.as_view(),
+            name="weeklypayroll-filters",
+        ),
+        # Recompute a weekly payroll from its time entries
+        path(
+            "weekly-payrolls/<int:pk>/recompute/",
+            views.WeeklyPayrollRecomputeView.as_view(),
+            name="weeklypayroll-recompute",
+
+        ),
+
     # Bulk time entries
     path(
         "time-entries/bulk/",

@@ -287,41 +287,79 @@ class DeductionsField(serializers.Field):
         return rep
 
 
+
 class WeeklyPayrollSerializer(serializers.ModelSerializer):
+
     employee_detail = MinimalUserSerializer(source="employee", read_only=True)
+
+    employee_name = serializers.SerializerMethodField(read_only=True)
+
     week_end = serializers.SerializerMethodField(read_only=True)
     total_hours = serializers.SerializerMethodField(read_only=True)
+
     deductions = DeductionsField(required=False)
 
+
+
     employee = serializers.PrimaryKeyRelatedField(
+
         queryset=User.objects.all(), required=True
+
     )
 
+
+
     class Meta:
+
         model = WeeklyPayroll
+
         fields = [
+
             "id",
+
             "employee",
+
             "employee_detail",
+
+            "employee_name",
             "week_start",
+
             "week_end",
+
             "hourly_rate",
+
             "overtime_threshold",
+
             "overtime_multiplier",
+
             "regular_hours",
+
             "overtime_hours",
+
             "total_hours",
+
             "allowances",
+
             "gross_pay",
+
             "deductions",
+
             "total_deductions",
+
             "net_pay",
+
             "status",
+
             "notes",
+
             "is_deleted",
+
             "created_at",
+
             "updated_at",
+
         ]
+
         read_only_fields = [
             "id",
             "regular_hours",
@@ -334,29 +372,64 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+
         hourly_rate = attrs.get(
+
             "hourly_rate", getattr(self.instance, "hourly_rate", None)
-        )
-        overtime_threshold = attrs.get(
-            "overtime_threshold", getattr(self.instance, "overtime_threshold", None)
-        )
-        overtime_multiplier = attrs.get(
-            "overtime_multiplier", getattr(self.instance, "overtime_multiplier", None)
+
         )
 
+        overtime_threshold = attrs.get(
+
+            "overtime_threshold", getattr(self.instance, "overtime_threshold", None)
+
+        )
+
+        overtime_multiplier = attrs.get(
+
+            "overtime_multiplier", getattr(self.instance, "overtime_multiplier", None)
+
+        )
+
+
+
         # Coerce to Decimal, ensure non-negative for sensible fields
+
         if hourly_rate is not None and Decimal(hourly_rate) < 0:
+
             raise serializers.ValidationError({"hourly_rate": "Must be non-negative."})
+
         if overtime_threshold is not None and Decimal(overtime_threshold) < 0:
+
             raise serializers.ValidationError(
+
                 {"overtime_threshold": "Must be non-negative."}
+
             )
+
         if overtime_multiplier is not None and Decimal(overtime_multiplier) < 0:
+
             raise serializers.ValidationError(
+
                 {"overtime_multiplier": "Must be non-negative."}
+
             )
+
         return attrs
+
+    def get_employee_name(self, obj: WeeklyPayroll) -> str:
+        try:
+            # Prefer full_name from MinimalUserSerializer if available
+            name = obj.employee.get_full_name()
+            if name:
+                return name
+            # Fallback to first + last name
+            return f"{obj.employee.first_name or ''} {obj.employee.last_name or ''}".strip()
+        except Exception:
+            return str(getattr(obj.employee, "username", ""))
+
 
     def get_week_end(self, obj: WeeklyPayroll) -> Optional[str]:
         try:

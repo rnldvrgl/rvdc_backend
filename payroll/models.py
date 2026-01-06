@@ -310,20 +310,48 @@ class WeeklyPayroll(models.Model):
             base + self.allowances + self.additional_earnings_total
         )
 
+
         # Deductions
+
         deductions_map: dict[str, Decimal] = {
+
             k: Decimal(v) for k, v in (self.deductions or {}).items()
+
         }
+
+        # Apply statutory weekly deductions based on DeductionRate effective for this week_start
+        try:
+            # Find active rates whose effective window covers this payroll week_start
+            statutory_qs = DeductionRate.objects.filter(
+                name__in=["sss", "philhealth", "pagibig"],
+                effective_start__lte=self.week_start,
+            ).filter(models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start))
+            for rate in statutory_qs:
+                # Do not overwrite if a manual value was already set for this name
+                if rate.name not in deductions_map:
+                    deductions_map[rate.name] = self._q(Decimal(rate.amount or 0))
+        except Exception:
+            # If anything fails, keep existing deductions_map intact
+            pass
+
         if percent_deductions:
             for name, rate in percent_deductions.items():
                 deductions_map[name] = self._q(self.gross_pay * Decimal(rate or 0))
+
         if extra_flat_deductions:
+
             for name, amt in extra_flat_deductions.items():
+
                 deductions_map[name] = self._q(Decimal(amt or 0))
 
+
+
         self.deductions = {k: float(self._q(v)) for k, v in deductions_map.items()}
+
         self.total_deductions = self._q(sum(self.deductions.values()))
+
         self.net_pay = self._q(self.gross_pay - self.total_deductions)
+
 
     def _week_start_as_datetime(self, d: date) -> datetime:
         """
@@ -371,18 +399,104 @@ class PayrollSettings(models.Model):
         default=Decimal("0.30"),
         help_text="Premium rate for special non-working holidays applied to base daily-rate portion.",
     )
+
     holiday_regular_pct = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        default=Decimal("1.00"),
-        help_text="Premium rate for regular holidays applied to base daily-rate portion.",
-    )
+
+            max_digits=5,
+
+            decimal_places=2,
+
+            default=Decimal("1.00"),
+
+            help_text="Premium rate for regular holidays applied to base daily-rate portion.",
+
+        )
+
+
+
+        # Central multipliers for OT and Night Differential
+    overtime_multiplier = models.DecimalField(
+            max_digits=4,
+            decimal_places=2,
+            default=Decimal("1.25"),
+            help_text="Overtime pay multiplier applied to overtime hours (e.g., 1.25 = +25%).",
+        )
+    night_diff_multiplier = models.DecimalField(
+            max_digits=4,
+            decimal_places=2,
+            default=Decimal("0.10"),
+            help_text="Night differential additional multiplier applied to ND hours (e.g., 0.10 = +10%).",
+        )
 
     updated_at = models.DateTimeField(auto_now=True)
+
 
     class Meta:
         verbose_name = "Payroll Settings"
         verbose_name_plural = "Payroll Settings"
 
+
     def __str__(self):
+
         return f"PayrollSettings ({self.shift_start}-{self.shift_end}, grace={self.grace_minutes}m)"
+
+
+class DeductionRate(models.Model):
+    """
+    Statutory deduction rate with historical periods.
+    - name: one of SSS, PhilHealth, Pag-IBIG
+    - amount: weekly amount to deduct
+    - effective_start/effective_end: period when this rate is in effect
+    - is_active: flag to mark currently active records (for quick lookups)
+    - created_by: admin who created the rate
+    - created_at: timestamp
+    Notes:
+      - Historical records MUST remain immutable once effective_start is in the past.
+      - Only one active rate should exist per name for any given date.
+    """
+
+    DEDUCTION_CHOICES = [
+        ("sss", "SSS"),
+        ("philhealth", "PhilHealth"),
+        ("pagibig", "Pag-IBIG"),
+    ]
+
+    name = models.CharField(max_length=20, choices=DEDUCTION_CHOICES)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+
+    effective_start = models.DateField(help_text="Date the rate becomes effective (inclusive).")
+    effective_end = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date the rate stops being effective (inclusive). Leave null if still active.",
+    )
+
+    is_active = models.BooleanField(default=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_deduction_rates",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["name", "effective_start"]),
+            models.Index(fields=["name", "is_active"]),
+        ]
+        ordering = ["name", "-effective_start"]
+        verbose_name = "Deduction Rate"
+        verbose_name_plural = "Deduction Rates"
+
+    def __str__(self):
+        return f"{self.get_name_display()} @ {self.effective_start} -> {self.effective_end or 'present'} ({self.amount})"
+
+    def clean(self):
+        super().clean()
+        if self.effective_end and self.effective_end < self.effective_start:
+            raise ValidationError({"effective_end": "effective_end must be on or after effective_start."})
+        if self.amount is not None and Decimal(self.amount) < 0:
+            raise ValidationError({"amount": "Amount must be non-negative."})
