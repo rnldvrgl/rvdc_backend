@@ -4,7 +4,11 @@ from django.contrib import admin
 
 from payroll.models import (
     AdditionalEarning,
+<<<<<<< HEAD
     DeductionRate,
+=======
+    OvertimeRequest,
+>>>>>>> 3a8648fa43f4151fd91e914cf51ea2295e217fe3
     PayrollSettings,
     TimeEntry,
     WeeklyPayroll,
@@ -333,18 +337,100 @@ class AdditionalEarningAdmin(admin.ModelAdmin):
 
     readonly_fields = ("created_at", "updated_at")
 
+
+    fieldsets = (
+
+        (
+
+            "Earning",
+
+            {
+
+                "fields": (
+
+                    "employee",
+
+                    "earning_date",
+
+                    "category",
+
+                    "amount",
+
+                    "reference",
+
+                    "description",
+
+                    "approved",
+
+                )
+
+            },
+
+        ),
+
+        (
+
+            "Meta",
+
+            {
+
+                "classes": ("collapse",),
+
+                "fields": (
+
+                    "is_deleted",
+
+                    "created_at",
+
+                    "updated_at",
+
+                ),
+
+            },
+
+        ),
+
+    )
+
+
+@admin.register(OvertimeRequest)
+class OvertimeRequestAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "employee",
+        "date",
+        "time_start",
+        "time_end",
+        "approved",
+        "approved_by",
+        "approved_at",
+    )
+    list_filter = ("approved", "date")
+    search_fields = (
+        "employee__username",
+        "employee__first_name",
+        "employee__last_name",
+        "reason",
+    )
+    date_hierarchy = "date"
+    ordering = ("-date", "employee_id")
+    list_select_related = ("employee",)
+    list_per_page = 25
+    readonly_fields = ("created_at", "updated_at")
+
     fieldsets = (
         (
-            "Earning",
+            "Request",
             {
                 "fields": (
                     "employee",
-                    "earning_date",
-                    "category",
-                    "amount",
-                    "reference",
-                    "description",
+                    "date",
+                    "time_start",
+                    "time_end",
+                    "reason",
                     "approved",
+                    "approved_by",
+                    "approved_at",
                 )
             },
         ),
@@ -353,7 +439,6 @@ class AdditionalEarningAdmin(admin.ModelAdmin):
             {
                 "classes": ("collapse",),
                 "fields": (
-                    "is_deleted",
                     "created_at",
                     "updated_at",
                 ),
