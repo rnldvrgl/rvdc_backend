@@ -42,7 +42,6 @@ urlpatterns = [
 
     ),
 
-<<<<<<< HEAD
         path(
 
             "weekly-payrolls/<int:pk>/",
@@ -66,29 +65,6 @@ urlpatterns = [
             name="weeklypayroll-recompute",
 
         ),
-=======
-    path(
-
-        "weekly-payrolls/<int:pk>/",
-
-        views.WeeklyPayrollDetailView.as_view(),
-
-        name="weeklypayroll-detail",
-
-    ),
-
-    # Recompute a weekly payroll from its time entries
-
-    path(
-
-        "weekly-payrolls/<int:pk>/recompute/",
-
-        views.WeeklyPayrollRecomputeView.as_view(),
-
-        name="weeklypayroll-recompute",
-
-    ),
->>>>>>> 3a8648fa43f4151fd91e914cf51ea2295e217fe3
 
     # Bulk time entries
 
@@ -158,9 +134,32 @@ urlpatterns = [
         views.OvertimeRequestDetailView.as_view(),
         name="overtimerequest-detail",
     ),
-    path(
-        "overtime-requests/<int:pk>/approve/",
-        views.OvertimeRequestApproveView.as_view(),
-        name="overtimerequest-approve",
-    ),
-]
+
+        path(
+
+            "overtime-requests/<int:pk>/approve/",
+
+            views.OvertimeRequestApproveView.as_view(),
+
+            name="overtimerequest-approve",
+
+        ),
+
+        # Payroll Settings (Admin only)
+        path(
+            "settings/",
+            views.PayrollSettingsAdminView.as_view(),
+            name="payroll-settings",
+        ),
+        # Holidays (Admin only)
+        path(
+            "holidays/",
+            views.HolidayListCreateAdminView.as_view(),
+            name="holiday-list",
+        ),
+        path(
+            "holidays/<int:pk>/",
+            views.HolidayDetailAdminView.as_view(),
+            name="holiday-detail",
+        ),
+    ]

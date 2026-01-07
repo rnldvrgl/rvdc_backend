@@ -11,13 +11,22 @@ from payroll.api.filters import (
 )
 from payroll.api.serializers import (
     AdditionalEarningSerializer,
+    HolidaySerializer,
     OvertimeRequestApproveSerializer,
     OvertimeRequestSerializer,
+    PayrollSettingsSerializer,
     TimeEntryBulkCreateSerializer,
     TimeEntrySerializer,
     WeeklyPayrollSerializer,
 )
-from payroll.models import AdditionalEarning, OvertimeRequest, TimeEntry, WeeklyPayroll
+from payroll.models import (
+    AdditionalEarning,
+    Holiday,
+    OvertimeRequest,
+    PayrollSettings,
+    TimeEntry,
+    WeeklyPayroll,
+)
 from rest_framework import filters, generics, permissions, status
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
@@ -331,18 +340,45 @@ class WeeklyPayrollListCreateView(generics.ListCreateAPIView):
         instance: WeeklyPayroll = serializer.save()
         # Recompute upon creation using approved entries in the period
         instance.compute_from_time_entries()
+
+
         instance.save(
             update_fields=[
+
                 "regular_hours",
+
                 "overtime_hours",
+
+                "night_diff_hours",
+
+                "approved_ot_hours",
+
                 "allowances",
+
                 "gross_pay",
+
+                "night_diff_pay",
+
+                "approved_ot_pay",
+
+                "holiday_pay_regular",
+
+                "holiday_pay_special",
+
+                "holiday_pay_total",
+
                 "deductions",
+
                 "total_deductions",
+
                 "net_pay",
+
                 "updated_at",
+
             ]
         )
+
+
 
 
 class WeeklyPayrollDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -363,18 +399,45 @@ class WeeklyPayrollDetailView(generics.RetrieveUpdateDestroyAPIView):
         instance: WeeklyPayroll = serializer.save()
         # Keep figures in sync with time entries when key parameters change.
         instance.compute_from_time_entries()
+
+
         instance.save(
             update_fields=[
+
                 "regular_hours",
+
                 "overtime_hours",
+
+                "night_diff_hours",
+
+                "approved_ot_hours",
+
                 "allowances",
+
                 "gross_pay",
+
+                "night_diff_pay",
+
+                "approved_ot_pay",
+
+                "holiday_pay_regular",
+
+                "holiday_pay_special",
+
+                "holiday_pay_total",
+
                 "deductions",
+
                 "total_deductions",
+
                 "net_pay",
+
                 "updated_at",
+
             ]
         )
+
+
 
     def perform_destroy(self, instance: WeeklyPayroll) -> None:
         # Soft delete
@@ -503,27 +566,107 @@ class WeeklyPayrollRecomputeView(APIView):
             extra_flat_deductions=extra_flat or None,
             percent_deductions=percent or None,
         )
+
+
         payroll.save(
             update_fields=[
+
                 "regular_hours",
+
                 "overtime_hours",
+
+                "night_diff_hours",
+
+                "approved_ot_hours",
+
                 "allowances",
+
                 "gross_pay",
+
+                "night_diff_pay",
+
+                "approved_ot_pay",
+
+                "holiday_pay_regular",
+
+                "holiday_pay_special",
+
+                "holiday_pay_total",
+
                 "deductions",
+
                 "total_deductions",
+
                 "net_pay",
+
                 "updated_at",
+
             ]
         )
+
+
 
         data = WeeklyPayrollSerializer(payroll).data
 
         return Response(data, status=status.HTTP_200_OK)
 
 
+
+
+
+
+class PayrollSettingsAdminView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        settings = PayrollSettings.objects.first()
+        if not settings:
+            settings = PayrollSettings.objects.create()
+        data = PayrollSettingsSerializer(settings).data
+        return Response(data, status=status.HTTP_200_OK)
+
+    def put(self, request):
+        settings = PayrollSettings.objects.first()
+        if not settings:
+            settings = PayrollSettings.objects.create()
+        serializer = PayrollSettingsSerializer(settings, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        settings = PayrollSettings.objects.first()
+        if not settings:
+            settings = PayrollSettings.objects.create()
+        serializer = PayrollSettingsSerializer(settings, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class HolidayListCreateAdminView(generics.ListCreateAPIView):
+    permission_classes = [permissions.IsAdminUser]
+    serializer_class = HolidaySerializer
+    queryset = Holiday.objects.filter(is_deleted=False).order_by("-date")
+
+
+class HolidayDetailAdminView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAdminUser]
+    serializer_class = HolidaySerializer
+    queryset = Holiday.objects.filter(is_deleted=False)
+
+    def perform_destroy(self, instance: Holiday) -> None:
+        # Soft delete
+        instance.is_deleted = True
+        instance.save(update_fields=["is_deleted"])
+
+
 # ------------------------------------------------------------------------------
+
 # Sessions Review (auto-closed entries)
+
 # ------------------------------------------------------------------------------
+
 
 
 class SessionsReviewListView(generics.ListAPIView):

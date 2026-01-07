@@ -185,6 +185,25 @@ class OvertimeRequest(models.Model):
         return f"OT {self.employee_id} | {self.date} | {self.time_start}—{self.time_end}"
 
 
+class Holiday(models.Model):
+    KIND_CHOICES = [
+        ("regular", "Regular Holiday"),
+        ("special_non_working", "Special Non-Working Holiday"),
+    ]
+    date = models.DateField(unique=True)
+    name = models.CharField(max_length=100)
+    kind = models.CharField(max_length=32, choices=KIND_CHOICES)
+    is_deleted = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-date"]
+        indexes = [
+            models.Index(fields=["date", "kind"]),
+        ]
+
+    def __str__(self):
+        return f"{self.date} - {self.name} ({self.kind})"
+
 class WeeklyPayroll(models.Model):
 
     """
@@ -250,6 +269,16 @@ class WeeklyPayroll(models.Model):
     )
 
     additional_earnings_total = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
+    )
+    # Holiday pay components (computed)
+    holiday_pay_regular = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
+    )
+    holiday_pay_special = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal("0.00")
+    )
+    holiday_pay_total = models.DecimalField(
         max_digits=12, decimal_places=2, default=Decimal("0.00")
     )
     gross_pay = models.DecimalField(
@@ -435,9 +464,82 @@ class WeeklyPayroll(models.Model):
             self.approved_ot_hours = self._q(Decimal("0"), places=2)
             self.approved_ot_pay = self._q(Decimal("0"))
 
-        # Final gross = base + allowances + additional earnings + night diff + approved OT
+        # Compute holiday premiums (regular and special non-working)
+        # Build worked-hours-per-date map for this week
+        from collections import defaultdict
+        worked_hours_by_date: dict[date, Decimal] = defaultdict(lambda: Decimal("0"))
+        for e in entries:
+            a_start = timezone.localtime(e.clock_in) if timezone.is_aware(e.clock_in) else e.clock_in
+            a_end = timezone.localtime(e.clock_out) if timezone.is_aware(e.clock_out) else e.clock_out
+            cur = a_start
+            while cur < a_end:
+                day = cur.date()
+                # Day window: [00:00, 24:00) local
+                day_start = datetime.combine(day, time(0, 0))
+                next_day = day + timedelta(days=1)
+                day_end = datetime.combine(next_day, time(0, 0))
+                if settings.USE_TZ:
+                    tz = timezone.get_current_timezone()
+                    day_start = tz.localize(day_start)
+                    day_end = tz.localize(day_end)
+                seg = _overlap(a_start, a_end, day_start, day_end)
+                worked_hours_by_date[day] += max(Decimal("0"), Decimal(seg.total_seconds()) / Decimal(3600))
+                cur = day_end
+
+        # Default settings
+        try:
+            settings_obj = PayrollSettings.objects.first()
+        except Exception:
+            settings_obj = None
+
+        day_hours = Decimal(getattr(settings_obj, "holiday_day_hours", Decimal("8.00")) or "8.00")
+        reg_pct = Decimal(getattr(settings_obj, "holiday_regular_pct", Decimal("1.00")) or "1.00")
+        spec_pct = Decimal(getattr(settings_obj, "holiday_special_pct", Decimal("0.30")) or "0.30")
+        reg_no_work = bool(getattr(settings_obj, "regular_holiday_no_work_pays", True))
+        spec_no_work = bool(getattr(settings_obj, "special_holiday_no_work_pays", False))
+
+        daily_rate = hr * (day_hours or Decimal("0"))
+
+        # Reset holiday fields
+        self.holiday_pay_regular = self._q(Decimal("0"))
+        self.holiday_pay_special = self._q(Decimal("0"))
+
+        # Fetch holidays in range
+        try:
+            from payroll.models import Holiday
+            holidays = Holiday.objects.filter(
+                is_deleted=False, date__gte=self.week_start, date__lt=self.week_end
+            )
+        except Exception:
+            holidays = []
+
+        for h in holidays:
+            d = h.date
+            worked = worked_hours_by_date.get(d, Decimal("0"))
+            fraction = Decimal("0")
+            if day_hours and day_hours > 0:
+                fraction = (worked / day_hours)
+                if fraction > Decimal("1"):
+                    fraction = Decimal("1")
+
+            if h.kind == "regular":
+                if worked > 0:
+                    add = daily_rate * reg_pct * fraction
+                else:
+                    add = (daily_rate * reg_pct) if reg_no_work else Decimal("0")
+                self.holiday_pay_regular = self._q(self.holiday_pay_regular + add)
+            elif h.kind == "special_non_working":
+                if worked > 0:
+                    add = daily_rate * spec_pct * fraction
+                else:
+                    add = (daily_rate * spec_pct) if spec_no_work else Decimal("0")
+                self.holiday_pay_special = self._q(self.holiday_pay_special + add)
+
+        self.holiday_pay_total = self._q(self.holiday_pay_regular + self.holiday_pay_special)
+
+        # Final gross = base + allowances + additional earnings + night diff + approved OT + holiday premiums
         self.gross_pay = self._q(
-            base + self.allowances + self.additional_earnings_total + self.night_diff_pay + self.approved_ot_pay
+            base + self.allowances + self.additional_earnings_total + self.night_diff_pay + self.approved_ot_pay + self.holiday_pay_total
         )
 
 
@@ -560,14 +662,25 @@ class PayrollSettings(models.Model):
 
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Holiday computations: baseline daily hours and no-work-pay flags
+    holiday_day_hours = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal("8.00"),
+        help_text="Hours used to compute daily rate (hourly_rate * day_hours).",
+    )
+    regular_holiday_no_work_pays = models.BooleanField(
+        default=True, help_text="Pay +100% daily even if no work on regular holiday."
+    )
+    special_holiday_no_work_pays = models.BooleanField(
+        default=False, help_text="Pay +30% daily even if no work on special non-working holiday."
+    )
 
     class Meta:
         verbose_name = "Payroll Settings"
         verbose_name_plural = "Payroll Settings"
 
-
     def __str__(self):
-
         return f"PayrollSettings ({self.shift_start}-{self.shift_end}, grace={self.grace_minutes}m)"
 
 

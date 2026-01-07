@@ -4,11 +4,9 @@ from django.contrib import admin
 
 from payroll.models import (
     AdditionalEarning,
-<<<<<<< HEAD
     DeductionRate,
-=======
+    Holiday,
     OvertimeRequest,
->>>>>>> 3a8648fa43f4151fd91e914cf51ea2295e217fe3
     PayrollSettings,
     TimeEntry,
     WeeklyPayroll,
@@ -22,8 +20,13 @@ class PayrollSettingsAdmin(admin.ModelAdmin):
         "shift_end",
         "grace_minutes",
         "auto_close_enabled",
-        "holiday_special_pct",
+        "holiday_day_hours",
         "holiday_regular_pct",
+        "holiday_special_pct",
+        "regular_holiday_no_work_pays",
+        "special_holiday_no_work_pays",
+        "overtime_multiplier",
+        "night_diff_multiplier",
         "updated_at",
     )
     readonly_fields = ("updated_at",)
@@ -127,6 +130,7 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
         "overtime_hours",
         "total_hours_display",
         "hourly_rate",
+        "holiday_pay_total",
         "gross_pay",
         "total_deductions",
         "net_pay",
@@ -145,16 +149,31 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
     list_select_related = ("employee",)
     list_per_page = 25
 
+
     readonly_fields = (
+
         "regular_hours",
+
         "overtime_hours",
+
+        "night_diff_hours",
+        "approved_ot_hours",
         "gross_pay",
+
+        "night_diff_pay",
+        "approved_ot_pay",
         "total_deductions",
+
         "net_pay",
+
         "created_at",
+
         "updated_at",
+
         "total_hours_readonly",
+
     )
+
 
     fieldsets = (
         (
@@ -181,20 +200,34 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
             "Computed Hours",
             {
                 "classes": ("collapse",),
-                "fields": (
-                    "regular_hours",
-                    "overtime_hours",
-                    "total_hours_readonly",
-                ),
+
+                                "fields": (
+
+                                    "regular_hours",
+
+                                    "overtime_hours",
+
+                                    "night_diff_hours",
+                                    "approved_ot_hours",
+                                    "total_hours_readonly",
+
+                                ),
+
             },
         ),
         (
             "Pay Components",
             {
-                "fields": (
-                    "allowances",
-                    "gross_pay",
-                )
+
+                                "fields": (
+
+                                    "allowances",
+
+                                    "night_diff_pay",
+                                    "approved_ot_pay",
+                                    "gross_pay",
+                                )
+
             },
         ),
         (
@@ -248,42 +281,46 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
         except Exception:
             return "0.0000"
 
+
+
     @admin.action(description="Recompute from time entries")
     def recompute_from_time_entries(self, request, queryset):
         updated = 0
         for payroll in queryset:
+
             payroll.compute_from_time_entries()
+
             payroll.save(
+
                 update_fields=[
+
                     "regular_hours",
+
                     "overtime_hours",
+
+                    "night_diff_hours",
+                    "approved_ot_hours",
                     "allowances",
                     "gross_pay",
+
+                    "night_diff_pay",
+                    "approved_ot_pay",
                     "deductions",
                     "total_deductions",
+
                     "net_pay",
+
                     "updated_at",
+
                 ]
+
             )
 
-        @admin.register(DeductionRate)
-        class DeductionRateAdmin(admin.ModelAdmin):
-            list_display = (
-                "name",
-                "amount",
-                "effective_start",
-                "effective_end",
-                "is_active",
-                "created_by",
-                "created_at",
-            )
-            list_filter = ("name", "is_active", "effective_start", "effective_end")
-            search_fields = ("name",)
-            date_hierarchy = "effective_start"
-            ordering = ("name", "-effective_start")
-            readonly_fields = ("created_at",)
             updated += 1
+
         self.message_user(request, f"Recomputed {updated} payroll record(s).")
+
+
 
     @admin.action(description="Mark selected payrolls as Approved")
     def mark_as_approved(self, request, queryset):
@@ -310,7 +347,34 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
     )
 
 
+
+@admin.register(Holiday)
+class HolidayAdmin(admin.ModelAdmin):
+    list_display = ("date", "name", "kind", "is_deleted")
+    list_filter = ("kind", "is_deleted", "date")
+    search_fields = ("name",)
+    date_hierarchy = "date"
+    ordering = ("-date",)
+
+@admin.register(DeductionRate)
+class DeductionRateAdmin(admin.ModelAdmin):
+    list_display = (
+        "name",
+        "amount",
+        "effective_start",
+        "effective_end",
+        "is_active",
+        "created_by",
+        "created_at",
+    )
+    list_filter = ("name", "is_active", "effective_start", "effective_end")
+    search_fields = ("name",)
+    date_hierarchy = "effective_start"
+    ordering = ("name", "-effective_start")
+    readonly_fields = ("created_at",)
+
 @admin.register(AdditionalEarning)
+
 class AdditionalEarningAdmin(admin.ModelAdmin):
     list_display = (
         "id",

@@ -5,7 +5,14 @@ from typing import Any, Dict, Mapping, Optional
 
 from django.contrib.auth import get_user_model
 from django.utils import timezone
-from payroll.models import AdditionalEarning, OvertimeRequest, TimeEntry, WeeklyPayroll
+from payroll.models import (
+    AdditionalEarning,
+    Holiday,
+    OvertimeRequest,
+    PayrollSettings,
+    TimeEntry,
+    WeeklyPayroll,
+)
 from rest_framework import serializers
 
 User = get_user_model()
@@ -352,165 +359,87 @@ class DeductionsField(serializers.Field):
 class WeeklyPayrollSerializer(serializers.ModelSerializer):
 
     employee_detail = MinimalUserSerializer(source="employee", read_only=True)
-
     employee_name = serializers.SerializerMethodField(read_only=True)
-
     week_end = serializers.SerializerMethodField(read_only=True)
     total_hours = serializers.SerializerMethodField(read_only=True)
-
     deductions = DeductionsField(required=False)
-
-
-
     employee = serializers.PrimaryKeyRelatedField(
-
         queryset=User.objects.all(), required=True
-
     )
 
-
-<<<<<<< HEAD
-
-=======
->>>>>>> 3a8648fa43f4151fd91e914cf51ea2295e217fe3
     class Meta:
-
         model = WeeklyPayroll
-
         fields = [
-
             "id",
-
             "employee",
-
             "employee_detail",
-
-<<<<<<< HEAD
             "employee_name",
-=======
->>>>>>> 3a8648fa43f4151fd91e914cf51ea2295e217fe3
             "week_start",
-
             "week_end",
-
             "hourly_rate",
-
             "overtime_threshold",
-
             "overtime_multiplier",
-
             "regular_hours",
-
             "overtime_hours",
-
-<<<<<<< HEAD
-=======
             "night_diff_hours",
             "approved_ot_hours",
->>>>>>> 3a8648fa43f4151fd91e914cf51ea2295e217fe3
             "total_hours",
-
             "allowances",
-
             "gross_pay",
-
-<<<<<<< HEAD
-=======
             "night_diff_pay",
             "approved_ot_pay",
->>>>>>> 3a8648fa43f4151fd91e914cf51ea2295e217fe3
+            "holiday_pay_regular",
+            "holiday_pay_special",
+            "holiday_pay_total",
             "deductions",
-
             "total_deductions",
-
             "net_pay",
-
             "status",
-
             "notes",
-
             "is_deleted",
-
             "created_at",
-
             "updated_at",
-
         ]
-
-<<<<<<< HEAD
-=======
-
->>>>>>> 3a8648fa43f4151fd91e914cf51ea2295e217fe3
         read_only_fields = [
-
             "id",
-
             "regular_hours",
-
             "overtime_hours",
-
             "night_diff_hours",
             "approved_ot_hours",
             "total_hours",
             "gross_pay",
-
             "night_diff_pay",
             "approved_ot_pay",
+            "holiday_pay_regular",
+            "holiday_pay_special",
+            "holiday_pay_total",
             "total_deductions",
-
-            "net_pay",
-
             "created_at",
-
             "updated_at",
-
         ]
-
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
-
         hourly_rate = attrs.get(
-
             "hourly_rate", getattr(self.instance, "hourly_rate", None)
-
         )
-
         overtime_threshold = attrs.get(
-
             "overtime_threshold", getattr(self.instance, "overtime_threshold", None)
-
         )
-
         overtime_multiplier = attrs.get(
-
             "overtime_multiplier", getattr(self.instance, "overtime_multiplier", None)
-
         )
-
-
 
         # Coerce to Decimal, ensure non-negative for sensible fields
-
         if hourly_rate is not None and Decimal(hourly_rate) < 0:
-
             raise serializers.ValidationError({"hourly_rate": "Must be non-negative."})
-
         if overtime_threshold is not None and Decimal(overtime_threshold) < 0:
-
             raise serializers.ValidationError(
-
                 {"overtime_threshold": "Must be non-negative."}
-
             )
-
         if overtime_multiplier is not None and Decimal(overtime_multiplier) < 0:
-
             raise serializers.ValidationError(
-
                 {"overtime_multiplier": "Must be non-negative."}
-
             )
-
         return attrs
 
     def get_employee_name(self, obj: WeeklyPayroll) -> str:
@@ -523,7 +452,6 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             return f"{obj.employee.first_name or ''} {obj.employee.last_name or ''}".strip()
         except Exception:
             return str(getattr(obj.employee, "username", ""))
-
 
     def get_week_end(self, obj: WeeklyPayroll) -> Optional[str]:
         try:
@@ -539,3 +467,32 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             return float(total)
         except Exception:
             return 0.0
+
+
+
+
+class PayrollSettingsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PayrollSettings
+        fields = [
+            "id",
+            "shift_start",
+            "shift_end",
+            "grace_minutes",
+            "auto_close_enabled",
+            "holiday_day_hours",
+            "holiday_regular_pct",
+            "holiday_special_pct",
+            "regular_holiday_no_work_pays",
+            "special_holiday_no_work_pays",
+            "overtime_multiplier",
+            "night_diff_multiplier",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "updated_at"]
+
+
+class HolidaySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Holiday
+        fields = ["id", "date", "name", "kind", "is_deleted"]
