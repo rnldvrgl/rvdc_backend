@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.contrib import admin
+from django.utils import timezone
 
 from payroll.models import (
     AdditionalEarning,
@@ -348,30 +349,80 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
 
 
 
+
 @admin.register(Holiday)
+
 class HolidayAdmin(admin.ModelAdmin):
+
     list_display = ("date", "name", "kind", "is_deleted")
+
     list_filter = ("kind", "is_deleted", "date")
+
     search_fields = ("name",)
+
     date_hierarchy = "date"
+
     ordering = ("-date",)
 
+    @admin.action(description="Soft delete selected holidays")
+    def soft_delete(self, request, queryset):
+        queryset.update(is_deleted=True)
+
+    @admin.action(description="Restore selected holidays")
+    def restore(self, request, queryset):
+        queryset.update(is_deleted=False)
+
+    actions = ("soft_delete", "restore",)
+
+
+
 @admin.register(DeductionRate)
+
 class DeductionRateAdmin(admin.ModelAdmin):
+
     list_display = (
+
         "name",
+
         "amount",
+
         "effective_start",
+
         "effective_end",
+
         "is_active",
+
         "created_by",
+
         "created_at",
+
     )
+
     list_filter = ("name", "is_active", "effective_start", "effective_end")
+
     search_fields = ("name",)
+
     date_hierarchy = "effective_start"
+
     ordering = ("name", "-effective_start")
+
     readonly_fields = ("created_at",)
+
+    @admin.action(description="Activate selected rates")
+    def activate_rates(self, request, queryset):
+        queryset.update(is_active=True, effective_end=None)
+
+    @admin.action(description="Deactivate selected rates")
+    def deactivate_rates(self, request, queryset):
+        queryset.update(is_active=False)
+
+    actions = ("activate_rates", "deactivate_rates",)
+
+    def save_model(self, request, obj, form, change):
+        if not change and not obj.created_by:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+
 
 @admin.register(AdditionalEarning)
 
@@ -457,55 +508,115 @@ class AdditionalEarningAdmin(admin.ModelAdmin):
     )
 
 
+
 @admin.register(OvertimeRequest)
+
 class OvertimeRequestAdmin(admin.ModelAdmin):
+
     list_display = (
+
         "id",
+
         "employee",
+
         "date",
+
         "time_start",
+
         "time_end",
+
         "approved",
+
         "approved_by",
+
         "approved_at",
+
     )
+
     list_filter = ("approved", "date")
+
     search_fields = (
+
         "employee__username",
+
         "employee__first_name",
+
         "employee__last_name",
+
         "reason",
+
     )
+
     date_hierarchy = "date"
+
     ordering = ("-date", "employee_id")
+
     list_select_related = ("employee",)
+
     list_per_page = 25
+
     readonly_fields = ("created_at", "updated_at")
+
+
+
+    @admin.action(description="Approve selected requests")
+    def approve_requests(self, request, queryset):
+        now = timezone.now()
+        queryset.update(approved=True, approved_by=request.user, approved_at=now)
+
+
+    @admin.action(description="Reject selected requests")
+    def reject_requests(self, request, queryset):
+        queryset.update(approved=False, approved_by=None, approved_at=None)
+
+    actions = ("approve_requests", "reject_requests",)
 
     fieldsets = (
         (
             "Request",
             {
                 "fields": (
+
                     "employee",
+
                     "date",
+
                     "time_start",
+
                     "time_end",
+
                     "reason",
+
                     "approved",
+
                     "approved_by",
+
                     "approved_at",
+
                 )
+
             },
+
         ),
+
         (
+
             "Meta",
+
             {
+
                 "classes": ("collapse",),
+
                 "fields": (
+
                     "created_at",
+
                     "updated_at",
+
                 ),
+
             },
+
         ),
+
     )

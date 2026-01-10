@@ -6,6 +6,7 @@ from typing import Dict, Optional
 from django_filters.rest_framework import DjangoFilterBackend
 from payroll.api.filters import (
     AdditionalEarningFilter,
+    HolidayFilter,
     TimeEntryFilter,
     WeeklyPayrollFilter,
 )
@@ -27,7 +28,8 @@ from payroll.models import (
     TimeEntry,
     WeeklyPayroll,
 )
-from rest_framework import filters, generics, permissions, status
+from rest_framework import filters, generics, permissions, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -643,20 +645,54 @@ class PayrollSettingsAdminView(APIView):
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-
-class HolidayListCreateAdminView(generics.ListCreateAPIView):
-    permission_classes = [permissions.IsAdminUser]
-    serializer_class = HolidaySerializer
+class HolidayViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing holidays (admin only).
+    Supports CRUD operations and provides filter options.
+    """
     queryset = Holiday.objects.filter(is_deleted=False).order_by("-date")
-
-
-class HolidayDetailAdminView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAdminUser]
     serializer_class = HolidaySerializer
-    queryset = Holiday.objects.filter(is_deleted=False)
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter
+    ]
+    search_fields = ['name']
+    filterset_class = HolidayFilter
+    ordering_fields = ['date', 'name', 'kind']
+
+    def get_queryset(self):
+        """Apply date range filtering on the 'date' field."""
+        return filter_by_date_range(
+            self.request, super().get_queryset(), "date"
+        )
+
+    @action(detail=False, methods=["get"], url_path="filters")
+    def get_filters(self, request):
+        """
+        GET /holidays/filters/
+        Returns filter and ordering configuration for the frontend.
+        """
+        filters_config = {
+            "kind": {
+                "options": lambda: [
+                    {"label": "Regular Holidays", "value": "regular"},
+                    {"label": "Special Non Working Holidays", "value": "special"},
+                ]
+            },
+        }
+
+        ordering_config = [
+            {"label": "Date", "value": "date"},
+            {"label": "Name", "value": "name"},
+            {"label": "Kind", "value": "kind"},
+        ]
+
+        return get_role_based_filter_response(request, filters_config, ordering_config)
 
     def perform_destroy(self, instance: Holiday) -> None:
-        # Soft delete
+        """Soft delete the holiday."""
         instance.is_deleted = True
         instance.save(update_fields=["is_deleted"])
 

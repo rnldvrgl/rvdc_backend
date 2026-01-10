@@ -1,5 +1,5 @@
 from django_filters import rest_framework as filters
-from payroll.models import AdditionalEarning, TimeEntry, WeeklyPayroll
+from payroll.models import AdditionalEarning, Holiday, TimeEntry, WeeklyPayroll
 
 
 class TimeEntryFilter(filters.FilterSet):
@@ -105,3 +105,11 @@ class WeeklyPayrollFilter(filters.FilterSet):
   def filter_end_date(self, queryset, name, value):
     # include weeks whose start is before end_date -> week_start < end_date
     return queryset.filter(week_start__lt=value)
+
+class HolidayFilter(filters.FilterSet):
+
+    class Meta:
+        model = Holiday
+        fields = [
+        "kind"
+        ]
