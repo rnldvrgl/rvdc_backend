@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import csv
+import io
 from decimal import Decimal
 from typing import Dict, Optional
 
+from django.db import transaction
 from django_filters.rest_framework import DjangoFilterBackend
 from payroll.api.filters import (
     AdditionalEarningFilter,
@@ -346,37 +349,21 @@ class WeeklyPayrollListCreateView(generics.ListCreateAPIView):
 
         instance.save(
             update_fields=[
-
                 "regular_hours",
-
                 "overtime_hours",
-
                 "night_diff_hours",
-
                 "approved_ot_hours",
-
                 "allowances",
-
                 "gross_pay",
-
                 "night_diff_pay",
-
                 "approved_ot_pay",
-
                 "holiday_pay_regular",
-
                 "holiday_pay_special",
-
                 "holiday_pay_total",
-
                 "deductions",
-
                 "total_deductions",
-
                 "net_pay",
-
                 "updated_at",
-
             ]
         )
 
@@ -405,37 +392,21 @@ class WeeklyPayrollDetailView(generics.RetrieveUpdateDestroyAPIView):
 
         instance.save(
             update_fields=[
-
                 "regular_hours",
-
                 "overtime_hours",
-
                 "night_diff_hours",
-
                 "approved_ot_hours",
-
                 "allowances",
-
                 "gross_pay",
-
                 "night_diff_pay",
-
                 "approved_ot_pay",
-
                 "holiday_pay_regular",
-
                 "holiday_pay_special",
-
                 "holiday_pay_total",
-
                 "deductions",
-
                 "total_deductions",
-
                 "net_pay",
-
                 "updated_at",
-
             ]
         )
 
@@ -572,35 +543,20 @@ class WeeklyPayrollRecomputeView(APIView):
 
         payroll.save(
             update_fields=[
-
                 "regular_hours",
-
                 "overtime_hours",
-
                 "night_diff_hours",
-
                 "approved_ot_hours",
-
                 "allowances",
-
                 "gross_pay",
-
                 "night_diff_pay",
-
                 "approved_ot_pay",
-
                 "holiday_pay_regular",
-
                 "holiday_pay_special",
-
                 "holiday_pay_total",
-
                 "deductions",
-
                 "total_deductions",
-
                 "net_pay",
-
                 "updated_at",
 
             ]
@@ -678,7 +634,7 @@ class HolidayViewSet(viewsets.ModelViewSet):
             "kind": {
                 "options": lambda: [
                     {"label": "Regular Holidays", "value": "regular"},
-                    {"label": "Special Non Working Holidays", "value": "special"},
+                    {"label": "Special Non Working Holidays", "value": "special_non_working"},
                 ]
             },
         }
@@ -690,6 +646,69 @@ class HolidayViewSet(viewsets.ModelViewSet):
         ]
 
         return get_role_based_filter_response(request, filters_config, ordering_config)
+
+    @action(detail=False, methods=["post"], url_path="upload")
+    def upload(self, request):
+        file = request.FILES.get("file")
+        if not file:
+            return Response({"detail": "No file provided (field 'file')."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            decoded = file.read().decode("utf-8")
+        except UnicodeDecodeError:
+            return Response({"detail": "CSV must be UTF-8 encoded."}, status=status.HTTP_400_BAD_REQUEST)
+
+        reader = csv.reader(io.StringIO(decoded))
+        try:
+            header = next(reader)
+        except StopIteration:
+            return Response({"detail": "CSV is empty."}, status=status.HTTP_400_BAD_REQUEST)
+        header_norm = [h.strip().lower() for h in header]
+        if len(header_norm) < 3 or header_norm[0] != "date" or header_norm[1] != "name" or header_norm[2] != "type":
+            return Response({"detail": "Invalid CSV header. Expected: Date, Name, Type"}, status=status.HTTP_400_BAD_REQUEST)
+
+        def normalize_kind(raw: str):
+            s = (raw or "").strip().lower()
+            if "regular holiday" in s:
+                return "regular"
+            if "special non-working holiday" in s:
+                return "special_non_working"
+            return None
+
+        import re
+        def validate_date(date_str: str) -> bool:
+            return bool(re.match(r"^\d{4}-\d{2}-\d{2}$", date_str or ""))
+
+        errors = []
+        imported_count = 0
+        with transaction.atomic():
+            line_no = 1
+            for row in reader:
+                line_no += 1
+                cols = [(c or "").strip() for c in row]
+                if len(cols) < 3:
+                    errors.append({"line": line_no, "message": "Missing columns"})
+                    continue
+                date_str, name, type_raw = cols[0], cols[1], cols[2]
+                if not date_str or not name or not type_raw:
+                    errors.append({"line": line_no, "message": "Empty required field(s)"})
+                    continue
+                if not validate_date(date_str):
+                    errors.append({"line": line_no, "message": "Invalid date format (YYYY-MM-DD)"})
+                    continue
+                kind = normalize_kind(type_raw)
+                if kind not in ("regular", "special_non_working"):
+                    errors.append({"line": line_no, "message": f"Unknown Type '{type_raw}'"})
+                    continue
+
+                payload = {"date": date_str, "name": name, "kind": kind}
+                ser = HolidaySerializer(data=payload)
+                if not ser.is_valid():
+                    errors.append({"line": line_no, "message": ser.errors})
+                    continue
+                ser.save()
+                imported_count += 1
+
+        return Response({"imported_count": imported_count, "skipped_count": len(errors), "errors": errors}, status=status.HTTP_200_OK)
 
     def perform_destroy(self, instance: Holiday) -> None:
         """Soft delete the holiday."""
