@@ -26,35 +26,44 @@ class ScheduleTechnicianSerializer(serializers.ModelSerializer):
 class ScheduleListSerializer(serializers.ModelSerializer):
     """Serializer for listing schedules with nested data"""
     client = ScheduleClientSerializer(read_only=True)
-    technician = ScheduleTechnicianSerializer(read_only=True)
+    technicians = ScheduleTechnicianSerializer(many=True, read_only=True)
     service_type_display = serializers.CharField(source='get_service_type_display', read_only=True)
+    technician_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Schedule
         fields = [
             'id',
             'client',
-            'technician',
+            'technicians',
+            'technician_count',
             'scheduled_datetime',
             'service_type',
             'service_type_display',
             'notes',
             'created_at',
         ]
+
+    def get_technician_count(self, obj):
+        return obj.technicians.count()
 
 
 class ScheduleDetailSerializer(serializers.ModelSerializer):
     """Serializer for schedule details with full nested data"""
     client = ScheduleClientSerializer(read_only=True)
-    technician = ScheduleTechnicianSerializer(read_only=True)
+    technicians = ScheduleTechnicianSerializer(many=True, read_only=True)
     service_type_display = serializers.CharField(source='get_service_type_display', read_only=True)
+    technician_count = serializers.SerializerMethodField()
+    technician_names = serializers.CharField(source='get_technician_names', read_only=True)
 
     class Meta:
         model = Schedule
         fields = [
             'id',
             'client',
-            'technician',
+            'technicians',
+            'technician_count',
+            'technician_names',
             'scheduled_datetime',
             'service_type',
             'service_type_display',
@@ -62,16 +71,25 @@ class ScheduleDetailSerializer(serializers.ModelSerializer):
             'created_at',
         ]
 
+    def get_technician_count(self, obj):
+        return obj.technicians.count()
+
 
 class ScheduleCreateUpdateSerializer(serializers.ModelSerializer):
-    """Serializer for creating and updating schedules"""
+    """Serializer for creating and updating schedules with multiple technicians"""
+    technicians = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=CustomUser.objects.filter(role='technician', is_deleted=False),
+        required=False,
+        allow_empty=True
+    )
 
     class Meta:
         model = Schedule
         fields = [
             'id',
             'client',
-            'technician',
+            'technicians',
             'scheduled_datetime',
             'service_type',
             'notes',
@@ -83,16 +101,18 @@ class ScheduleCreateUpdateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Client not found or has been deleted.")
         return value
 
-    def validate_technician(self, value):
-        """Validate that technician exists and is not deleted"""
-        if value and not CustomUser.objects.filter(
-            id=value.id,
-            is_deleted=False,
-            role='technician'
-        ).exists():
-            raise serializers.ValidationError(
-                "Technician not found, has been deleted, or is not a technician."
-            )
+    def validate_technicians(self, value):
+        """Validate that all technicians exist and are valid"""
+        if value:
+            for technician in value:
+                if not CustomUser.objects.filter(
+                    id=technician.id,
+                    is_deleted=False,
+                    role='technician'
+                ).exists():
+                    raise serializers.ValidationError(
+                        f"Technician {technician.id} not found, has been deleted, or is not a technician."
+                    )
         return value
 
     def validate_scheduled_datetime(self, value):
@@ -108,30 +128,63 @@ class ScheduleCreateUpdateSerializer(serializers.ModelSerializer):
         """Additional validation for schedule conflicts"""
         from datetime import timedelta
 
-
-        technician = data.get('technician')
+        technicians = data.get('technicians', [])
         scheduled_datetime = data.get('scheduled_datetime')
 
-        if technician and scheduled_datetime:
-            # Check for overlapping schedules (within 2 hours)
+        if technicians and scheduled_datetime:
+            # Check for overlapping schedules (within 2 hours) for each technician
             time_buffer = timedelta(hours=2)
             start_time = scheduled_datetime - time_buffer
             end_time = scheduled_datetime + time_buffer
 
-            conflicting_schedules = Schedule.objects.filter(
-                technician=technician,
-                scheduled_datetime__range=(start_time, end_time)
-            )
+            conflicts = []
+            for technician in technicians:
+                conflicting_schedules = Schedule.objects.filter(
+                    technicians=technician,
+                    scheduled_datetime__range=(start_time, end_time)
+                )
 
-            # Exclude current instance when updating
-            if self.instance:
-                conflicting_schedules = conflicting_schedules.exclude(id=self.instance.id)
+                # Exclude current instance when updating
+                if self.instance:
+                    conflicting_schedules = conflicting_schedules.exclude(id=self.instance.id)
 
-            if conflicting_schedules.exists():
+                if conflicting_schedules.exists():
+                    conflicts.append({
+                        'technician': technician.get_full_name(),
+                        'schedules': conflicting_schedules.count()
+                    })
+
+            if conflicts:
+                conflict_messages = [
+                    f"{conflict['technician']} has {conflict['schedules']} conflicting schedule(s)"
+                    for conflict in conflicts
+                ]
                 raise serializers.ValidationError({
-                    'scheduled_datetime':
-                        f"Technician {technician.get_full_name()} has another schedule "
-                        f"within 2 hours of this time."
+                    'technicians': conflict_messages
                 })
 
         return data
+
+    def create(self, validated_data):
+        """Create schedule with multiple technicians"""
+        technicians = validated_data.pop('technicians', [])
+        schedule = Schedule.objects.create(**validated_data)
+        if technicians:
+            schedule.technicians.set(technicians)
+        return schedule
+
+    def update(self, instance, validated_data):
+        """Update schedule with multiple technicians"""
+        technicians = validated_data.pop('technicians', None)
+
+        # Update basic fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # Update technicians if provided
+        if technicians is not None:
+            instance.technicians.set(technicians)
+
+        return instance
+

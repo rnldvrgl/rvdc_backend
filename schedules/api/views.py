@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 
+from django.db.models import Count
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, permissions, status, viewsets
@@ -19,8 +20,9 @@ from utils.filters.role_filters import get_role_based_filter_response
 class ScheduleViewSet(viewsets.ModelViewSet):
     """
     ViewSet for Schedule model with CRUD operations and custom actions
+    Supports multiple technicians per schedule
     """
-    queryset = Schedule.objects.all().select_related('client', 'technician')
+    queryset = Schedule.objects.all().prefetch_related('technicians', 'client')
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [
         DjangoFilterBackend,
@@ -30,8 +32,8 @@ class ScheduleViewSet(viewsets.ModelViewSet):
     filterset_class = ScheduleFilter
     search_fields = [
         'client__full_name',
-        'technician__first_name',
-        'technician__last_name',
+        'technicians__first_name',
+        'technicians__last_name',
         'service_type',
         'notes',
     ]
@@ -57,11 +59,14 @@ class ScheduleViewSet(viewsets.ModelViewSet):
 
         # Role-based filtering
         if user.role == 'technician':
-            # Technicians can only see their own schedules
-            queryset = queryset.filter(technician=user)
+            # Technicians can only see schedules where they are assigned
+            queryset = queryset.filter(technicians=user)
         elif user.role in ['manager', 'clerk']:
             # Managers and clerks see all schedules (could be filtered by stall if needed)
             pass
+
+        # Apply distinct to avoid duplicates from ManyToMany joins
+        queryset = queryset.distinct()
 
         # Filter by date range if provided
         start_date = self.request.query_params.get('start_date')
@@ -98,7 +103,7 @@ class ScheduleViewSet(viewsets.ModelViewSet):
                     }
                     for schedule in Schedule.objects.select_related('client')
                     .distinct('client')
-                    .order_by('client__full_name')
+                    .order_by('client__full_name')[:100]
                 ],
             },
             'technician': {
@@ -158,7 +163,7 @@ class ScheduleViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='by-technician/(?P<technician_id>[0-9]+)')
     def by_technician(self, request, technician_id=None):
         """Get schedules for a specific technician"""
-        queryset = self.get_queryset().filter(technician_id=technician_id)
+        queryset = self.get_queryset().filter(technicians__id=technician_id)
 
         # Apply date filters if provided
         start_date = request.query_params.get('start_date')
@@ -197,6 +202,21 @@ class ScheduleViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
+    @action(detail=False, methods=['get'], url_path='unassigned')
+    def unassigned(self, request):
+        """Get schedules without any technicians assigned"""
+        queryset = self.get_queryset().annotate(
+            tech_count=Count('technicians')
+        ).filter(tech_count=0)
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
     @action(detail=False, methods=['get'], url_path='calendar')
     def calendar_view(self, request):
         """Get schedules formatted for calendar display"""
@@ -220,7 +240,13 @@ class ScheduleViewSet(viewsets.ModelViewSet):
         # Format for calendar
         events = []
         for schedule in queryset:
-            technician_name = schedule.technician.get_full_name() if schedule.technician else None
+            # Get all technician names
+            technician_names = [tech.get_full_name() for tech in schedule.technicians.all()]
+            technician_ids = [tech.id for tech in schedule.technicians.all()]
+
+            # Create title with technicians
+            tech_display = ", ".join(technician_names) if technician_names else "Unassigned"
+
             events.append({
                 'id': f'schedule-{schedule.id}',
                 'title': f'{schedule.get_service_type_display()} - {schedule.client.full_name}',
@@ -232,8 +258,10 @@ class ScheduleViewSet(viewsets.ModelViewSet):
                     'service_type': schedule.service_type,
                     'client_name': schedule.client.full_name,
                     'client_id': schedule.client.id,
-                    'technician_name': technician_name,
-                    'technician_id': schedule.technician.id if schedule.technician else None,
+                    'technician_names': technician_names,
+                    'technician_ids': technician_ids,
+                    'technician_display': tech_display,
+                    'technician_count': len(technician_names),
                     'notes': schedule.notes,
                 }
             })
@@ -242,55 +270,66 @@ class ScheduleViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='conflicts')
     def check_conflicts(self, request):
-        """Check for scheduling conflicts for a technician at a specific time"""
-        technician_id = request.query_params.get('technician_id')
+        """Check for scheduling conflicts for technicians at a specific time"""
+        technician_ids = request.query_params.get('technician_ids')
         scheduled_datetime = request.query_params.get('scheduled_datetime')
         exclude_id = request.query_params.get('exclude_id')  # For updates
 
-        if not technician_id or not scheduled_datetime:
+        if not technician_ids or not scheduled_datetime:
             return Response(
-                {'error': 'technician_id and scheduled_datetime are required'},
+                {'error': 'technician_ids (comma-separated) and scheduled_datetime are required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
         try:
+            # Parse technician IDs
+            tech_ids = [int(tid.strip()) for tid in technician_ids.split(',')]
             scheduled_dt = datetime.fromisoformat(scheduled_datetime.replace('Z', '+00:00'))
         except (ValueError, AttributeError):
             return Response(
-                {'error': 'Invalid datetime format'},
+                {'error': 'Invalid format for technician_ids or scheduled_datetime'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Check for overlapping schedules (within 2 hours)
+        # Check for overlapping schedules (within 2 hours) for each technician
         time_buffer = timedelta(hours=2)
         start_time = scheduled_dt - time_buffer
         end_time = scheduled_dt + time_buffer
 
-        conflicting_schedules = Schedule.objects.filter(
-            technician_id=technician_id,
-            scheduled_datetime__range=(start_time, end_time)
-        ).select_related('client')
+        all_conflicts = {}
 
-        # Exclude current schedule when updating
-        if exclude_id:
-            conflicting_schedules = conflicting_schedules.exclude(id=exclude_id)
+        for tech_id in tech_ids:
+            conflicting_schedules = Schedule.objects.filter(
+                technicians__id=tech_id,
+                scheduled_datetime__range=(start_time, end_time)
+            ).select_related('client').distinct()
 
-        if conflicting_schedules.exists():
-            conflicts = [
-                {
-                    'id': schedule.id,
-                    'client_name': schedule.client.full_name,
-                    'scheduled_datetime': schedule.scheduled_datetime.isoformat(),
-                    'service_type': schedule.service_type,
+            # Exclude current schedule when updating
+            if exclude_id:
+                conflicting_schedules = conflicting_schedules.exclude(id=exclude_id)
+
+            if conflicting_schedules.exists():
+                technician = CustomUser.objects.get(id=tech_id)
+                all_conflicts[tech_id] = {
+                    'technician_name': technician.get_full_name(),
+                    'conflicts': [
+                        {
+                            'id': schedule.id,
+                            'client_name': schedule.client.full_name,
+                            'scheduled_datetime': schedule.scheduled_datetime.isoformat(),
+                            'service_type': schedule.service_type,
+                        }
+                        for schedule in conflicting_schedules
+                    ]
                 }
-                for schedule in conflicting_schedules
-            ]
-            return Response({
-                'has_conflicts': True,
-                'conflicts': conflicts
-            })
 
-        return Response({'has_conflicts': False, 'conflicts': []})
+        has_conflicts = len(all_conflicts) > 0
+
+        return Response({
+            'has_conflicts': has_conflicts,
+            'conflicts_by_technician': all_conflicts,
+            'total_conflicts': sum(len(c['conflicts']) for c in all_conflicts.values())
+        })
 
     @action(detail=False, methods=['get'], url_path='statistics')
     def statistics(self, request):
@@ -321,12 +360,18 @@ class ScheduleViewSet(viewsets.ModelViewSet):
 
         # Count by technician
         technician_counts = {}
-        for schedule in queryset:
-            if schedule.technician:
-                tech_name = schedule.technician.get_full_name()
+        technician_schedules = queryset.prefetch_related('technicians')
+        for schedule in technician_schedules:
+            for tech in schedule.technicians.all():
+                tech_name = tech.get_full_name()
                 if tech_name not in technician_counts:
                     technician_counts[tech_name] = 0
                 technician_counts[tech_name] += 1
+
+        # Count unassigned schedules
+        unassigned_count = queryset.annotate(
+            tech_count=Count('technicians')
+        ).filter(tech_count=0).count()
 
         # Count upcoming vs past
         now = timezone.now()
@@ -337,9 +382,73 @@ class ScheduleViewSet(viewsets.ModelViewSet):
             'total': queryset.count(),
             'by_service_type': service_counts,
             'by_technician': technician_counts,
+            'unassigned': unassigned_count,
             'upcoming': upcoming_count,
             'past': past_count,
         })
+
+    @action(detail=True, methods=['post'], url_path='add-technician')
+    def add_technician(self, request, pk=None):
+        """Add a technician to an existing schedule"""
+        schedule = self.get_object()
+        technician_id = request.data.get('technician_id')
+
+        if not technician_id:
+            return Response(
+                {'error': 'technician_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            technician = CustomUser.objects.get(
+                id=technician_id,
+                role='technician',
+                is_deleted=False
+            )
+        except CustomUser.DoesNotExist:
+            return Response(
+                {'error': 'Technician not found or invalid'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Check if already assigned
+        if schedule.technicians.filter(id=technician_id).exists():
+            return Response(
+                {'error': 'Technician already assigned to this schedule'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Add technician
+        schedule.technicians.add(technician)
+
+        serializer = self.get_serializer(schedule)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='remove-technician')
+    def remove_technician(self, request, pk=None):
+        """Remove a technician from a schedule"""
+        schedule = self.get_object()
+        technician_id = request.data.get('technician_id')
+
+        if not technician_id:
+            return Response(
+                {'error': 'technician_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            technician = CustomUser.objects.get(id=technician_id)
+        except CustomUser.DoesNotExist:
+            return Response(
+                {'error': 'Technician not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Remove technician
+        schedule.technicians.remove(technician)
+
+        serializer = self.get_serializer(schedule)
+        return Response(serializer.data)
 
     def perform_create(self, serializer):
         """Override to add custom logic when creating a schedule"""
@@ -352,3 +461,4 @@ class ScheduleViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         """Override to use soft delete if needed, or just delete"""
         instance.delete()
+

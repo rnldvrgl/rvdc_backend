@@ -318,12 +318,13 @@ class UnpaidSalesStatusView(APIView):
 class CalendarEventsView(APIView):
     """
     API endpoint for fetching calendar events (birthdays, holidays, schedules)
+    Supports multiple technicians per schedule
 
     Query Parameters:
         - start: Start date (ISO format)
         - end: End date (ISO format)
         - event_types: Comma-separated list of event types (birthday, holiday, schedule)
-        - technician_id: Filter schedules by technician
+        - technician_ids: Comma-separated list of technician IDs
         - service_type: Filter schedules by service type
     """
 
@@ -355,7 +356,7 @@ class CalendarEventsView(APIView):
         include_schedules = not event_types or "schedule" in event_types
 
         # Additional filters
-        technician_id = request.query_params.get("technician_id")
+        technician_ids_param = request.query_params.get("technician_ids")
         service_type = request.query_params.get("service_type")
 
         events = []
@@ -411,57 +412,59 @@ class CalendarEventsView(APIView):
                     }
                 })
 
-        # Fetch schedules
+        # Fetch schedules with multiple technicians
         if include_schedules:
             schedules_query = Schedule.objects.filter(
                 scheduled_datetime__date__gte=start_date,
                 scheduled_datetime__date__lte=end_date
-            )
+            ).prefetch_related('technicians', 'client')
 
             # Apply additional filters
-            if technician_id:
-                schedules_query = schedules_query.filter(technician_id=technician_id)
+            if technician_ids_param:
+                try:
+                    tech_ids = [int(tid.strip()) for tid in technician_ids_param.split(',')]
+                    schedules_query = schedules_query.filter(technicians__id__in=tech_ids).distinct()
+                except ValueError:
+                    pass
 
             if service_type:
                 schedules_query = schedules_query.filter(service_type=service_type)
 
-            schedules = schedules_query.select_related('client', 'technician').values(
-                'id',
-                'scheduled_datetime',
-                'service_type',
-                'notes',
-                'client__full_name',
-                'client__id',
-                'technician__first_name',
-                'technician__last_name',
-                'technician__id'
-            )
-
-            for schedule in schedules:
-                technician_name = None
-                if schedule['technician__first_name'] and schedule['technician__last_name']:
-                    technician_name = f"{schedule['technician__first_name']} {schedule['technician__last_name']}"
+            for schedule in schedules_query:
+                # Get all technician information
+                technicians = schedule.technicians.all()
+                technician_names = [tech.get_full_name() for tech in technicians]
+                technician_ids = [tech.id for tech in technicians]
 
                 # Get display name for service type
                 service_type_dict = dict(Schedule.SERVICE_TYPES)
-                service_display = service_type_dict.get(schedule['service_type'], schedule['service_type'])
+                service_display = service_type_dict.get(schedule.service_type, schedule.service_type)
+
+                # Create title
+                tech_display = ", ".join(technician_names) if technician_names else "Unassigned"
+                title = f"{service_display} - {schedule.client.full_name}"
+                if technician_names:
+                    title += f" ({tech_display})"
 
                 events.append({
-                    'id': f"schedule-{schedule['id']}",
-                    'title': f"{service_display} - {schedule['client__full_name']}",
-                    'start': schedule['scheduled_datetime'].isoformat(),
+                    'id': f"schedule-{schedule.id}",
+                    'title': title,
+                    'start': schedule.scheduled_datetime.isoformat(),
                     'allDay': False,
                     'extendedProps': {
                         'type': 'schedule',
-                        'schedule_id': schedule['id'],
-                        'service_type': schedule['service_type'],
+                        'schedule_id': schedule.id,
+                        'service_type': schedule.service_type,
                         'service_type_display': service_display,
-                        'client_name': schedule['client__full_name'],
-                        'client_id': schedule['client__id'],
-                        'technician_name': technician_name,
-                        'technician_id': schedule['technician__id'],
-                        'notes': schedule['notes'],
+                        'client_name': schedule.client.full_name,
+                        'client_id': schedule.client.id,
+                        'technician_names': technician_names,
+                        'technician_ids': technician_ids,
+                        'technician_display': tech_display,
+                        'technician_count': len(technician_names),
+                        'notes': schedule.notes,
                     }
                 })
 
         return Response(events)
+

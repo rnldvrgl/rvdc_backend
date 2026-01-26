@@ -19,9 +19,10 @@ class ScheduleFilter(filters.FilterSet):
     client = filters.NumberFilter(field_name='client__id')
     client_name = filters.CharFilter(field_name='client__full_name', lookup_expr='icontains')
 
-    # Technician filter
-    technician = filters.NumberFilter(field_name='technician__id')
-    technician_name = filters.CharFilter(field_name='technician__first_name', lookup_expr='icontains')
+    # Technician filters (updated for ManyToMany)
+    technician = filters.NumberFilter(field_name='technicians__id')
+    technician_name = filters.CharFilter(field_name='technicians__first_name', lookup_expr='icontains')
+    has_technicians = filters.BooleanFilter(method='filter_has_technicians')
 
     # Month and year filters for calendar views
     month = filters.NumberFilter(method='filter_by_month')
@@ -59,3 +60,11 @@ class ScheduleFilter(filters.FilterSet):
         if value:
             return queryset.filter(scheduled_datetime__year=value)
         return queryset
+
+    def filter_has_technicians(self, queryset, name, value):
+        """Filter schedules that have or don't have technicians assigned"""
+        if value:
+            return queryset.filter(technicians__isnull=False).distinct()
+        else:
+            return queryset.filter(technicians__isnull=True).distinct()
+
