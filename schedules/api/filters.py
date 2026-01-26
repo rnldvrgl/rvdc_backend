@@ -67,3 +67,4 @@ class ScheduleFilter(filters.FilterSet):
             return queryset.filter(technicians__isnull=False).distinct()
         else:
             return queryset.filter(technicians__isnull=True).distinct()
+

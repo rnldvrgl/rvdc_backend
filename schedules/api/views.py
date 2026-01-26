@@ -461,3 +461,4 @@ class ScheduleViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         """Override to use soft delete if needed, or just delete"""
         instance.delete()
+

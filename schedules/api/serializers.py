@@ -187,3 +187,4 @@ class ScheduleCreateUpdateSerializer(serializers.ModelSerializer):
             instance.technicians.set(technicians)
 
         return instance
+

@@ -467,3 +467,4 @@ class CalendarEventsView(APIView):
                 })
 
         return Response(events)
+
