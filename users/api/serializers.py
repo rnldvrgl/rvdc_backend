@@ -4,7 +4,7 @@ from inventory.api.serializers import StallSerializer
 from drf_extra_fields.fields import Base64ImageField
 
 
-class TechnicianSerializer(serializers.ModelSerializer):
+class EmployeesSerializer(serializers.ModelSerializer):
     profile_image = Base64ImageField(required=False, allow_null=True)
 
     class Meta:

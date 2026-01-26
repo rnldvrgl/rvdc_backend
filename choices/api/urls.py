@@ -4,7 +4,7 @@ from choices.api.views import (
     StallChoicesAPIView,
     ProductCategoryChoicesAPIView,
     ClientChoicesAPIView,
-    TechnicianChoicesAPIView,
+    EmployeesChoicesAPIView,
     UsersChoicesAPIView,
     BanksChoicesAPIView,
     AirconTypesChoicesAPIView,
@@ -20,7 +20,7 @@ urlpatterns = [
     path("items/", ItemChoicesAPIView.as_view(), name="item_choices"),
     path("stalls/", StallChoicesAPIView.as_view(), name="stall_choices"),
     path("clients/", ClientChoicesAPIView.as_view(), name="client_choices"),
-    path("technicians/", TechnicianChoicesAPIView.as_view(), name="technician_choices"),
+    path("employees/", EmployeesChoicesAPIView.as_view(), name="employee_choices"),
     path("users/", UsersChoicesAPIView.as_view(), name="users_choices"),
     path("banks/", BanksChoicesAPIView.as_view(), name="banks_choices"),
     path(
