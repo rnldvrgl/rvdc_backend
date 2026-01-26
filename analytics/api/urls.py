@@ -1,12 +1,14 @@
 from django.urls import path
+
 from .views import (
-    SalesOverTimeView,
-    ExpensesOverTimeView,
-    TopSellingItemsView,
+    CalendarEventsView,
     CashFlowView,
-    TopClientsView,
-    UnpaidSalesStatusView,
+    ExpensesOverTimeView,
+    SalesOverTimeView,
     SummaryStatsView,
+    TopClientsView,
+    TopSellingItemsView,
+    UnpaidSalesStatusView,
 )
 
 urlpatterns = [
@@ -31,4 +33,5 @@ urlpatterns = [
         UnpaidSalesStatusView.as_view(),
         name="unpaid-sales-status",
     ),
+    path("calendar/events/", CalendarEventsView.as_view(), name="calendar-events"),
 ]
