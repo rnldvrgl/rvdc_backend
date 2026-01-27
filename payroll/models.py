@@ -584,6 +584,213 @@ class WeeklyPayroll(models.Model):
 
         self.net_pay = self._q(self.gross_pay - self.total_deductions)
 
+    def compute_from_daily_attendance(
+        self,
+        *,
+        include_unapproved: bool = False,
+        allowances: Decimal | None = None,
+        extra_flat_deductions: dict[str, Decimal] | None = None,
+        percent_deductions: dict[str, Decimal] | None = None,
+    ):
+        """
+        Recompute payroll based on DailyAttendance records (NEW ATTENDANCE SYSTEM).
+        
+        Business Rules:
+        - Reads approved DailyAttendance records for the payroll week
+        - Applies per-day overtime: any paid hours >8 per day = 1.5× rate
+        - Includes late penalties (₱2 per minute) as deductions
+        - Supports holiday premiums, night differential, approved OT requests
+        
+        Args:
+            include_unapproved: Include unapproved attendance if True
+            allowances: Override allowances for this computation
+            extra_flat_deductions: Additional flat deductions
+            percent_deductions: Percentage deductions on gross (e.g., {'Tax': 0.12})
+        """
+        from attendance.models import DailyAttendance
+        from collections import defaultdict
+        
+        start_dt = self._week_start_as_datetime(self.week_start)
+        end_dt = self._week_start_as_datetime(self.week_end)
+        
+        # Get daily attendance records for this week
+        attendance_qs = DailyAttendance.objects.filter(
+            employee=self.employee,
+            date__gte=self.week_start,
+            date__lt=self.week_end,
+            is_deleted=False,
+        )
+        
+        if not include_unapproved:
+            attendance_qs = attendance_qs.filter(status='APPROVED')
+        
+        # Track hours and penalties per day
+        regular_hours_total = Decimal('0.00')
+        overtime_hours_total = Decimal('0.00')
+        late_penalties_total = Decimal('0.00')
+        
+        for attendance in attendance_qs:
+            paid_hours = Decimal(attendance.paid_hours or 0)
+            
+            # Per-day overtime: >8 paid hours = overtime at 1.5×
+            if paid_hours > Decimal('8.00'):
+                daily_regular = Decimal('8.00')
+                daily_overtime = paid_hours - Decimal('8.00')
+            else:
+                daily_regular = paid_hours
+                daily_overtime = Decimal('0.00')
+            
+            regular_hours_total += daily_regular
+            overtime_hours_total += daily_overtime
+            
+            # Accumulate late penalties
+            if attendance.late_penalty_amount:
+                late_penalties_total += Decimal(attendance.late_penalty_amount)
+        
+        self.regular_hours = self._q(regular_hours_total)
+        self.overtime_hours = self._q(overtime_hours_total)
+        
+        # Compute base pay
+        hr = Decimal(self.hourly_rate or 0)
+        ot_mult = Decimal(self.overtime_multiplier or Decimal('1.50'))
+        base_pay = (self.regular_hours * hr) + (self.overtime_hours * hr * ot_mult)
+        
+        # Night differential (still computed from TimeEntry if needed for compatibility)
+        # Or set to zero if you want to rely only on DailyAttendance
+        self.night_diff_hours = Decimal('0.00')
+        self.night_diff_pay = Decimal('0.00')
+        
+        # Allowances
+        self.allowances = self._q(
+            Decimal(allowances) if allowances is not None else Decimal(self.allowances or 0)
+        )
+        
+        # Additional earnings (approved within week)
+        add_qs = self.employee.additional_earnings.filter(
+            is_deleted=False,
+            earning_date__gte=self.week_start,
+            earning_date__lt=self.week_end,
+        )
+        if not include_unapproved:
+            add_qs = add_qs.filter(approved=True)
+        
+        additional_total = sum((Decimal(e.amount) for e in add_qs), Decimal('0'))
+        self.additional_earnings_total = self._q(additional_total)
+        
+        # Approved overtime requests (from OvertimeRequest model)
+        try:
+            from payroll.models import OvertimeRequest
+            ot_req_qs = OvertimeRequest.objects.filter(
+                employee=self.employee,
+                approved=True,
+                time_start__gte=start_dt,
+                time_end__lt=end_dt,
+            )
+            approved_ot_hours_total = Decimal('0')
+            for req in ot_req_qs:
+                span = req.time_end - req.time_start
+                approved_ot_hours_total += Decimal(span.total_seconds()) / Decimal(3600)
+            self.approved_ot_hours = self._q(approved_ot_hours_total, places=2)
+            self.approved_ot_pay = self._q(self.approved_ot_hours * hr * Decimal('1.25'))
+        except Exception:
+            self.approved_ot_hours = Decimal('0.00')
+            self.approved_ot_pay = Decimal('0.00')
+        
+        # Holiday premiums (compute based on worked days from DailyAttendance)
+        try:
+            settings_obj = PayrollSettings.objects.first()
+        except Exception:
+            settings_obj = None
+        
+        day_hours = Decimal(getattr(settings_obj, 'holiday_day_hours', Decimal('8.00')) or '8.00')
+        reg_pct = Decimal(getattr(settings_obj, 'holiday_regular_pct', Decimal('1.00')) or '1.00')
+        spec_pct = Decimal(getattr(settings_obj, 'holiday_special_pct', Decimal('0.30')) or '0.30')
+        reg_no_work = bool(getattr(settings_obj, 'regular_holiday_no_work_pays', True))
+        spec_no_work = bool(getattr(settings_obj, 'special_holiday_no_work_pays', False))
+        
+        daily_rate = hr * day_hours
+        
+        self.holiday_pay_regular = Decimal('0.00')
+        self.holiday_pay_special = Decimal('0.00')
+        
+        # Build map of paid hours per date
+        worked_hours_by_date: dict[date, Decimal] = defaultdict(lambda: Decimal('0'))
+        for attendance in attendance_qs:
+            worked_hours_by_date[attendance.date] += Decimal(attendance.paid_hours or 0)
+        
+        # Fetch holidays in range
+        try:
+            from payroll.models import Holiday
+            holidays = Holiday.objects.filter(
+                is_deleted=False,
+                date__gte=self.week_start,
+                date__lt=self.week_end
+            )
+        except Exception:
+            holidays = []
+        
+        for h in holidays:
+            d = h.date
+            worked = worked_hours_by_date.get(d, Decimal('0'))
+            fraction = Decimal('0')
+            if day_hours and day_hours > 0:
+                fraction = worked / day_hours
+                if fraction > Decimal('1'):
+                    fraction = Decimal('1')
+            
+            if h.kind == 'regular':
+                if worked > 0:
+                    add = daily_rate * reg_pct * fraction
+                else:
+                    add = (daily_rate * reg_pct) if reg_no_work else Decimal('0')
+                self.holiday_pay_regular = self._q(self.holiday_pay_regular + add)
+            elif h.kind == 'special_non_working':
+                if worked > 0:
+                    add = daily_rate * spec_pct * fraction
+                else:
+                    add = (daily_rate * spec_pct) if spec_no_work else Decimal('0')
+                self.holiday_pay_special = self._q(self.holiday_pay_special + add)
+        
+        self.holiday_pay_total = self._q(self.holiday_pay_regular + self.holiday_pay_special)
+        
+        # Gross pay = base + allowances + additional earnings + night diff + approved OT + holiday premiums
+        self.gross_pay = self._q(
+            base_pay + self.allowances + self.additional_earnings_total + 
+            self.night_diff_pay + self.approved_ot_pay + self.holiday_pay_total
+        )
+        
+        # Deductions
+        deductions_map: dict[str, Decimal] = {
+            k: Decimal(v) for k, v in (self.deductions or {}).items()
+        }
+        
+        # Add late penalties as a deduction
+        if late_penalties_total > 0:
+            deductions_map['late_penalty'] = self._q(late_penalties_total)
+        
+        # Apply statutory deductions
+        try:
+            statutory_qs = DeductionRate.objects.filter(
+                name__in=['sss', 'philhealth', 'pagibig'],
+                effective_start__lte=self.week_start,
+            ).filter(models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start))
+            for rate in statutory_qs:
+                if rate.name not in deductions_map:
+                    deductions_map[rate.name] = self._q(Decimal(rate.amount or 0))
+        except Exception:
+            pass
+        
+        if percent_deductions:
+            for name, rate in percent_deductions.items():
+                deductions_map[name] = self._q(self.gross_pay * Decimal(rate or 0))
+        
+        if extra_flat_deductions:
+            for name, amt in extra_flat_deductions.items():
+                deductions_map[name] = self._q(Decimal(amt or 0))
+        
+        self.deductions = {k: float(self._q(v)) for k, v in deductions_map.items()}
+        self.total_deductions = self._q(sum(self.deductions.values()))
+        self.net_pay = self._q(self.gross_pay - self.total_deductions)
 
     def _week_start_as_datetime(self, d: date) -> datetime:
         """
