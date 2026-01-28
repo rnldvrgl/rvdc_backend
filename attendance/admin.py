@@ -1,5 +1,6 @@
 from django.contrib import admin
 from django.utils.html import format_html
+from django.utils import timezone
 from .models import DailyAttendance, LeaveBalance, LeaveRequest
 
 
@@ -13,6 +14,9 @@ class DailyAttendanceAdmin(admin.ModelAdmin):
         'clock_out_display',
         'paid_hours',
         'late_penalty_display',
+        'uniform_penalty_display',
+        'auto_close_warning_display',
+        'awol_flag_display',
         'status',
         'approved_by',
     ]
@@ -20,6 +24,11 @@ class DailyAttendanceAdmin(admin.ModelAdmin):
         'status',
         'attendance_type',
         'is_late',
+        'auto_closed',
+        'is_awol',
+        'missing_uniform_shirt',
+        'missing_uniform_pants',
+        'missing_uniform_shoes',
         'date',
     ]
     search_fields = [
@@ -35,6 +44,8 @@ class DailyAttendanceAdmin(admin.ModelAdmin):
         'is_late',
         'late_minutes',
         'late_penalty_amount',
+        'uniform_penalty_amount',
+        'consecutive_absences',
         'approved_at',
         'created_at',
         'updated_at',
@@ -44,7 +55,7 @@ class DailyAttendanceAdmin(admin.ModelAdmin):
             'fields': ('employee', 'date')
         }),
         ('Clock Times', {
-            'fields': ('clock_in', 'clock_out')
+            'fields': ('clock_in', 'clock_out', 'auto_closed')
         }),
         ('Computed Metrics', {
             'fields': (
@@ -60,6 +71,27 @@ class DailyAttendanceAdmin(admin.ModelAdmin):
                 'late_minutes',
                 'late_penalty_amount',
             )
+        }),
+        ('Uniform Penalties', {
+            'fields': (
+                'missing_uniform_shirt',
+                'missing_uniform_pants',
+                'missing_uniform_shoes',
+                'uniform_penalty_amount',
+            ),
+            'description': 'Mark missing uniform items. Each item incurs a ₱50 penalty.',
+        }),
+        ('Absence & AWOL Tracking', {
+            'fields': (
+                'consecutive_absences',
+                'is_awol',
+            )
+        }),
+        ('Auto-Close Warnings', {
+            'fields': (
+                'auto_close_warning_count',
+            ),
+            'description': 'Cumulative count of auto-close warnings for this employee.',
         }),
         ('Approval', {
             'fields': (
@@ -77,13 +109,44 @@ class DailyAttendanceAdmin(admin.ModelAdmin):
     
     def clock_in_display(self, obj):
         if obj.clock_in:
-            return obj.clock_in.strftime('%I:%M %p')
+            # Check if USE_TZ is enabled in settings
+            try:
+                from django.conf import settings
+                if settings.USE_TZ:
+                    # Convert UTC to local timezone
+                    local_tz = timezone.get_current_timezone()
+                    local_time = obj.clock_in.astimezone(local_tz)
+                    return local_time.strftime('%I:%M %p')
+                else:
+                    # Already in local timezone
+                    return obj.clock_in.strftime('%I:%M %p')
+            except:
+                return obj.clock_in.strftime('%I:%M %p')
         return '-'
     clock_in_display.short_description = 'Clock In'
     
     def clock_out_display(self, obj):
         if obj.clock_out:
-            return obj.clock_out.strftime('%I:%M %p')
+            # Check if USE_TZ is enabled in settings
+            try:
+                from django.conf import settings
+                if settings.USE_TZ:
+                    # Convert UTC to local timezone
+                    local_tz = timezone.get_current_timezone()
+                    local_time = obj.clock_out.astimezone(local_tz)
+                    display = local_time.strftime('%I:%M %p')
+                else:
+                    # Already in local timezone
+                    display = obj.clock_out.strftime('%I:%M %p')
+            except:
+                display = obj.clock_out.strftime('%I:%M %p')
+            
+            if obj.auto_closed:
+                return format_html(
+                    '<span style="color: orange;" title="Auto-closed">{} ⚠</span>',
+                    display
+                )
+            return display
         return '-'
     clock_out_display.short_description = 'Clock Out'
     
@@ -96,7 +159,52 @@ class DailyAttendanceAdmin(admin.ModelAdmin):
         return '-'
     late_penalty_display.short_description = 'Late Penalty'
     
-    actions = ['approve_attendance', 'reject_attendance']
+    def uniform_penalty_display(self, obj):
+        if obj.uniform_penalty_amount > 0:
+            items = []
+            if obj.missing_uniform_shirt:
+                items.append('Shirt')
+            if obj.missing_uniform_pants:
+                items.append('Pants')
+            if obj.missing_uniform_shoes:
+                items.append('Shoes')
+            
+            items_str = ', '.join(items) if items else 'Unknown'
+            
+            return format_html(
+                '<span style="color: red;" title="Missing: {}">-₱{}</span>',
+                items_str,
+                obj.uniform_penalty_amount
+            )
+        return '-'
+    uniform_penalty_display.short_description = 'Uniform Penalty'
+    
+    def auto_close_warning_display(self, obj):
+        if obj.auto_close_warning_count > 0:
+            color = 'orange' if obj.auto_close_warning_count < 3 else 'red'
+            return format_html(
+                '<span style="color: {}; font-weight: bold;">{} warning(s)</span>',
+                color,
+                obj.auto_close_warning_count
+            )
+        return '-'
+    auto_close_warning_display.short_description = 'Auto-Close Warnings'
+    
+    def awol_flag_display(self, obj):
+        if obj.is_awol:
+            return format_html(
+                '<span style="color: red; font-weight: bold;" title="{} consecutive absences">AWOL ⚠</span>',
+                obj.consecutive_absences
+            )
+        return '-'
+    awol_flag_display.short_description = 'AWOL Status'
+    
+    actions = [
+        'approve_attendance',
+        'reject_attendance',
+        'reset_auto_close_warnings',
+        'clear_awol_flag',
+    ]
     
     def approve_attendance(self, request, queryset):
         count = 0
@@ -117,6 +225,27 @@ class DailyAttendanceAdmin(admin.ModelAdmin):
         
         self.message_user(request, f'{count} attendance record(s) rejected.')
     reject_attendance.short_description = 'Reject selected attendance'
+    
+    def reset_auto_close_warnings(self, request, queryset):
+        """Reset auto-close warning count to zero for selected records."""
+        count = queryset.update(auto_close_warning_count=0)
+        self.message_user(
+            request,
+            f'Reset auto-close warnings for {count} attendance record(s).'
+        )
+    reset_auto_close_warnings.short_description = 'Reset auto-close warning count'
+    
+    def clear_awol_flag(self, request, queryset):
+        """Clear AWOL flag and reset consecutive absences."""
+        count = queryset.filter(is_awol=True).update(
+            is_awol=False,
+            consecutive_absences=0
+        )
+        self.message_user(
+            request,
+            f'Cleared AWOL flag for {count} attendance record(s).'
+        )
+    clear_awol_flag.short_description = 'Clear AWOL flag'
 
 
 @admin.register(LeaveBalance)

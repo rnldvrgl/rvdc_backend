@@ -261,6 +261,38 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
     
+    @action(detail=True, methods=['patch'], permission_classes=[IsAdminOrManager])
+    def update_uniform_penalties(self, request, pk=None):
+        """
+        Update uniform penalty flags for an attendance record.
+        
+        Required fields (all boolean):
+        - missing_uniform_shirt
+        - missing_uniform_pants
+        - missing_uniform_shoes
+        """
+        attendance = self.get_object()
+        
+        # Only update uniform penalties for PENDING or APPROVED records
+        if attendance.status not in ['PENDING', 'APPROVED']:
+            return Response(
+                {'detail': 'Can only update uniform penalties for pending or approved attendance.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Update uniform flags
+        attendance.missing_uniform_shirt = request.data.get('missing_uniform_shirt', False)
+        attendance.missing_uniform_pants = request.data.get('missing_uniform_pants', False)
+        attendance.missing_uniform_shoes = request.data.get('missing_uniform_shoes', False)
+        
+        # Save will automatically recalculate uniform_penalty_amount
+        attendance.save()
+        
+        return Response(
+            DailyAttendanceSerializer(attendance).data,
+            status=status.HTTP_200_OK
+        )
+    
     @action(detail=False, methods=["get"])
     def pending_approvals(self, request):
         """Get all pending attendance records (admin/manager only)."""

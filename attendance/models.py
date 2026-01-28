@@ -99,10 +99,38 @@ class DailyAttendance(models.Model):
         default=0,
         help_text='Counts consecutive absences without approved leave for AWOL monitoring',
     )
+    is_awol = models.BooleanField(
+        default=False,
+        help_text='True if employee has 3+ consecutive absences (AWOL flag)',
+    )
     
     auto_closed = models.BooleanField(
         default=False,
         help_text="True if the attendance was auto-closed due to missing clock_out",
+    )
+    auto_close_warning_count = models.PositiveIntegerField(
+        default=0,
+        help_text="Cumulative count of auto-close warnings (for repeated violations)",
+    )
+    
+    # Uniform penalties (₱50 each)
+    missing_uniform_shirt = models.BooleanField(
+        default=False,
+        help_text="Missing or incomplete shirt/uniform top",
+    )
+    missing_uniform_pants = models.BooleanField(
+        default=False,
+        help_text="Missing or incomplete pants/uniform bottom",
+    )
+    missing_uniform_shoes = models.BooleanField(
+        default=False,
+        help_text="Missing or incomplete shoes/footwear",
+    )
+    uniform_penalty_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        help_text='Total uniform penalty: ₱50 per missing item',
     )
     
     # Approval workflow
@@ -163,7 +191,7 @@ class DailyAttendance(models.Model):
     def mark_absent(self):
         """
         Marks the attendance as ABSENT if no approved leave and no clock in/out.
-        Also updates consecutive absences.
+        Also updates consecutive absences and AWOL status.
         """
         # Check for approved leave
         leave_exists = LeaveRequest.objects.filter(
@@ -175,6 +203,7 @@ class DailyAttendance(models.Model):
         if leave_exists:
             self.attendance_type = 'LEAVE'
             self.consecutive_absences = 0
+            self.is_awol = False
         else:
             self.attendance_type = 'ABSENT'
             # Get previous day's attendance
@@ -187,6 +216,10 @@ class DailyAttendance(models.Model):
                 self.consecutive_absences = prev_attendance.consecutive_absences + 1
             else:
                 self.consecutive_absences = 1
+            
+            # Flag AWOL after 3 consecutive absences
+            if self.consecutive_absences >= 3:
+                self.is_awol = True
         
         self.total_hours = Decimal('0.00')
         self.paid_hours = Decimal('0.00')
@@ -194,17 +227,7 @@ class DailyAttendance(models.Model):
         self.is_late = False
         self.late_minutes = 0
         self.late_penalty_amount = Decimal('0.00')
-    
-    def save(self, *args, **kwargs):
-        # Auto-mark as ABSENT if no clock in/out and not LEAVE
-        if not self.clock_in and not self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
-            self.mark_absent()
-        else:
-            # Compute attendance normally
-            if self.clock_in and self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
-                self.compute_attendance_metrics()
-        super().save(*args, **kwargs)
-    
+
     def approve(self, approved_by_user):
         """Approve the attendance record."""
         self.status = 'APPROVED'
@@ -226,31 +249,150 @@ class DailyAttendance(models.Model):
         """Round to specified decimal places using ROUND_HALF_UP."""
         exp = Decimal(10) ** -places
         return Decimal(value).quantize(exp, rounding=ROUND_HALF_UP)
-
     
+    def calculate_uniform_penalty(self):
+        """Calculate total uniform penalty: ₱50 per missing item."""
+        penalty = Decimal('0.00')
+        if self.missing_uniform_shirt:
+            penalty += Decimal('50.00')
+        if self.missing_uniform_pants:
+            penalty += Decimal('50.00')
+        if self.missing_uniform_shoes:
+            penalty += Decimal('50.00')
+        self.uniform_penalty_amount = penalty
+    
+    def save(self, *args, **kwargs):
+        """
+        Save method that calculates penalties and attendance metrics.
+        
+        IMPORTANT: Late penalty is calculated IMMEDIATELY when clock_in is recorded,
+        NOT when clock_out happens.
+        """
+        # Calculate uniform penalties
+        self.calculate_uniform_penalty()
+        
+        # Auto-mark as ABSENT if no clock in/out and not LEAVE
+        if not self.clock_in and not self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
+            self.mark_absent()
+        else:
+            # Calculate LATENESS immediately when clock_in exists (even without clock_out)
+            if self.clock_in and self.attendance_type not in ['LEAVE', 'ABSENT']:
+                self.calculate_lateness()
+            
+            # Only compute full attendance metrics when BOTH clock_in and clock_out exist
+            if self.clock_in and self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
+                self.compute_attendance_metrics()
+        
+        super().save(*args, **kwargs)
+
+    def calculate_lateness(self):
+        """
+        Calculate late penalty IMMEDIATELY based on clock-in time.
+        This runs as soon as employee clocks in, even before they clock out.
+        
+        RULES:
+        - More than 60 minutes late → INVALID attendance + REJECTED status
+        - 16-60 minutes late → Late penalty applies
+        - 0-15 minutes late → Grace period, no penalty
+        """
+        from payroll.models import PayrollSettings
+        
+        # Load settings
+        morning_start = time(8, 0)
+        afternoon_start = time(13, 0)
+        grace_minutes = 15
+        
+        try:
+            settings = PayrollSettings.objects.first()
+            if settings:
+                morning_start = settings.shift_start or morning_start
+                grace_minutes = settings.grace_minutes or grace_minutes
+        except Exception:
+            pass
+        
+        # Get timezone
+        tz = timezone.get_current_timezone()
+        
+        # Ensure clock_in is timezone-aware
+        clock_in_local = self.clock_in
+        if not timezone.is_aware(clock_in_local):
+            clock_in_local = timezone.make_aware(clock_in_local, tz)
+        
+        # Extract date from clock_in in LOCAL timezone
+        local_date = clock_in_local.astimezone(tz).date()
+        
+        # Create shift start times
+        morning_start_dt = datetime.combine(local_date, morning_start)
+        afternoon_start_dt = datetime.combine(local_date, afternoon_start)
+        
+        # Make them timezone-aware
+        morning_start_dt = timezone.make_aware(morning_start_dt, tz)
+        afternoon_start_dt = timezone.make_aware(afternoon_start_dt, tz)
+        
+        # Determine which shift they're clocking in for
+        if clock_in_local < afternoon_start_dt:
+            # Morning shift - expected start is 8:00 AM (or configured time)
+            expected_start = morning_start_dt
+        else:
+            # Afternoon shift - expected start is 1:00 PM
+            expected_start = afternoon_start_dt
+        
+        # Calculate how late they are (in minutes)
+        late_minutes = (clock_in_local - expected_start).total_seconds() / 60
+        
+        # Reset late fields first
+        self.is_late = False
+        self.late_minutes = 0
+        self.late_penalty_amount = Decimal("0.00")
+        
+        # Determine if late and calculate penalty
+        if late_minutes < 0:
+            # Arrived EARLY - no penalty
+            pass
+        elif late_minutes <= grace_minutes:
+            # Within grace period - no penalty
+            pass
+        else:
+            # LATE beyond grace period
+            self.is_late = True
+            
+            # Calculate actual late minutes (excluding grace period)
+            actual_late_minutes = late_minutes - grace_minutes
+            self.late_minutes = int(actual_late_minutes)
+            hours = int(late_minutes) // 60
+            minutes = int(late_minutes) % 60
+            time_str = f"{hours}h {minutes}m" if hours > 0 else f"{minutes} minutes"
+            
+            # Check if MORE than 60 minutes late (INVALID)
+            if late_minutes > 60:
+                # Too late - mark as INVALID and REJECTED immediately
+                self.attendance_type = "INVALID"
+                self.status = 'REJECTED'
+                self.paid_hours = Decimal("0.00")
+                self.break_hours = Decimal("0.00")
+                self.total_hours = Decimal("0.00")
+                self.late_penalty_amount = Decimal("0.00")  # No penalty for invalid
+                self.clock_out = self.clock_in
+                self.notes = f"{self.notes}\nRejected: More than 60 minutes late (late by {time_str})".strip()
+            else:
+                # 16-60 minutes late - calculate penalty
+                self.late_penalty_amount = self._round(
+                    Decimal(self.late_minutes) * Decimal("2.00")
+                )
+
     def compute_attendance_metrics(self):
         """
-        Computes attendance type, paid hours, break hours, and late penalties
-        based on business rules:
+        Computes attendance type, paid hours, and break hours.
 
-        Shift definitions:
-        - Full Day: 8:00 AM - 6:00 PM, 2h break, 8 paid hours
-        - Morning Half Day: 8:00 AM - 1:00 PM, 1h break, 4 paid hours
-        - Afternoon Half Day: 1:00 PM - 6:00 PM, 1h break, 4 paid hours
-
-        Rules:
-        - Total worked < 1h → INVALID
-        - Total worked >=1h and <4h → PARTIAL (paid actual hours)
-        - Total worked >=4h → HALF_DAY if within morning/afternoon shift window
-        - Total worked >=10h → FULL_DAY
-        - Late penalties apply to all schedules
-        - Late > 60 min → INVALID attendance
+        NOTE: Lateness is already calculated in calculate_lateness().
+        This method only determines attendance type and paid hours.
+        
+        RULES:
+        - Less than 1 hour worked → INVALID + REJECTED
         """
         from payroll.models import PayrollSettings
 
-        # -----------------------
-        # Load payroll settings or defaults
-        # -----------------------
+        # Load settings
         morning_start = time(8, 0)
         afternoon_start = time(13, 0)
         shift_end = time(18, 0)
@@ -265,141 +407,93 @@ class DailyAttendance(models.Model):
         except Exception:
             pass
 
+        # Get timezone
         tz = timezone.get_current_timezone()
 
-        if not timezone.is_aware(self.clock_in):
-            self.clock_in = timezone.make_aware(self.clock_in, tz)
-        if not timezone.is_aware(self.clock_out):
-            self.clock_out = timezone.make_aware(self.clock_out, tz)
+        # Ensure clock times are timezone-aware
+        clock_in_local = self.clock_in
+        clock_out_local = self.clock_out
+        
+        if not timezone.is_aware(clock_in_local):
+            clock_in_local = timezone.make_aware(clock_in_local, tz)
+        if clock_out_local and not timezone.is_aware(clock_out_local):
+            clock_out_local = timezone.make_aware(clock_out_local, tz)
 
-        morning_start_dt = timezone.make_aware(
-            datetime.combine(self.date, morning_start), tz
-        )
-        afternoon_start_dt = timezone.make_aware(
-            datetime.combine(self.date, afternoon_start), tz
-        )
-        shift_end_dt = timezone.make_aware(
-            datetime.combine(self.date, shift_end), tz
-        )
+        # Extract date from clock_in in LOCAL timezone
+        local_date = clock_in_local.astimezone(tz).date()
+        
+        # Create shift times on the SAME DATE as clock_in (in local timezone)
+        morning_start_dt = datetime.combine(local_date, morning_start)
+        afternoon_start_dt = datetime.combine(local_date, afternoon_start)
+        shift_end_dt = datetime.combine(local_date, shift_end)
 
-        if timezone.is_aware(self.clock_in):
-            morning_start_dt = timezone.make_aware(morning_start_dt, tz)
-            afternoon_start_dt = timezone.make_aware(afternoon_start_dt, tz)
-            shift_end_dt = timezone.make_aware(shift_end_dt, tz)
+        # Make shift times timezone-aware
+        morning_start_dt = timezone.make_aware(morning_start_dt, tz)
+        afternoon_start_dt = timezone.make_aware(afternoon_start_dt, tz)
+        shift_end_dt = timezone.make_aware(shift_end_dt, tz)
 
-        if settings and settings.auto_close_enabled and self.clock_in and not self.clock_out:
-            # Auto-close at shift end
-            self.clock_out = shift_end_dt
+        # Auto-close if enabled
+        if settings and settings.auto_close_enabled and clock_in_local and not clock_out_local:
+            clock_out_local = shift_end_dt
+            self.clock_out = clock_out_local
             self.auto_closed = True
 
-
-
-        # -----------------------
-        # Calculate total hours
-        # -----------------------
-        delta = self.clock_out - self.clock_in
+        # Calculate hours
+        delta = clock_out_local - clock_in_local
         total_hours = Decimal(delta.total_seconds()) / Decimal(3600)
         total_hours = self._round(total_hours)
         self.total_hours = total_hours
 
-        # -----------------------
-        # Reset fields
-        # -----------------------
-        self.attendance_type = "INVALID"
-        self.break_hours = Decimal("0.00")
-        self.paid_hours = Decimal("0.00")
-        self.is_late = False
-        self.late_minutes = 0
-        self.late_penalty_amount = Decimal("0.00")
+        # Don't reset attendance_type if already INVALID from late check
+        if self.attendance_type != "INVALID":
+            self.attendance_type = "INVALID"
+            self.break_hours = Decimal("0.00")
+            self.paid_hours = Decimal("0.00")
 
-        # -----------------------
-        # INVALID (<1 hour)
-        # -----------------------
+        # If already marked INVALID from lateness check, don't continue
+        if self.status == 'REJECTED':
+            return
+        
+        # INVALID (<1 hour worked) - Mark as REJECTED
         if total_hours < Decimal("1.00"):
+            self.attendance_type = "INVALID"
+            self.status = 'REJECTED'
+            self.paid_hours = Decimal("0.00")
+            self.break_hours = Decimal("0.00")
+            self.notes = f"{self.notes}\nRejected: Less than 1 hour worked (total: {total_hours} hours)".strip()
             return
 
-        # -----------------------
-        # PARTIAL (1h - <4h)
-        # -----------------------
+        # PARTIAL (1h - <4h worked)
         if total_hours < Decimal("4.00"):
             self.attendance_type = "PARTIAL"
             self.paid_hours = total_hours
             return
 
-        # -----------------------
-        # Determine intended shift for half-day
-        # -----------------------
-        if self.clock_in < afternoon_start_dt:
-            # Morning half-day
-            expected_start = morning_start_dt
-            expected_end = afternoon_start_dt
+        # Determine which shift based on clock-in time
+        if clock_in_local < afternoon_start_dt:
+            expected_end = afternoon_start_dt  # 1:00 PM
             break_hours = Decimal("1.00")
         else:
-            # Afternoon half-day
-            expected_start = afternoon_start_dt
-            expected_end = shift_end_dt
+            expected_end = shift_end_dt  # 6:00 PM
             break_hours = Decimal("1.00")
 
-        # -----------------------
-        # Late calculation
-        # -----------------------
-        late_minutes = (self.clock_in - expected_start).total_seconds() / 60
-
-        # Handle early arrivals (negative late_minutes)
-        if late_minutes < 0:
-            # Employee arrived early - no penalty
-            self.is_late = False
-            self.late_minutes = 0
-            self.late_penalty_amount = Decimal("0.00")
-        elif late_minutes <= grace_minutes:
-            # Within grace period - no penalty
-            self.is_late = False
-            self.late_minutes = 0
-            self.late_penalty_amount = Decimal("0.00")
-        else:
-            # Late beyond grace period
-            self.is_late = True
-            
-            # Too late (more than 60 minutes) → invalid attendance
-            if late_minutes > 60:
-                self.attendance_type = "INVALID"
-                self.paid_hours = Decimal("0.00")
-                self.break_hours = Decimal("0.00")
-                self.late_minutes = int(late_minutes - grace_minutes)
-                # No penalty for invalid attendance (or you could charge max penalty)
-                self.late_penalty_amount = Decimal("0.00")
-                return
-            
-            # Normal late penalty (16-60 minutes late)
-            # Only count minutes beyond grace period
-            self.late_minutes = int(late_minutes - grace_minutes)
-            self.late_penalty_amount = self._round(
-                Decimal(self.late_minutes) * Decimal("2.00")
-            )
-
-        # -----------------------
-        # FULL DAY (>=10h)
-        # -----------------------
-        if self.clock_in <= morning_start_dt + timedelta(minutes=grace_minutes) \
-        and self.clock_out >= shift_end_dt \
+        # FULL DAY (clocked in morning, stayed until 6 PM, worked ≥10 hours)
+        if clock_in_local <= morning_start_dt + timedelta(minutes=grace_minutes) \
+        and clock_out_local >= shift_end_dt \
         and total_hours >= Decimal("10.00"):
             self.attendance_type = "FULL_DAY"
             self.break_hours = Decimal("2.00")
             self.paid_hours = Decimal("8.00")
             return
 
-        # -----------------------
-        # HALF DAY (>=4h and within shift window)
-        # -----------------------
-        if total_hours >= Decimal("4.00") and self.clock_out >= expected_end:
+        # HALF DAY (worked ≥4h and stayed until expected shift end)
+        if total_hours >= Decimal("4.00") and clock_out_local >= expected_end:
             self.attendance_type = "HALF_DAY"
             self.break_hours = break_hours
             self.paid_hours = Decimal("4.00")
             return
 
-        # -----------------------
-        # Fallback → PARTIAL
-        # -----------------------
+        # Fallback PARTIAL
         self.attendance_type = "PARTIAL"
         self.paid_hours = total_hours
 
