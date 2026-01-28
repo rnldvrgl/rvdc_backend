@@ -1,7 +1,6 @@
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
@@ -37,6 +36,7 @@ class DailyAttendance(models.Model):
         ('PARTIAL', 'Partial Hours'),
         ('ABSENT', 'Absent'),
         ('LEAVE', 'On Leave'),
+        ('INVALID', 'Invalid'),
     ]
     
     STATUS_CHOICES = [
@@ -93,6 +93,17 @@ class DailyAttendance(models.Model):
         default=Decimal('0.00'),
         help_text='Penalty: ₱2 per minute late',
     )
+
+    # Absence tracking
+    consecutive_absences = models.PositiveIntegerField(
+        default=0,
+        help_text='Counts consecutive absences without approved leave for AWOL monitoring',
+    )
+    
+    auto_closed = models.BooleanField(
+        default=False,
+        help_text="True if the attendance was auto-closed due to missing clock_out",
+    )
     
     # Approval workflow
     status = models.CharField(
@@ -148,94 +159,51 @@ class DailyAttendance(models.Model):
                 raise ValidationError(
                     'LEAVE and ABSENT attendance types should not have clock-in/out times.'
                 )
+
+    def mark_absent(self):
+        """
+        Marks the attendance as ABSENT if no approved leave and no clock in/out.
+        Also updates consecutive absences.
+        """
+        # Check for approved leave
+        leave_exists = LeaveRequest.objects.filter(
+            employee=self.employee,
+            status='APPROVED',
+            date=self.date,
+        ).exists()
+
+        if leave_exists:
+            self.attendance_type = 'LEAVE'
+            self.consecutive_absences = 0
+        else:
+            self.attendance_type = 'ABSENT'
+            # Get previous day's attendance
+            yesterday = self.date - timedelta(days=1)
+            prev_attendance = DailyAttendance.objects.filter(
+                employee=self.employee,
+                date=yesterday
+            ).first()
+            if prev_attendance and prev_attendance.attendance_type == 'ABSENT':
+                self.consecutive_absences = prev_attendance.consecutive_absences + 1
+            else:
+                self.consecutive_absences = 1
+        
+        self.total_hours = Decimal('0.00')
+        self.paid_hours = Decimal('0.00')
+        self.break_hours = Decimal('0.00')
+        self.is_late = False
+        self.late_minutes = 0
+        self.late_penalty_amount = Decimal('0.00')
     
     def save(self, *args, **kwargs):
-        # Auto-compute fields before saving
-        if self.clock_in and self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
-            self.compute_attendance_metrics()
-        
+        # Auto-mark as ABSENT if no clock in/out and not LEAVE
+        if not self.clock_in and not self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
+            self.mark_absent()
+        else:
+            # Compute attendance normally
+            if self.clock_in and self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
+                self.compute_attendance_metrics()
         super().save(*args, **kwargs)
-    
-    def compute_attendance_metrics(self):
-        """
-        Computes attendance type, hours, late penalties based on business rules.
-        Must be called after clock_in and clock_out are set.
-        """
-        if not self.clock_in or not self.clock_out:
-            return
-        
-        # Get payroll settings for shift times and grace period
-        from payroll.models import PayrollSettings
-        try:
-            settings_obj = PayrollSettings.objects.first()
-            shift_start = settings_obj.shift_start if settings_obj else time(8, 0)
-            grace_minutes = settings_obj.grace_minutes if settings_obj else 15
-        except Exception:
-            shift_start = time(8, 0)
-            grace_minutes = 15
-        
-        # Convert to local time
-        clock_in_local = timezone.localtime(self.clock_in) if timezone.is_aware(self.clock_in) else self.clock_in
-        clock_out_local = timezone.localtime(self.clock_out) if timezone.is_aware(self.clock_out) else self.clock_out
-        
-        # Calculate total hours
-        delta = self.clock_out - self.clock_in
-        total_hours = Decimal(delta.total_seconds()) / Decimal(3600)
-        self.total_hours = self._round(total_hours)
-        
-        # Check if late
-        expected_clock_in = datetime.combine(self.date, shift_start)
-        if timezone.is_aware(self.clock_in):
-            expected_clock_in = timezone.make_aware(expected_clock_in, timezone.get_current_timezone())
-        
-        late_delta = (self.clock_in - expected_clock_in).total_seconds() / 60
-        
-        if late_delta > grace_minutes:
-            self.is_late = True
-            self.late_minutes = int(late_delta - grace_minutes)
-            
-            # # ≥30 min late = automatic HALF_DAY
-            # if late_delta >= 30:
-            #     self.attendance_type = 'HALF_DAY'
-            #     self.break_hours = Decimal('1.00')
-            #     self.paid_hours = Decimal('4.00')
-            #     self.late_penalty_amount = Decimal('0.00')  # No per-minute penalty if already half-day
-            #     return
-            
-            # # 16-29 min late: ₱2 per minute penalty
-            self.late_penalty_amount = self._round(Decimal(self.late_minutes) * Decimal('2.00'))
-        else:
-            self.is_late = False
-            self.late_minutes = 0
-            self.late_penalty_amount = Decimal('0.00')
-        
-        # Determine attendance type based on total hours
-        if total_hours >= Decimal('10.00'):
-            # FULL_DAY: ≥10 hours = 8 paid hours
-            self.attendance_type = 'FULL_DAY'
-            self.break_hours = Decimal('2.00')
-            self.paid_hours = Decimal('8.00')
-        
-        elif total_hours >= Decimal('5.00') and total_hours < Decimal('10.00'):
-            # PARTIAL: 5-10 hours = actual hours minus breaks
-            self.attendance_type = 'PARTIAL'
-            # Break deduction: if they worked during break times, deduct 2 hours
-            # Simplified: assume 2-hour break if covering 12 PM - 3 PM range
-            self.break_hours = Decimal('2.00')
-            paid = max(total_hours - self.break_hours, Decimal('0.00'))
-            self.paid_hours = self._round(paid)
-        
-        elif total_hours >= Decimal('4.00') and total_hours < Decimal('5.00'):
-            # HALF_DAY: 4-5 hours = 4 paid hours
-            self.attendance_type = 'HALF_DAY'
-            self.break_hours = Decimal('1.00')
-            self.paid_hours = Decimal('4.00')
-        
-        else:
-            # Less than 4 hours: mark as PARTIAL with minimal pay
-            self.attendance_type = 'PARTIAL'
-            self.break_hours = Decimal('0.00')
-            self.paid_hours = self._round(total_hours)
     
     def approve(self, approved_by_user):
         """Approve the attendance record."""
@@ -259,6 +227,181 @@ class DailyAttendance(models.Model):
         exp = Decimal(10) ** -places
         return Decimal(value).quantize(exp, rounding=ROUND_HALF_UP)
 
+    
+    def compute_attendance_metrics(self):
+        """
+        Computes attendance type, paid hours, break hours, and late penalties
+        based on business rules:
+
+        Shift definitions:
+        - Full Day: 8:00 AM - 6:00 PM, 2h break, 8 paid hours
+        - Morning Half Day: 8:00 AM - 1:00 PM, 1h break, 4 paid hours
+        - Afternoon Half Day: 1:00 PM - 6:00 PM, 1h break, 4 paid hours
+
+        Rules:
+        - Total worked < 1h → INVALID
+        - Total worked >=1h and <4h → PARTIAL (paid actual hours)
+        - Total worked >=4h → HALF_DAY if within morning/afternoon shift window
+        - Total worked >=10h → FULL_DAY
+        - Late penalties apply to all schedules
+        - Late > 60 min → INVALID attendance
+        """
+        from payroll.models import PayrollSettings
+
+        # -----------------------
+        # Load payroll settings or defaults
+        # -----------------------
+        morning_start = time(8, 0)
+        afternoon_start = time(13, 0)
+        shift_end = time(18, 0)
+        grace_minutes = 15
+
+        try:
+            settings = PayrollSettings.objects.first()
+            if settings:
+                morning_start = settings.shift_start or morning_start
+                grace_minutes = settings.grace_minutes or grace_minutes
+                shift_end = settings.shift_end or shift_end
+        except Exception:
+            pass
+
+        tz = timezone.get_current_timezone()
+
+        if not timezone.is_aware(self.clock_in):
+            self.clock_in = timezone.make_aware(self.clock_in, tz)
+        if not timezone.is_aware(self.clock_out):
+            self.clock_out = timezone.make_aware(self.clock_out, tz)
+
+        morning_start_dt = timezone.make_aware(
+            datetime.combine(self.date, morning_start), tz
+        )
+        afternoon_start_dt = timezone.make_aware(
+            datetime.combine(self.date, afternoon_start), tz
+        )
+        shift_end_dt = timezone.make_aware(
+            datetime.combine(self.date, shift_end), tz
+        )
+
+        if timezone.is_aware(self.clock_in):
+            morning_start_dt = timezone.make_aware(morning_start_dt, tz)
+            afternoon_start_dt = timezone.make_aware(afternoon_start_dt, tz)
+            shift_end_dt = timezone.make_aware(shift_end_dt, tz)
+
+        if settings and settings.auto_close_enabled and self.clock_in and not self.clock_out:
+            # Auto-close at shift end
+            self.clock_out = shift_end_dt
+            self.auto_closed = True
+
+
+
+        # -----------------------
+        # Calculate total hours
+        # -----------------------
+        delta = self.clock_out - self.clock_in
+        total_hours = Decimal(delta.total_seconds()) / Decimal(3600)
+        total_hours = self._round(total_hours)
+        self.total_hours = total_hours
+
+        # -----------------------
+        # Reset fields
+        # -----------------------
+        self.attendance_type = "INVALID"
+        self.break_hours = Decimal("0.00")
+        self.paid_hours = Decimal("0.00")
+        self.is_late = False
+        self.late_minutes = 0
+        self.late_penalty_amount = Decimal("0.00")
+
+        # -----------------------
+        # INVALID (<1 hour)
+        # -----------------------
+        if total_hours < Decimal("1.00"):
+            return
+
+        # -----------------------
+        # PARTIAL (1h - <4h)
+        # -----------------------
+        if total_hours < Decimal("4.00"):
+            self.attendance_type = "PARTIAL"
+            self.paid_hours = total_hours
+            return
+
+        # -----------------------
+        # Determine intended shift for half-day
+        # -----------------------
+        if self.clock_in < afternoon_start_dt:
+            # Morning half-day
+            expected_start = morning_start_dt
+            expected_end = afternoon_start_dt
+            break_hours = Decimal("1.00")
+        else:
+            # Afternoon half-day
+            expected_start = afternoon_start_dt
+            expected_end = shift_end_dt
+            break_hours = Decimal("1.00")
+
+        # -----------------------
+        # Late calculation
+        # -----------------------
+        late_minutes = (self.clock_in - expected_start).total_seconds() / 60
+
+        # Handle early arrivals (negative late_minutes)
+        if late_minutes < 0:
+            # Employee arrived early - no penalty
+            self.is_late = False
+            self.late_minutes = 0
+            self.late_penalty_amount = Decimal("0.00")
+        elif late_minutes <= grace_minutes:
+            # Within grace period - no penalty
+            self.is_late = False
+            self.late_minutes = 0
+            self.late_penalty_amount = Decimal("0.00")
+        else:
+            # Late beyond grace period
+            self.is_late = True
+            
+            # Too late (more than 60 minutes) → invalid attendance
+            if late_minutes > 60:
+                self.attendance_type = "INVALID"
+                self.paid_hours = Decimal("0.00")
+                self.break_hours = Decimal("0.00")
+                self.late_minutes = int(late_minutes - grace_minutes)
+                # No penalty for invalid attendance (or you could charge max penalty)
+                self.late_penalty_amount = Decimal("0.00")
+                return
+            
+            # Normal late penalty (16-60 minutes late)
+            # Only count minutes beyond grace period
+            self.late_minutes = int(late_minutes - grace_minutes)
+            self.late_penalty_amount = self._round(
+                Decimal(self.late_minutes) * Decimal("2.00")
+            )
+
+        # -----------------------
+        # FULL DAY (>=10h)
+        # -----------------------
+        if self.clock_in <= morning_start_dt + timedelta(minutes=grace_minutes) \
+        and self.clock_out >= shift_end_dt \
+        and total_hours >= Decimal("10.00"):
+            self.attendance_type = "FULL_DAY"
+            self.break_hours = Decimal("2.00")
+            self.paid_hours = Decimal("8.00")
+            return
+
+        # -----------------------
+        # HALF DAY (>=4h and within shift window)
+        # -----------------------
+        if total_hours >= Decimal("4.00") and self.clock_out >= expected_end:
+            self.attendance_type = "HALF_DAY"
+            self.break_hours = break_hours
+            self.paid_hours = Decimal("4.00")
+            return
+
+        # -----------------------
+        # Fallback → PARTIAL
+        # -----------------------
+        self.attendance_type = "PARTIAL"
+        self.paid_hours = total_hours
 
 class LeaveBalance(models.Model):
     """
@@ -482,9 +625,11 @@ class LeaveRequest(models.Model):
         - Deducts from employee's leave balance
         - Creates DailyAttendance record with type=LEAVE
         """
-        if self.status == 'APPROVED':
-            raise ValidationError('Leave request is already approved.')
-        
+        if self.status != 'PENDING':
+            raise ValidationError(
+                f'Cannot approve leave request with status: {self.status}'
+            )
+
         # Get or create leave balance for the year
         year = self.date.year
         leave_balance, created = LeaveBalance.objects.get_or_create(
