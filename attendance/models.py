@@ -194,15 +194,15 @@ class DailyAttendance(models.Model):
             self.is_late = True
             self.late_minutes = int(late_delta - grace_minutes)
             
-            # ≥30 min late = automatic HALF_DAY
-            if late_delta >= 30:
-                self.attendance_type = 'HALF_DAY'
-                self.break_hours = Decimal('1.00')
-                self.paid_hours = Decimal('4.00')
-                self.late_penalty_amount = Decimal('0.00')  # No per-minute penalty if already half-day
-                return
+            # # ≥30 min late = automatic HALF_DAY
+            # if late_delta >= 30:
+            #     self.attendance_type = 'HALF_DAY'
+            #     self.break_hours = Decimal('1.00')
+            #     self.paid_hours = Decimal('4.00')
+            #     self.late_penalty_amount = Decimal('0.00')  # No per-minute penalty if already half-day
+            #     return
             
-            # 16-29 min late: ₱2 per minute penalty
+            # # 16-29 min late: ₱2 per minute penalty
             self.late_penalty_amount = self._round(Decimal(self.late_minutes) * Decimal('2.00'))
         else:
             self.is_late = False

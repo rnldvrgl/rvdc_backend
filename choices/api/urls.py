@@ -5,7 +5,7 @@ from choices.api.views import (
     ProductCategoryChoicesAPIView,
     ClientChoicesAPIView,
     EmployeesChoicesAPIView,
-    UsersChoicesAPIView,
+    TechniciansChoicesAPIView,
     BanksChoicesAPIView,
     AirconTypesChoicesAPIView,
     AirconBrandsChoicesAPIView,
@@ -21,7 +21,7 @@ urlpatterns = [
     path("stalls/", StallChoicesAPIView.as_view(), name="stall_choices"),
     path("clients/", ClientChoicesAPIView.as_view(), name="client_choices"),
     path("employees/", EmployeesChoicesAPIView.as_view(), name="employee_choices"),
-    path("users/", UsersChoicesAPIView.as_view(), name="users_choices"),
+    path("technicians/", TechniciansChoicesAPIView.as_view(), name="technicians_choices"),
     path("banks/", BanksChoicesAPIView.as_view(), name="banks_choices"),
     path(
         "aircon-types/",

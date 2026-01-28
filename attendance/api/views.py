@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
 from datetime import date
+from django.utils import timezone
 
 from attendance.models import DailyAttendance, LeaveBalance, LeaveRequest
 from attendance.api.serializers import (
@@ -65,7 +66,7 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(employee=user)
         
         return queryset.select_related('employee', 'approved_by').order_by('-date')
-    
+
     def create(self, request, *args, **kwargs):
         """Only admin/manager can create attendance records."""
         if request.user.role not in ['admin', 'manager']:
@@ -97,7 +98,25 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
         instance.save()
         return Response(status=status.HTTP_204_NO_CONTENT)
     
-    @action(detail=False, methods=['post'], permission_classes=[IsAdminOrManager])
+    @action(detail=False, methods=["get"])
+    def current_status(self, request):
+        attendance = (
+            DailyAttendance.objects
+            .filter(
+                employee=request.user,
+                date=timezone.localdate(),
+                is_deleted=False
+            )
+            .first()
+        )
+
+        if attendance is None:
+            return Response(None, status=status.HTTP_200_OK)
+
+        serializer = self.get_serializer(attendance)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=['post'])
     def clock_in(self, request):
         """
         Clock in an employee.
@@ -142,7 +161,7 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED
         )
     
-    @action(detail=False, methods=['post'], permission_classes=[IsAdminOrManager])
+    @action(detail=False, methods=['post'])
     def clock_out(self, request):
         """
         Clock out an employee.
@@ -242,21 +261,31 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
     
-    @action(detail=False, methods=['get'])
+    @action(detail=False, methods=["get"])
     def pending_approvals(self, request):
         """Get all pending attendance records (admin/manager only)."""
-        if request.user.role not in ['admin', 'manager']:
+        if request.user.role not in ["admin", "manager"]:
             return Response(
-                {'detail': 'Only admin and manager can view pending approvals.'},
-                status=status.HTTP_403_FORBIDDEN
+                {"detail": "Only admin and manager can view pending approvals."},
+                status=status.HTTP_403_FORBIDDEN,
             )
-        
-        pending = DailyAttendance.objects.filter(
-            status='PENDING',
-            is_deleted=False
-        ).select_related('employee', 'approved_by').order_by('-date')
-        
-        serializer = self.get_serializer(pending, many=True)
+
+        employee_id = request.query_params.get("employee_id")
+
+        queryset = (
+            DailyAttendance.objects.filter(
+                status="PENDING",
+                is_deleted=False,
+            )
+            .select_related("employee", "approved_by")
+            .order_by("-date")
+        )
+
+        if employee_id:
+            queryset = queryset.filter(employee_id=employee_id)
+
+        serializer = self.get_serializer(queryset, many=True)
+
         return Response(serializer.data)
 
 
@@ -426,15 +455,38 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
     
-    @action(detail=False, methods=['get'], permission_classes=[IsAdminOrManager])
+    @action(detail=False, methods=["get"])
     def pending_approvals(self, request):
-        """Get all pending leave requests (admin/manager only)."""
-        pending = LeaveRequest.objects.filter(
-            status='PENDING'
-        ).select_related('employee', 'approved_by').order_by('-date')
-        
-        serializer = self.get_serializer(pending, many=True)
-        return Response(serializer.data)
+        """Get all pending attendance records (admin/manager only)."""
+        if request.user.role not in ["admin", "manager"]:
+            return Response(
+                {"detail": "Only admin and manager can view pending approvals."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        employee_id = request.query_params.get("employee_id")
+
+        queryset = (
+            DailyAttendance.objects.filter(
+                status="PENDING",
+                is_deleted=False,
+            )
+            .select_related("employee", "approved_by")
+            .order_by("-date")
+        )
+        print(queryset)
+
+        if employee_id:
+            queryset = queryset.filter(employee_id=employee_id)
+            print(queryset)
+
+        serializer = self.get_serializer(queryset, many=True)
+        print(serializer.data)
+        return Response({
+            "data": serializer.data,
+            "count": queryset.count(),
+
+        })
     
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):

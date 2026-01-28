@@ -64,12 +64,12 @@ class ClientChoicesAPIView(BaseChoicesAPIView):
 
 
 class EmployeesChoicesAPIView(BaseChoicesAPIView):
-    queryset = CustomUser.objects.filter(is_deleted=False)
+    queryset = CustomUser.objects.exclude(role="admin").filter(is_deleted=False)
     serializer_class = EmployeesSerializer
 
 
-class UsersChoicesAPIView(BaseChoicesAPIView):
-    queryset = CustomUser.objects.filter(is_deleted=False).exclude(role="technician")
+class TechniciansChoicesAPIView(BaseChoicesAPIView):
+    queryset = CustomUser.objects.filter(role="technician", is_deleted=False)
     serializer_class = UserSerializer
 
 
