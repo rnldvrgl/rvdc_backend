@@ -506,19 +506,13 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             .select_related("employee", "approved_by")
             .order_by("-date")
         )
-        print(queryset)
 
         if employee_id:
             queryset = queryset.filter(employee_id=employee_id)
-            print(queryset)
 
         serializer = self.get_serializer(queryset, many=True)
-        print(serializer.data)
-        return Response({
-            "data": serializer.data,
-            "count": queryset.count(),
 
-        })
+        return Response(serializer.data)
     
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
