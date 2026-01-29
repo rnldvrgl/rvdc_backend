@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from django.utils import timezone
-from .models import DailyAttendance, LeaveBalance, LeaveRequest
+from .models import DailyAttendance, LeaveBalance, LeaveRequest, Offense
 
 
 @admin.register(DailyAttendance)
@@ -407,3 +407,89 @@ class LeaveRequestAdmin(admin.ModelAdmin):
         
         self.message_user(request, f'{count} leave request(s) rejected.')
     reject_leave.short_description = 'Reject selected leave requests'
+
+
+@admin.register(Offense)
+class OffenseAdmin(admin.ModelAdmin):
+    list_display = [
+        'employee',
+        'offense_type',
+        'severity_level',
+        'date',
+        'penalty_days',
+        'suspension_period_display',
+        'offense_count_display',
+        'created_by',
+        'created_at',
+    ]
+    list_filter = [
+        'offense_type',
+        'severity_level',
+        'date',
+        'created_at',
+    ]
+    search_fields = [
+        'employee__first_name',
+        'employee__last_name',
+        'employee__username',
+        'employee__id_number',
+        'description',
+        'notes',
+    ]
+    readonly_fields = [
+        'created_at',
+        'updated_at',
+        'suspension_end_date',
+        'offense_count_display',
+    ]
+    date_hierarchy = 'date'
+    
+    fieldsets = (
+        ('Employee Information', {
+            'fields': ('employee', 'offense_count_display')
+        }),
+        ('Offense Details', {
+            'fields': ('offense_type', 'severity_level', 'date', 'description')
+        }),
+        ('Penalty Details', {
+            'fields': ('penalty_days', 'suspension_start_date', 'suspension_end_date'),
+            'classes': ('collapse',),
+        }),
+        ('Additional Information', {
+            'fields': ('notes', 'created_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',),
+        }),
+    )
+    
+    def suspension_period_display(self, obj):
+        """Display suspension period if applicable"""
+        if obj.suspension_start_date and obj.suspension_end_date:
+            return f"{obj.suspension_start_date} to {obj.suspension_end_date}"
+        return '-'
+    suspension_period_display.short_description = 'Suspension Period'
+    
+    def offense_count_display(self, obj):
+        """Display total offense count for employee"""
+        if obj.employee:
+            count = Offense.get_offense_count(obj.employee)
+            is_at_limit = Offense.is_at_limit(obj.employee)
+            
+            if is_at_limit:
+                return format_html(
+                    '<span style="color: red; font-weight: bold;">{} offenses (AT LIMIT)</span>',
+                    count
+                )
+            elif count >= 2:
+                return format_html(
+                    '<span style="color: orange; font-weight: bold;">{} offenses (WARNING)</span>',
+                    count
+                )
+            return f"{count} offense(s)"
+        return '-'
+    offense_count_display.short_description = 'Total Offenses'
+    
+    def save_model(self, request, obj, form, change):
+        """Auto-set created_by if creating new offense"""
+        if not change:  # Creating new object
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)

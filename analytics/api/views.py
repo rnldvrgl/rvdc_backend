@@ -472,24 +472,37 @@ class CalendarEventsView(APIView):
         if include_leaves:
             leaves = LeaveRequest.objects.filter(
                 status='APPROVED',
-                start_date__lte=end_date,
-                end_date__gte=start_date
+                date__gte=start_date,
+                date__lte=end_date
             ).select_related('employee').values(
                 'id', 'employee__first_name', 'employee__last_name', 
-                'employee_id', 'leave_type', 'start_date', 'end_date', 'reason'
+                'employee_id', 'leave_type', 'date', 'is_half_day', 
+                'shift_period', 'reason'
             )
 
             for leave in leaves:
                 # Get leave type display
-                leave_type_display = dict(LeaveRequest.LEAVE_TYPES).get(
+                leave_type_display = dict(LeaveRequest.LEAVE_TYPE_CHOICES).get(
                     leave['leave_type'], leave['leave_type']
                 )
                 
+                # Get shift period display
+                shift_period_choices = {
+                    'AM': 'Morning',
+                    'PM': 'Afternoon',
+                    'FULL': 'Full Day'
+                }
+                shift_display = shift_period_choices.get(leave['shift_period'], 'Full Day')
+                
+                # Build title
+                duration = f"Half Day - {shift_display}" if leave['is_half_day'] else "Full Day"
+                title = f"{leave['employee__first_name']} {leave['employee__last_name']} - {leave_type_display} ({duration})"
+                
                 events.append({
                     'id': f"leave-{leave['id']}",
-                    'title': f"{leave['employee__first_name']} {leave['employee__last_name']} - {leave_type_display}",
-                    'start': leave['start_date'].isoformat(),
-                    'end': leave['end_date'].isoformat(),
+                    'title': title,
+                    'start': leave['date'].isoformat(),
+                    'end': leave['date'].isoformat(),
                     'allDay': True,
                     'extendedProps': {
                         'type': 'leave',
@@ -498,6 +511,9 @@ class CalendarEventsView(APIView):
                         'employee_name': f"{leave['employee__first_name']} {leave['employee__last_name']}",
                         'leave_type': leave['leave_type'],
                         'leave_type_display': leave_type_display,
+                        'is_half_day': leave['is_half_day'],
+                        'shift_period': leave['shift_period'],
+                        'shift_period_display': shift_display,
                         'reason': leave['reason'],
                     }
                 })

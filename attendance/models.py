@@ -5,6 +5,9 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
+from rest_framework import  status
+
+from rest_framework.response import Response
 
 class DailyAttendance(models.Model):
     """
@@ -361,7 +364,7 @@ class DailyAttendance(models.Model):
             self.late_minutes = int(actual_late_minutes)
             hours = int(late_minutes) // 60
             minutes = int(late_minutes) % 60
-            time_str = f"{hours}h {minutes}m" if hours > 0 else f"{minutes} minutes"
+            time_str = f"{hours} hours  & {minutes} minutes" if hours > 0 else f"{minutes} minutes" if minutes > 0 else '0 minute'
             
             # Check if MORE than 60 minutes late (INVALID)
             if late_minutes > 60:
@@ -373,7 +376,7 @@ class DailyAttendance(models.Model):
                 self.total_hours = Decimal("0.00")
                 self.late_penalty_amount = Decimal("0.00")  # No penalty for invalid
                 self.clock_out = self.clock_in
-                self.notes = f"{self.notes}\nRejected: More than 60 minutes late (late by {time_str})".strip()
+                self.notes = f"{self.notes}\nRejected: More than 60 minutes. Late (late by {time_str})".strip()
             else:
                 # 16-60 minutes late - calculate penalty
                 self.late_penalty_amount = self._round(
@@ -590,12 +593,9 @@ class LeaveBalance(models.Model):
             leave_type: 'SICK' or 'EMERGENCY'
             days: Number of days to deduct (supports 0.5 for half-day)
         
-        Raises:
-            ValidationError if insufficient balance
+        Note:
+            Validation should be done before calling this method
         """
-        if not self.can_take_leave(leave_type, days):
-            raise ValidationError(f'Insufficient {leave_type.lower()} leave balance.')
-        
         if leave_type == 'SICK':
             self.sick_leave_used += days
         elif leave_type == 'EMERGENCY':
@@ -618,7 +618,20 @@ class LeaveBalance(models.Model):
         
         self.save()
 
-
+    def get_remaining_balance(self, leave_type: str) -> Decimal:
+        """
+        Get remaining leave balance for the specified leave type.
+        
+        Args:
+            leave_type: 'SICK' or 'EMERGENCY'
+        Returns:
+            Remaining leave balance as Decimal
+        """
+        if leave_type == 'SICK':
+            return self.sick_leave_remaining
+        elif leave_type == 'EMERGENCY':
+            return self.emergency_leave_remaining
+        return Decimal('0.00')
 class LeaveRequest(models.Model):
     """
     Leave request submitted by employee or created by admin/manager.
@@ -642,6 +655,12 @@ class LeaveRequest(models.Model):
         ('CANCELLED', 'Cancelled'),
     ]
     
+    SHIFT_PERIOD_CHOICES = [
+        ('AM', 'Morning'),
+        ('PM', 'Afternoon'),
+        ('FULL', 'Full Day'),
+    ]
+    
     employee = models.ForeignKey(
         'users.CustomUser',
         on_delete=models.CASCADE,
@@ -653,6 +672,13 @@ class LeaveRequest(models.Model):
     is_half_day = models.BooleanField(
         default=False,
         help_text='True if half-day leave (0.5 days), False for full-day (1.0 days)',
+    )
+    
+    shift_period = models.CharField(
+        max_length=10,
+        choices=SHIFT_PERIOD_CHOICES,
+        default='FULL',
+        help_text='AM, PM, or FULL day - determines which shift the leave applies to',
     )
     
     reason = models.TextField()
@@ -694,56 +720,33 @@ class LeaveRequest(models.Model):
     
     def clean(self):
         super().clean()
-        
-        # Prevent duplicate leave requests for the same date
-        if self.pk is None:  # New instance
-            existing = LeaveRequest.objects.filter(
-                employee=self.employee,
-                date=self.date,
-                status__in=['PENDING', 'APPROVED']
-            ).exists()
-            
-            if existing:
-                raise ValidationError(
-                    f'A leave request already exists for {self.date}.'
-                )
+        # Validation moved to serializer for better error handling
     
     @property
     def days_count(self) -> Decimal:
         """Return the number of days this leave represents."""
         return Decimal('0.5') if self.is_half_day else Decimal('1.0')
     
+    def save(self, skip_validation=False, *args, **kwargs):
+        """
+        Save the leave request.
+        Balance deduction is now handled in the serializer.
+        
+        Args:
+            skip_validation: If True, skips validation (used when called from serializer)
+        """
+        super().save(*args, **kwargs)
+    
     def approve(self, approved_by_user):
         """
         Approve the leave request.
-        - Deducts from employee's leave balance
+        - Balance already deducted on creation
         - Creates DailyAttendance record with type=LEAVE
         """
         if self.status != 'PENDING':
             raise ValidationError(
                 f'Cannot approve leave request with status: {self.status}'
             )
-
-        # Get or create leave balance for the year
-        year = self.date.year
-        leave_balance, created = LeaveBalance.objects.get_or_create(
-            employee=self.employee,
-            year=year,
-            defaults={
-                'sick_leave_total': 5,
-                'emergency_leave_total': 5,
-            }
-        )
-        
-        # Check if sufficient balance
-        if not leave_balance.can_take_leave(self.leave_type, self.days_count):
-            raise ValidationError(
-                f'Insufficient {self.get_leave_type_display()} balance. '
-                f'Remaining: {leave_balance.sick_leave_remaining if self.leave_type == "SICK" else leave_balance.emergency_leave_remaining} days.'
-            )
-        
-        # Deduct from balance
-        leave_balance.deduct_leave(self.leave_type, self.days_count)
         
         # Create DailyAttendance record
         DailyAttendance.objects.update_or_create(
@@ -755,7 +758,10 @@ class LeaveRequest(models.Model):
                 'paid_hours': Decimal('0.00'),
                 'approved_by': approved_by_user,
                 'approved_at': timezone.now(),
-                'notes': f'{self.get_leave_type_display()} - {self.reason}',
+                'is_late': False,
+                'late_minutes': 0,
+                'late_penalty_amount': Decimal('0.00'),
+                'notes': f'{self.get_leave_type_display()} ({self.get_shift_period_display()}) - {self.reason}',
             }
         )
         
@@ -763,27 +769,14 @@ class LeaveRequest(models.Model):
         self.status = 'APPROVED'
         self.approved_by = approved_by_user
         self.approved_at = timezone.now()
-        self.save()
+        self.save(update_fields=['status', 'approved_by', 'approved_at', 'updated_at'])
     
     def reject(self, rejected_by_user, reason=''):
-        """Reject the leave request."""
+        """
+        Reject the leave request and restore leave balance.
+        """
         if self.status == 'REJECTED':
             raise ValidationError('Leave request is already rejected.')
-        
-        self.status = 'REJECTED'
-        self.approved_by = rejected_by_user
-        self.approved_at = timezone.now()
-        self.rejection_reason = reason
-        self.save()
-    
-    def cancel(self):
-        """
-        Cancel an approved leave request.
-        - Restores leave balance
-        - Deletes or marks DailyAttendance as deleted
-        """
-        if self.status != 'APPROVED':
-            raise ValidationError('Only approved leave requests can be cancelled.')
         
         # Restore leave balance
         year = self.date.year
@@ -793,13 +786,163 @@ class LeaveRequest(models.Model):
         except LeaveBalance.DoesNotExist:
             pass  # Balance doesn't exist, nothing to restore
         
-        # Remove DailyAttendance record
-        DailyAttendance.objects.filter(
-            employee=self.employee,
-            date=self.date,
-            attendance_type='LEAVE'
-        ).update(is_deleted=True)
+        self.status = 'REJECTED'
+        self.approved_by = rejected_by_user
+        self.approved_at = timezone.now()
+        self.rejection_reason = reason
+        self.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason', 'updated_at'])
+    
+    def cancel(self):
+        """
+        Cancel a leave request (pending or approved).
+        - For PENDING: Just marks as CANCELLED and restores balance
+        - For APPROVED: Also deletes/marks DailyAttendance as deleted
+        """
+        if self.status not in ['PENDING', 'APPROVED']:
+            raise ValidationError('Only pending or approved leave requests can be cancelled.')
+        
+        # Restore leave balance
+        year = self.date.year
+        try:
+            leave_balance = LeaveBalance.objects.get(employee=self.employee, year=year)
+            leave_balance.restore_leave(self.leave_type, self.days_count)
+        except LeaveBalance.DoesNotExist:
+            pass  # Balance doesn't exist, nothing to restore
+        
+        # If approved, remove DailyAttendance record
+        if self.status == 'APPROVED':
+            DailyAttendance.objects.filter(
+                employee=self.employee,
+                date=self.date,
+                attendance_type='LEAVE'
+            ).update(is_deleted=True)
         
         # Update status
         self.status = 'CANCELLED'
         self.save()
+
+
+class Offense(models.Model):
+    """
+    Track employee offenses for policy violations.
+    
+    Offense Types:
+    - AWOL: Absent Without Leave (not part of DailyAttendance)
+    - LATE: Accumulated late arrivals
+    - CURFEW: Not at home by 10 PM (manually added by admin)
+    - OTHER: Other policy violations
+    
+    Severity Levels (Based on Offense Count):
+    - 1st offense: Warning
+    - 2nd offense: Suspension (admin-defined days)
+    - 3rd offense: Termination
+    """
+    
+    OFFENSE_TYPE_CHOICES = [
+        ('AWOL', 'Absent Without Leave'),
+        ('LATE', 'Late Arrival'),
+        ('CURFEW', 'Curfew Violation'),
+        ('OTHER', 'Other Violation'),
+    ]
+    
+    SEVERITY_LEVEL_CHOICES = [
+        ('WARNING', '1st Offense - Warning'),
+        ('SUSPENSION', '2nd Offense - Suspension'),
+        ('TERMINATION', '3rd Offense - Termination'),
+    ]
+    
+    employee = models.ForeignKey(
+        'users.CustomUser',
+        on_delete=models.CASCADE,
+        related_name='offenses'
+    )
+    offense_type = models.CharField(
+        max_length=20,
+        choices=OFFENSE_TYPE_CHOICES
+    )
+    severity_level = models.CharField(
+        max_length=20,
+        choices=SEVERITY_LEVEL_CHOICES
+    )
+    date = models.DateField(
+        help_text='Date of the offense'
+    )
+    description = models.TextField(
+        help_text='Detailed description of the offense'
+    )
+    penalty_days = models.IntegerField(
+        default=0,
+        help_text='Number of suspension days (for 2nd offense)'
+    )
+    suspension_start_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text='Start date of suspension (for 2nd offense)'
+    )
+    suspension_end_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text='End date of suspension (for 2nd offense)'
+    )
+    created_by = models.ForeignKey(
+        'users.CustomUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='offenses_created'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    notes = models.TextField(
+        blank=True,
+        help_text='Additional notes or comments'
+    )
+    
+    class Meta:
+        ordering = ['-date', '-created_at']
+        indexes = [
+            models.Index(fields=['employee', '-date']),
+            models.Index(fields=['offense_type']),
+            models.Index(fields=['severity_level']),
+        ]
+    
+    def __str__(self):
+        return f"{self.employee.user.get_full_name()} - {self.get_offense_type_display()} ({self.get_severity_level_display()}) - {self.date}"
+    
+    def save(self, *args, **kwargs):
+        # Auto-calculate suspension end date if suspension_start_date and penalty_days are provided
+        if self.suspension_start_date and self.penalty_days > 0 and not self.suspension_end_date:
+            self.suspension_end_date = self.suspension_start_date + timedelta(days=self.penalty_days - 1)
+        super().save(*args, **kwargs)
+    
+    @staticmethod
+    def get_offense_count(employee):
+        """Get total offense count for an employee"""
+        return Offense.objects.filter(employee=employee).count()
+    
+    @staticmethod
+    def get_offense_summary(employee):
+        """Get summary of offenses by type for an employee"""
+        from django.db.models import Count
+        return Offense.objects.filter(employee=employee).values('offense_type').annotate(count=Count('id'))
+    
+    @staticmethod
+    def is_at_limit(employee, threshold=3):
+        """Check if employee is at or near offense limit"""
+        count = Offense.get_offense_count(employee)
+        return count >= threshold
+    
+    @staticmethod
+    def is_employee_suspended(employee):
+        """Check if employee is currently suspended"""
+        from django.utils import timezone
+        today = timezone.now().date()
+        
+        # Check for active suspensions
+        active_suspension = Offense.objects.filter(
+            employee=employee,
+            severity_level='SUSPENSION',
+            suspension_start_date__lte=today,
+            suspension_end_date__gte=today
+        ).exists()
+        
+        return active_suspension

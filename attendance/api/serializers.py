@@ -1,5 +1,7 @@
+from decimal import Decimal
+
 from rest_framework import serializers
-from attendance.models import DailyAttendance, LeaveBalance, LeaveRequest
+from attendance.models import DailyAttendance, LeaveBalance, LeaveRequest, Offense
 from users.api.serializers import UserSerializer
 
 
@@ -124,6 +126,7 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
     approved_by_name = serializers.CharField(source='approved_by.get_full_name', read_only=True)
     leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    shift_period_display = serializers.CharField(source='get_shift_period_display', read_only=True)
     days_count = serializers.DecimalField(max_digits=3, decimal_places=1, read_only=True)
     
     class Meta:
@@ -136,6 +139,8 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
             'leave_type_display',
             'date',
             'is_half_day',
+            'shift_period',
+            'shift_period_display',
             'days_count',
             'reason',
             'status',
@@ -172,3 +177,82 @@ class RejectLeaveSerializer(serializers.Serializer):
         allow_empty=False
     )
     reason = serializers.CharField(required=False, allow_blank=True)
+
+
+class OffenseSerializer(serializers.ModelSerializer):
+    employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
+    employee_id_number = serializers.CharField(source='employee.id_number', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
+    offense_type_display = serializers.CharField(source='get_offense_type_display', read_only=True)
+    severity_level_display = serializers.CharField(source='get_severity_level_display', read_only=True)
+    offense_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Offense
+        fields = [
+            'id',
+            'employee',
+            'employee_name',
+            'employee_id_number',
+            'offense_type',
+            'offense_type_display',
+            'severity_level',
+            'severity_level_display',
+            'date',
+            'description',
+            'penalty_days',
+            'suspension_start_date',
+            'suspension_end_date',
+            'created_by',
+            'created_by_name',
+            'created_at',
+            'updated_at',
+            'notes',
+            'offense_count',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'suspension_end_date', 'severity_level']
+    
+    def get_offense_count(self, obj):
+        """Get total offense count for this employee"""
+        return Offense.get_offense_count(obj.employee)
+    
+    def create(self, validated_data):
+        """Auto-calculate severity level based on existing offense count"""
+        employee = validated_data['employee']
+        offense_count = Offense.get_offense_count(employee)
+        
+        # Determine severity based on offense count
+        if offense_count == 0:
+            validated_data['severity_level'] = 'WARNING'
+        elif offense_count == 1:
+            validated_data['severity_level'] = 'SUSPENSION'
+        else:
+            validated_data['severity_level'] = 'TERMINATION'
+        
+        return super().create(validated_data)
+    
+    def update(self, instance, validated_data):
+        """Prevent changing severity_level and offense_type when editing"""
+        # Remove severity_level if present in validated_data
+        validated_data.pop('severity_level', None)
+        # Keep the original offense_type, don't allow changes
+        validated_data.pop('offense_type', None)
+        return super().update(instance, validated_data)
+
+
+class OffenseStatisticsSerializer(serializers.Serializer):
+    """Serializer for offense statistics"""
+    employee_id = serializers.IntegerField()
+    employee_name = serializers.CharField()
+    employee_id_number = serializers.CharField()
+    total_offenses = serializers.IntegerField()
+    awol_count = serializers.IntegerField()
+    late_count = serializers.IntegerField()
+    curfew_count = serializers.IntegerField()
+    other_count = serializers.IntegerField()
+    warning_count = serializers.IntegerField()
+    suspension_count = serializers.IntegerField()
+    termination_count = serializers.IntegerField()
+    is_at_limit = serializers.BooleanField()
+    last_offense_date = serializers.DateField(allow_null=True)
+
