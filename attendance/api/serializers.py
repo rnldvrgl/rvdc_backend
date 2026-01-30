@@ -1,8 +1,21 @@
 from decimal import Decimal
+from typing import Any, Dict
 
+from django.utils import timezone
 from rest_framework import serializers
-from attendance.models import DailyAttendance, LeaveBalance, LeaveRequest, Offense
+from attendance.models import DailyAttendance, LeaveBalance, LeaveRequest, Offense, OvertimeRequest
 from users.api.serializers import UserSerializer
+from users.models import CustomUser as User
+
+
+class MinimalUserSerializer(serializers.ModelSerializer):
+    """Minimal user details for nested serialization"""
+    full_name = serializers.CharField(source='get_full_name', read_only=True)
+    
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'full_name']
+        read_only_fields = fields
 
 
 class DailyAttendanceSerializer(serializers.ModelSerializer):
@@ -255,4 +268,66 @@ class OffenseStatisticsSerializer(serializers.Serializer):
     termination_count = serializers.IntegerField()
     is_at_limit = serializers.BooleanField()
     last_offense_date = serializers.DateField(allow_null=True)
+
+
+class OvertimeRequestSerializer(serializers.ModelSerializer):
+    employee_detail = MinimalUserSerializer(source="employee", read_only=True)
+    employee = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=True)
+
+    class Meta:
+        model = OvertimeRequest
+        fields = [
+            "id",
+            "employee",
+            "employee_detail",
+            "date",
+            "time_start",
+            "time_end",
+            "reason",
+            "approved",
+            "approved_by",
+            "approved_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "approved",
+            "approved_by",
+            "approved_at",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+        time_start = attrs.get("time_start", getattr(self.instance, "time_start", None))
+        time_end = attrs.get("time_end", getattr(self.instance, "time_end", None))
+        if time_start and time_end and time_end <= time_start:
+            raise serializers.ValidationError({"time_end": "time_end must be after time_start."})
+        return attrs
+
+
+class OvertimeRequestApproveSerializer(serializers.ModelSerializer):
+    approved = serializers.BooleanField(required=True)
+    approved_by = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False)
+
+    class Meta:
+        model = OvertimeRequest
+        fields = ["id", "approved", "approved_by", "approved_at"]
+        read_only_fields = ["id", "approved_at"]
+
+    def update(self, instance: OvertimeRequest, validated_data: Dict[str, Any]) -> OvertimeRequest:
+        approved = validated_data.get("approved", instance.approved)
+        instance.approved = approved
+        # Set approver from context request user if not explicitly provided
+        request = self.context.get("request")
+        approver = validated_data.get("approved_by")
+        if not approver and request and getattr(request, "user", None) and request.user.is_authenticated:
+            approver = request.user
+        instance.approved_by = approver
+        # Set timestamp when approved toggled to True
+        if approved and not instance.approved_at:
+            instance.approved_at = timezone.now()
+        instance.save(update_fields=["approved", "approved_by", "approved_at", "updated_at"])
+        return instance
 

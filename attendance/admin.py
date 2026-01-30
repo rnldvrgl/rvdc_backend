@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from django.utils import timezone
-from .models import DailyAttendance, LeaveBalance, LeaveRequest, Offense
+from .models import DailyAttendance, LeaveBalance, LeaveRequest, Offense, OvertimeRequest
 
 
 @admin.register(DailyAttendance)
@@ -493,3 +493,26 @@ class OffenseAdmin(admin.ModelAdmin):
         if not change:  # Creating new object
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
+
+
+@admin.register(OvertimeRequest)
+class OvertimeRequestAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "employee",
+        "date",
+        "time_start",
+        "time_end",
+        "approved",
+        "approved_by",
+        "approved_at",
+    )
+    list_filter = ("approved", "date")
+    search_fields = (
+        "employee__username",
+        "employee__first_name",
+        "employee__last_name",
+        "reason",
+    )
+    date_hierarchy = "date"
+    ordering = ("-date", "employee")

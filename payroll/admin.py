@@ -7,9 +7,8 @@ from payroll.models import (
     AdditionalEarning,
     DeductionRate,
     Holiday,
-    OvertimeRequest,
+    ManualDeduction,
     PayrollSettings,
-    TimeEntry,
     WeeklyPayroll,
 )
 
@@ -31,94 +30,6 @@ class PayrollSettingsAdmin(admin.ModelAdmin):
         "updated_at",
     )
     readonly_fields = ("updated_at",)
-
-
-@admin.register(TimeEntry)
-class TimeEntryAdmin(admin.ModelAdmin):
-    list_display = (
-        "id",
-        "employee",
-        "work_date",
-        "clock_in",
-        "clock_out",
-        "unpaid_break_minutes",
-        "effective_hours_display",
-        "source",
-        "approved",
-        "is_deleted",
-    )
-    list_filter = ("approved", "source", "is_deleted", "clock_in")
-    search_fields = (
-        "employee__username",
-        "employee__first_name",
-        "employee__last_name",
-        "notes",
-    )
-    date_hierarchy = "clock_in"
-    ordering = ("-clock_in",)
-    list_select_related = ("employee",)
-    list_per_page = 25
-
-    readonly_fields = (
-        "work_date",
-        "effective_hours_readonly",
-        "created_at",
-        "updated_at",
-    )
-
-    fieldsets = (
-        (
-            "Entry",
-            {
-                "fields": (
-                    "employee",
-                    "clock_in",
-                    "clock_out",
-                    "unpaid_break_minutes",
-                    "source",
-                    "approved",
-                    "notes",
-                )
-            },
-        ),
-        (
-            "Computed",
-            {
-                "classes": ("collapse",),
-                "fields": (
-                    "work_date",
-                    "effective_hours_readonly",
-                ),
-            },
-        ),
-        (
-            "Meta",
-            {
-                "classes": ("collapse",),
-                "fields": (
-                    "is_deleted",
-                    "created_at",
-                    "updated_at",
-                ),
-            },
-        ),
-    )
-
-    @admin.display(description="Eff. Hours")
-    def effective_hours_display(self, obj: TimeEntry) -> str:
-        try:
-            return f"{(obj.effective_hours or Decimal('0')).quantize(Decimal('0.01'))}"
-        except Exception:
-            return "0.00"
-
-    @admin.display(description="Effective hours (readonly)")
-    def effective_hours_readonly(self, obj: TimeEntry) -> str:
-        try:
-            return (
-                f"{(obj.effective_hours or Decimal('0')).quantize(Decimal('0.0001'))}"
-            )
-        except Exception:
-            return "0.0000"
 
 
 @admin.register(WeeklyPayroll)
@@ -375,6 +286,88 @@ class HolidayAdmin(admin.ModelAdmin):
     actions = ("soft_delete", "restore",)
 
 
+@admin.register(ManualDeduction)
+class ManualDeductionAdmin(admin.ModelAdmin):
+    list_display = (
+        "name",
+        "deduction_type",
+        "employee",
+        "amount",
+        "effective_date",
+        "end_date",
+        "is_active",
+        "applied_date",
+        "is_deleted",
+    )
+    
+    list_filter = ("deduction_type", "is_active", "is_deleted", "effective_date")
+    
+    search_fields = ("name", "description", "employee__first_name", "employee__last_name")
+    
+    date_hierarchy = "effective_date"
+    
+    ordering = ("-created_at",)
+    
+    raw_id_fields = ("employee", "created_by")
+    
+    fieldsets = (
+        (
+            None,
+            {
+                "fields": (
+                    "name",
+                    "description",
+                    "deduction_type",
+                    "employee",
+                    "amount",
+                )
+            },
+        ),
+        (
+            "Dates",
+            {
+                "fields": (
+                    "effective_date",
+                    "end_date",
+                    "applied_date",
+                    "is_active",
+                )
+            },
+        ),
+        (
+            "Meta",
+            {
+                "classes": ("collapse",),
+                "fields": (
+                    "created_by",
+                    "is_deleted",
+                    "created_at",
+                    "updated_at",
+                ),
+            },
+        ),
+    )
+    
+    readonly_fields = ("created_at", "updated_at")
+    
+    @admin.action(description="Mark as active")
+    def mark_active(self, request, queryset):
+        queryset.update(is_active=True)
+    
+    @admin.action(description="Mark as inactive")
+    def mark_inactive(self, request, queryset):
+        queryset.update(is_active=False)
+    
+    @admin.action(description="Soft delete selected deductions")
+    def soft_delete(self, request, queryset):
+        queryset.update(is_deleted=True)
+    
+    @admin.action(description="Restore selected deductions")
+    def restore(self, request, queryset):
+        queryset.update(is_deleted=False)
+    
+    actions = ("mark_active", "mark_inactive", "soft_delete", "restore")
+
 
 @admin.register(DeductionRate)
 
@@ -506,57 +499,6 @@ class AdditionalEarningAdmin(admin.ModelAdmin):
         ),
 
     )
-
-
-
-@admin.register(OvertimeRequest)
-
-class OvertimeRequestAdmin(admin.ModelAdmin):
-
-    list_display = (
-
-        "id",
-
-        "employee",
-
-        "date",
-
-        "time_start",
-
-        "time_end",
-
-        "approved",
-
-        "approved_by",
-
-        "approved_at",
-
-    )
-
-    list_filter = ("approved", "date")
-
-    search_fields = (
-
-        "employee__username",
-
-        "employee__first_name",
-
-        "employee__last_name",
-
-        "reason",
-
-    )
-
-    date_hierarchy = "date"
-
-    ordering = ("-date", "employee_id")
-
-    list_select_related = ("employee",)
-
-    list_per_page = 25
-
-    readonly_fields = ("created_at", "updated_at")
-
 
 
     @admin.action(description="Approve selected requests")

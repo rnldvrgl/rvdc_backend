@@ -8,94 +8,6 @@ from django.utils import timezone
 from django.utils.timezone import get_current_timezone, make_aware
 
 
-class TimeEntry(models.Model):
-    """
-    A raw time entry for an employee (technician or any user).
-    Captures a single continuous worked interval with an optional unpaid break.
-
-    Hours are computed as:
-        effective_hours = max((clock_out - clock_in) - unpaid_break_minutes, 0)
-    """
-
-    SOURCE_CHOICES = [
-        ("manual", "Manual"),
-        ("schedule", "From Schedule"),
-        ("import", "Imported"),
-    ]
-
-    employee = models.ForeignKey(
-        "users.CustomUser",
-        on_delete=models.CASCADE,
-        related_name="time_entries",
-    )
-    clock_in = models.DateTimeField()
-    clock_out = models.DateTimeField()
-    unpaid_break_minutes = models.PositiveIntegerField(default=0)
-    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default="manual")
-    approved = models.BooleanField(
-        default=True,
-        help_text="Only approved entries are included in payroll computations.",
-    )
-    notes = models.TextField(blank=True)
-    auto_closed = models.BooleanField(
-        default=False,
-        help_text="True if the session was auto-closed at shift end due to missing clock_out.",
-    )
-    is_deleted = models.BooleanField(default=False)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["employee", "clock_in"]),
-            models.Index(fields=["clock_in"]),
-            models.Index(fields=["approved"]),
-        ]
-        ordering = ["-clock_in"]
-
-    def __str__(self):
-        return f"{self.employee_id} | {self.clock_in} — {self.clock_out}"
-
-    def clean(self):
-        super().clean()
-        if self.clock_out and self.clock_in and self.clock_out <= self.clock_in:
-            raise ValidationError({"clock_out": "clock_out must be after clock_in."})
-        if self.unpaid_break_minutes and self.unpaid_break_minutes > 24 * 60:
-            raise ValidationError(
-                {"unpaid_break_minutes": "Break minutes exceed 24 hours."}
-            )
-
-    @property
-    def effective_hours(self) -> Decimal:
-        """
-        Returns worked hours minus unpaid break, rounded to 4 decimal places.
-        """
-        if not self.clock_in or not self.clock_out:
-            return Decimal("0.0")
-
-        delta = self.clock_out - self.clock_in
-        total_minutes = Decimal(delta.total_seconds()) / Decimal(60)
-        effective_minutes = total_minutes - Decimal(self.unpaid_break_minutes or 0)
-        hours = max(effective_minutes, Decimal("0")) / Decimal(60)
-        return self._q(hours, places=4)
-
-    @property
-    def work_date(self) -> date:
-        # Primary work date (based on clock_in local date)
-        local_dt = (
-            timezone.localtime(self.clock_in)
-            if timezone.is_aware(self.clock_in)
-            else self.clock_in
-        )
-        return local_dt.date()
-
-    @staticmethod
-    def _q(value: Decimal, places=2) -> Decimal:
-        exp = Decimal(10) ** -places
-        return value.quantize(exp, rounding=ROUND_HALF_UP)
-
-
 class AdditionalEarning(models.Model):
     """
     Additional earnings for an employee within a given date.
@@ -144,47 +56,6 @@ class AdditionalEarning(models.Model):
 
 
 
-class OvertimeRequest(models.Model):
-    """
-    An employee-filed overtime request that must be approved by management
-    before inclusion in salary computation.
-
-    - time_start / time_end: precise datetime window of the OT.
-    - approved: gate for payroll inclusion.
-    """
-    employee = models.ForeignKey(
-        "users.CustomUser",
-        on_delete=models.CASCADE,
-        related_name="overtime_requests",
-    )
-    date = models.DateField()
-    time_start = models.DateTimeField()
-    time_end = models.DateTimeField()
-    reason = models.TextField(blank=True)
-    approved = models.BooleanField(default=False)
-    approved_by = models.ForeignKey(
-        "users.CustomUser",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="approved_overtime_requests",
-    )
-    approved_at = models.DateTimeField(null=True, blank=True)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["employee", "date"]),
-            models.Index(fields=["approved"]),
-        ]
-        ordering = ["-date", "employee_id"]
-
-    def __str__(self):
-        return f"OT {self.employee_id} | {self.date} | {self.time_start}—{self.time_end}"
-
-
 class Holiday(models.Model):
     KIND_CHOICES = [
         ("regular", "Regular Holiday"),
@@ -204,10 +75,332 @@ class Holiday(models.Model):
     def __str__(self):
         return f"{self.date} - {self.name} ({self.kind})"
 
+
+class ManualDeduction(models.Model):
+    """
+    Manual deductions that can be applied to employee payrolls.
+    Three types:
+    1. per_employee: Specific one-time or recurring deduction for a single employee
+    2. recurring_all: Recurring deduction type that applies to all employees
+    3. onetime_all: One-time deduction for all employees
+    """
+    
+    DEDUCTION_TYPES = [
+        ("per_employee", "Per Employee"),
+        ("recurring_all", "Recurring for All"),
+        ("onetime_all", "One-Time for All"),
+    ]
+    
+    name = models.CharField(max_length=100, help_text="Deduction name (e.g., Loan, Uniform, Cash Advance)")
+    description = models.TextField(blank=True)
+    deduction_type = models.CharField(max_length=20, choices=DEDUCTION_TYPES)
+    
+    # For per_employee deductions only
+    employee = models.ForeignKey(
+        "users.CustomUser",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="manual_deductions",
+        help_text="Required for per_employee deductions"
+    )
+    
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    effective_date = models.DateField(
+        null=True, 
+        blank=True, 
+        help_text="Date when deduction becomes effective. Required for recurring deductions, optional for one-time (auto-applied to next payroll)"
+    )
+    end_date = models.DateField(null=True, blank=True, help_text="Optional end date for recurring deductions")
+    is_active = models.BooleanField(default=True)
+    
+    # For one-time deductions tracking
+    applied_date = models.DateField(null=True, blank=True, help_text="Date when onetime deduction was applied")
+    
+    is_deleted = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    created_by = models.ForeignKey(
+        "users.CustomUser",
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="created_deductions",
+    )
+    
+    class Meta:
+        indexes = [
+            models.Index(fields=["deduction_type", "is_active"]),
+            models.Index(fields=["employee", "is_active"]),
+            models.Index(fields=["effective_date"]),
+        ]
+        ordering = ["-created_at"]
+    
+    def __str__(self):
+        if self.deduction_type == "per_employee":
+            return f"{self.name} - {self.employee.get_full_name() if self.employee else 'N/A'} - ₱{self.amount}"
+        return f"{self.name} ({self.get_deduction_type_display()}) - ₱{self.amount}"
+    
+    def clean(self):
+        # Validate that per_employee deductions have an employee
+        if self.deduction_type == "per_employee" and not self.employee:
+            raise ValidationError("Per employee deductions must have an employee assigned.")
+        # Validate that recurring_all and onetime_all don't have an employee
+        if self.deduction_type in ["recurring_all", "onetime_all"] and self.employee:
+            raise ValidationError("Recurring/One-time for all deductions cannot have a specific employee.")
+
+
+class TaxBracket(models.Model):
+    """
+    Progressive tax brackets for withholding tax computation.
+    Example: 0-20833 = 0%, 20834-33332 = 20%, etc.
+    """
+    
+    min_income = models.DecimalField(
+        max_digits=12, 
+        decimal_places=2,
+        help_text="Minimum weekly income for this bracket (inclusive)"
+    )
+    max_income = models.DecimalField(
+        max_digits=12, 
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Maximum weekly income for this bracket (inclusive). Null = no upper limit"
+    )
+    base_tax = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Base tax amount for this bracket"
+    )
+    rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=4,
+        help_text="Tax rate as decimal (e.g., 0.20 for 20%)"
+    )
+    
+    effective_start = models.DateField(help_text="Date this bracket becomes effective")
+    effective_end = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date this bracket stops being effective. Null = still active"
+    )
+    
+    is_active = models.BooleanField(default=True)
+    
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_tax_brackets"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['min_income']
+        indexes = [
+            models.Index(fields=['effective_start', 'is_active']),
+        ]
+    
+    def __str__(self):
+        max_display = f"{self.max_income}" if self.max_income else "above"
+        return f"₱{self.min_income} - {max_display}: {self.rate*100}%"
+    
+    @staticmethod
+    def compute_tax(gross_income: Decimal, as_of_date: date) -> Decimal:
+        """
+        Compute progressive withholding tax for given gross income.
+        """
+        brackets = TaxBracket.objects.filter(
+            is_active=True,
+            effective_start__lte=as_of_date,
+        ).filter(
+            models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=as_of_date)
+        ).order_by('min_income')
+        
+        tax = Decimal("0.00")
+        
+        for bracket in brackets:
+            # Check if income falls in this bracket
+            if gross_income <= bracket.min_income:
+                break
+            
+            # Calculate taxable amount in this bracket
+            bracket_max = bracket.max_income if bracket.max_income else gross_income
+            taxable_in_bracket = min(gross_income, bracket_max) - bracket.min_income
+            
+            if taxable_in_bracket > 0:
+                tax = bracket.base_tax + (taxable_in_bracket * bracket.rate)
+        
+        return tax.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+class PercentageDeduction(models.Model):
+    """
+    Percentage-based deductions like withholding tax, HDMF savings, etc.
+    Applied as a percentage of gross pay during payroll computation.
+    """
+    
+    DEDUCTION_TYPES = [
+        ('withholding_tax', 'Withholding Tax'),
+        ('hdmf_savings', 'HDMF Savings'),
+        ('custom_percent', 'Custom Percentage'),
+    ]
+    
+    name = models.CharField(max_length=100)
+    deduction_type = models.CharField(max_length=30, choices=DEDUCTION_TYPES)
+    rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=4,
+        help_text="Rate as decimal (e.g., 0.05 for 5%)"
+    )
+    
+    description = models.TextField(blank=True)
+    
+    effective_start = models.DateField()
+    effective_end = models.DateField(null=True, blank=True)
+    
+    is_active = models.BooleanField(default=True)
+    
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_percentage_deductions"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['deduction_type', 'is_active']),
+            models.Index(fields=['effective_start']),
+        ]
+    
+    def __str__(self):
+        return f"{self.name} - {self.rate*100}%"
+
+
+class GovernmentBenefit(models.Model):
+    """
+    Government-mandated benefits with employee and employer share tracking.
+    Supports both fixed amounts and percentage-based calculations.
+    Examples: SSS, PhilHealth, Pag-IBIG, BIR/Tax
+    """
+    
+    BENEFIT_TYPES = [
+        ('sss', 'SSS'),
+        ('philhealth', 'PhilHealth'),
+        ('pagibig', 'Pag-IBIG / HDMF'),
+        ('bir_tax', 'BIR Withholding Tax'),
+    ]
+    
+    CALCULATION_METHODS = [
+        ('fixed', 'Fixed Amount'),
+        ('percentage', 'Percentage of Gross'),
+        ('progressive_tax', 'Progressive Tax Bracket'),
+    ]
+    
+    benefit_type = models.CharField(max_length=20, choices=BENEFIT_TYPES)
+    name = models.CharField(max_length=100, help_text="Display name (e.g., 'SSS Contribution')")
+    calculation_method = models.CharField(max_length=20, choices=CALCULATION_METHODS)
+    
+    # For fixed amount method
+    employee_share_amount = models.DecimalField(
+        max_digits=12, 
+        decimal_places=2, 
+        null=True, 
+        blank=True,
+        help_text="Fixed employee contribution amount (weekly)"
+    )
+    employer_share_amount = models.DecimalField(
+        max_digits=12, 
+        decimal_places=2, 
+        null=True, 
+        blank=True,
+        help_text="Fixed employer contribution amount (weekly)"
+    )
+    
+    # For percentage method
+    employee_share_rate = models.DecimalField(
+        max_digits=5, 
+        decimal_places=4, 
+        null=True, 
+        blank=True,
+        help_text="Employee percentage rate (e.g., 0.045 for 4.5%)"
+    )
+    employer_share_rate = models.DecimalField(
+        max_digits=5, 
+        decimal_places=4, 
+        null=True, 
+        blank=True,
+        help_text="Employer percentage rate (e.g., 0.08 for 8%)"
+    )
+    
+    # Date effectiveness
+    effective_start = models.DateField(help_text="Date this benefit configuration becomes effective")
+    effective_end = models.DateField(
+        null=True, 
+        blank=True,
+        help_text="Date this benefit configuration ends (null = still active)"
+    )
+    
+    is_active = models.BooleanField(default=True)
+    description = models.TextField(blank=True)
+    
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_government_benefits"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-effective_start', 'benefit_type']
+        indexes = [
+            models.Index(fields=['benefit_type', 'is_active']),
+            models.Index(fields=['effective_start', 'effective_end']),
+        ]
+    
+    def __str__(self):
+        return f"{self.get_benefit_type_display()} - {self.name} ({self.effective_start})"
+    
+    def compute_employee_share(self, gross_pay: Decimal) -> Decimal:
+        """Compute employee's share of this benefit"""
+        if self.calculation_method == 'fixed':
+            return Decimal(self.employee_share_amount or 0)
+        elif self.calculation_method == 'percentage':
+            return (gross_pay * Decimal(self.employee_share_rate or 0)).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+        elif self.calculation_method == 'progressive_tax':
+            # For BIR tax, use TaxBracket computation
+            return TaxBracket.compute_tax(gross_pay, self.effective_start)
+        return Decimal("0.00")
+    
+    def compute_employer_share(self, gross_pay: Decimal) -> Decimal:
+        """Compute employer's share of this benefit"""
+        if self.calculation_method == 'fixed':
+            return Decimal(self.employer_share_amount or 0)
+        elif self.calculation_method == 'percentage':
+            return (gross_pay * Decimal(self.employer_share_rate or 0)).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+        # Progressive tax has no employer share
+        return Decimal("0.00")
+
+
 class WeeklyPayroll(models.Model):
 
     """
-    A weekly payroll summary for an employee.
+    A weekly payroll summary for an emploee.
 
     - week_start: The date representing the start of the payroll week (e.g., Monday).
     - Computation is weekly: regular up to overtime_threshold hours; remainder = overtime.
@@ -222,6 +415,7 @@ class WeeklyPayroll(models.Model):
         ("draft", "Draft"),
         ("approved", "Approved"),
         ("paid", "Paid"),
+        ("received", "Received"),
     ]
 
     employee = models.ForeignKey(
@@ -299,6 +493,22 @@ class WeeklyPayroll(models.Model):
         max_digits=12, decimal_places=2, default=Decimal("0.00")
     )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="draft")
+    
+    # Received confirmation (employee confirms receipt after paid)
+    received_at = models.DateTimeField(null=True, blank=True)
+    received_by = models.ForeignKey(
+        "users.CustomUser",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="received_payrolls",
+    )
+    
+    # Dispute tracking (employee can dispute incorrect payroll)
+    disputed = models.BooleanField(default=False)
+    disputed_reason = models.TextField(blank=True)
+    disputed_at = models.DateTimeField(null=True, blank=True)
+    
     notes = models.TextField(blank=True)
 
     is_deleted = models.BooleanField(default=False)
@@ -551,6 +761,114 @@ class WeeklyPayroll(models.Model):
 
         }
 
+        # Apply manual deductions
+        try:
+            from payroll.models import ManualDeduction
+            
+            # Get per_employee deductions for this employee
+            per_employee_deductions = ManualDeduction.objects.filter(
+                is_deleted=False,
+                is_active=True,
+                deduction_type='per_employee',
+                employee=self.employee,
+            )
+            
+            for deduction in per_employee_deductions:
+                # Determine if this is one-time or recurring:
+                # One-time: has effective_date but NO end_date (applied once)
+                # Recurring: has effective_date AND end_date (applied multiple times)
+                
+                if deduction.end_date is None:
+                    # One-time deduction: apply once if effective_date is within or before this week
+                    # and hasn't been applied yet
+                    if deduction.effective_date and deduction.effective_date <= self.week_end:
+                        if deduction.applied_date is None:
+                            key = f"manual_{deduction.id}_{deduction.name.lower().replace(' ', '_')}"
+                            deductions_map[key] = self._q(Decimal(deduction.amount))
+                            # Mark as applied
+                            deduction.applied_date = self.week_start
+                            deduction.save(update_fields=['applied_date'])
+                else:
+                    # Recurring deduction: apply if within effective date range
+                    if deduction.effective_date and deduction.effective_date <= self.week_end:
+                        # Check if still within end_date range
+                        if deduction.end_date >= self.week_start:
+                            key = f"manual_{deduction.id}_{deduction.name.lower().replace(' ', '_')}"
+                            deductions_map[key] = self._q(Decimal(deduction.amount))
+            
+            # Get recurring_all deductions that apply to all employees
+            recurring_all = ManualDeduction.objects.filter(
+                is_deleted=False,
+                is_active=True,
+                deduction_type='recurring_all',
+                effective_date__isnull=False,
+                effective_date__lte=self.week_end,
+            ).filter(
+                models.Q(end_date__isnull=True) | models.Q(end_date__gte=self.week_start)
+            )
+            
+            for deduction in recurring_all:
+                key = f"manual_all_{deduction.id}_{deduction.name.lower().replace(' ', '_')}"
+                deductions_map[key] = self._q(Decimal(deduction.amount))
+            
+            # Get onetime_all deductions that haven't been applied yet
+            # For onetime_all, if no effective_date, apply once in next payroll
+            # If effective_date is set, apply in that specific week
+            onetime_all = ManualDeduction.objects.filter(
+                is_deleted=False,
+                is_active=True,
+                deduction_type='onetime_all',
+            )
+            
+            for deduction in onetime_all:
+                should_apply = False
+                
+                # If no effective_date, apply once if not yet applied
+                if deduction.effective_date is None:
+                    if deduction.applied_date is None:
+                        should_apply = True
+                else:
+                    # If effective_date is set, apply only in the week containing that date
+                    if (deduction.effective_date >= self.week_start and 
+                        deduction.effective_date < self.week_end):
+                        if deduction.applied_date is None or deduction.applied_date == self.week_start:
+                            should_apply = True
+                
+                if should_apply:
+                    key = f"manual_onetime_{deduction.id}_{deduction.name.lower().replace(' ', '_')}"
+                    deductions_map[key] = self._q(Decimal(deduction.amount))
+                    
+                    # Mark as applied if not already
+                    if not deduction.applied_date:
+                        deduction.applied_date = self.week_start
+                        deduction.save(update_fields=['applied_date'])
+        
+        except Exception as e:
+            # Log error but don't fail payroll computation
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error applying manual deductions: {e}")
+
+        # Apply percentage-based deductions (HDMF savings, etc.)
+        try:
+            from payroll.models import PercentageDeduction
+            
+            percentage_deductions = PercentageDeduction.objects.filter(
+                is_active=True,
+                effective_start__lte=self.week_start,
+            ).filter(
+                models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
+            )
+            
+            for pct_deduction in percentage_deductions:
+                key = pct_deduction.name.lower().replace(' ', '_')
+                if key not in deductions_map:
+                    deductions_map[key] = self._q(self.gross_pay * Decimal(pct_deduction.rate))
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error applying percentage deductions: {e}")
+        
         # Apply statutory weekly deductions based on DeductionRate effective for this week_start
         try:
             # Find active rates whose effective window covers this payroll week_start
@@ -768,7 +1086,117 @@ class WeeklyPayroll(models.Model):
         if late_penalties_total > 0:
             deductions_map['late_penalty'] = self._q(late_penalties_total)
         
-        # Apply statutory deductions
+        # Apply manual deductions
+        try:
+            from payroll.models import ManualDeduction
+            
+            # Get per_employee deductions for this employee
+            per_employee_deductions = ManualDeduction.objects.filter(
+                is_deleted=False,
+                is_active=True,
+                deduction_type='per_employee',
+                employee=self.employee,
+            )
+            
+            for deduction in per_employee_deductions:
+                # Determine if this is one-time or recurring:
+                # One-time: has effective_date but NO end_date (applied once)
+                # Recurring: has effective_date AND end_date (applied multiple times)
+                
+                if deduction.end_date is None:
+                    # One-time deduction: apply once if effective_date is within or before this week
+                    # and hasn't been applied yet
+                    if deduction.effective_date and deduction.effective_date <= self.week_end:
+                        if deduction.applied_date is None:
+                            key = f"manual_{deduction.id}_{deduction.name.lower().replace(' ', '_')}"
+                            deductions_map[key] = self._q(Decimal(deduction.amount))
+                            # Mark as applied
+                            deduction.applied_date = self.week_start
+                            deduction.save(update_fields=['applied_date'])
+                else:
+                    # Recurring deduction: apply if within effective date range
+                    if deduction.effective_date and deduction.effective_date <= self.week_end:
+                        # Check if still within end_date range
+                        if deduction.end_date >= self.week_start:
+                            key = f"manual_{deduction.id}_{deduction.name.lower().replace(' ', '_')}"
+                            deductions_map[key] = self._q(Decimal(deduction.amount))
+                            key = f"manual_{deduction.id}_{deduction.name.lower().replace(' ', '_')}"
+                            deductions_map[key] = self._q(Decimal(deduction.amount))
+            
+            # Get recurring_all deductions that apply to all employees
+            recurring_all = ManualDeduction.objects.filter(
+                is_deleted=False,
+                is_active=True,
+                deduction_type='recurring_all',
+                effective_date__isnull=False,
+                effective_date__lte=self.week_end,
+            ).filter(
+                models.Q(end_date__isnull=True) | models.Q(end_date__gte=self.week_start)
+            )
+            
+            for deduction in recurring_all:
+                key = f"manual_all_{deduction.id}_{deduction.name.lower().replace(' ', '_')}"
+                deductions_map[key] = self._q(Decimal(deduction.amount))
+            
+            # Get onetime_all deductions that haven't been applied yet
+            # For onetime_all, if no effective_date, apply once in next payroll
+            # If effective_date is set, apply in that specific week
+            onetime_all = ManualDeduction.objects.filter(
+                is_deleted=False,
+                is_active=True,
+                deduction_type='onetime_all',
+            )
+            
+            for deduction in onetime_all:
+                should_apply = False
+                
+                # If no effective_date, apply once if not yet applied
+                if deduction.effective_date is None:
+                    if deduction.applied_date is None:
+                        should_apply = True
+                else:
+                    # If effective_date is set, apply only in the week containing that date
+                    if (deduction.effective_date >= self.week_start and 
+                        deduction.effective_date < self.week_end):
+                        if deduction.applied_date is None or deduction.applied_date == self.week_start:
+                            should_apply = True
+                
+                if should_apply:
+                    key = f"manual_onetime_{deduction.id}_{deduction.name.lower().replace(' ', '_')}"
+                    deductions_map[key] = self._q(Decimal(deduction.amount))
+                    
+                    # Mark as applied if not already
+                    if not deduction.applied_date:
+                        deduction.applied_date = self.week_start
+                        deduction.save(update_fields=['applied_date'])
+        
+        except Exception as e:
+            # Log error but don't fail payroll computation
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error applying manual deductions: {e}")
+        
+        # Apply percentage-based deductions (HDMF savings, etc.)
+        try:
+            from payroll.models import PercentageDeduction
+            
+            percentage_deductions = PercentageDeduction.objects.filter(
+                is_active=True,
+                effective_start__lte=self.week_start,
+            ).filter(
+                models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
+            )
+            
+            for pct_deduction in percentage_deductions:
+                key = pct_deduction.name.lower().replace(' ', '_')
+                if key not in deductions_map:
+                    deductions_map[key] = self._q(self.gross_pay * Decimal(pct_deduction.rate))
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error applying percentage deductions: {e}")
+        
+        # Apply statutory deductions (fixed amounts)
         try:
             statutory_qs = DeductionRate.objects.filter(
                 name__in=['sss', 'philhealth', 'pagibig'],
@@ -791,6 +1219,22 @@ class WeeklyPayroll(models.Model):
         self.deductions = {k: float(self._q(v)) for k, v in deductions_map.items()}
         self.total_deductions = self._q(sum(self.deductions.values()))
         self.net_pay = self._q(self.gross_pay - self.total_deductions)
+    
+    def create_deduction_records(self):
+        """
+        Create structured PayrollDeduction records for this payroll.
+        Should be called after save() to ensure payroll has an ID.
+        Clears existing records and recreates them.
+        """
+        # Clear existing deduction records
+        self.deduction_items.all().delete()
+        
+        # Call the helper to get deduction records
+        _, deduction_records = self._apply_all_deductions()
+        
+        # Bulk create all deduction records
+        if deduction_records:
+            PayrollDeduction.objects.bulk_create(deduction_records)
 
     def _week_start_as_datetime(self, d: date) -> datetime:
         """
@@ -806,6 +1250,322 @@ class WeeklyPayroll(models.Model):
     def _q(value: Decimal, places=2) -> Decimal:
         exp = Decimal(10) ** -places
         return Decimal(value).quantize(exp, rounding=ROUND_HALF_UP)
+    
+    def _apply_all_deductions(self):
+        """
+        Apply all applicable deductions and create PayrollDeduction records.
+        This method computes deductions from all sources and creates structured records.
+        
+        Sources:
+        1. Manual deductions (per_employee, recurring_all, onetime_all)
+        2. Government benefits (SSS, PhilHealth, Pag-IBIG, BIR Tax)
+        3. Legacy percentage deductions
+        4. Late penalties (from attendance)
+        5. Extra deductions passed via parameters
+        
+        Returns: tuple of (deductions_map, deduction_records_to_create)
+        """
+        from payroll.models import ManualDeduction, GovernmentBenefit, PercentageDeduction
+        
+        deductions_map: dict[str, Decimal] = {}
+        deduction_records = []
+        
+        # 1. Apply Manual Deductions (per_employee)
+        try:
+            per_employee_deductions = ManualDeduction.objects.filter(
+                is_deleted=False,
+                is_active=True,
+                deduction_type='per_employee',
+                employee=self.employee,
+            )
+            
+            for deduction in per_employee_deductions:
+                if deduction.end_date is None:
+                    # One-time deduction
+                    if deduction.effective_date and deduction.effective_date <= self.week_end:
+                        if deduction.applied_date is None:
+                            key = f"manual_{deduction.id}_{deduction.name.lower().replace(' ', '_')}"
+                            amount = self._q(Decimal(deduction.amount))
+                            deductions_map[key] = amount
+                            
+                            # Create structured record
+                            deduction_records.append(PayrollDeduction(
+                                payroll=self,
+                                category='manual',
+                                name=deduction.name,
+                                description=deduction.description,
+                                employee_share=amount,
+                                employer_share=Decimal("0.00"),
+                                source_type='ManualDeduction',
+                                source_id=deduction.id,
+                                calculation_method='fixed',
+                            ))
+                            
+                            # Mark as applied
+                            deduction.applied_date = self.week_start
+                            deduction.save(update_fields=['applied_date'])
+                else:
+                    # Recurring deduction
+                    if deduction.effective_date and deduction.effective_date <= self.week_end:
+                        if deduction.end_date >= self.week_start:
+                            key = f"manual_{deduction.id}_{deduction.name.lower().replace(' ', '_')}"
+                            amount = self._q(Decimal(deduction.amount))
+                            deductions_map[key] = amount
+                            
+                            deduction_records.append(PayrollDeduction(
+                                payroll=self,
+                                category='manual',
+                                name=deduction.name,
+                                description=deduction.description,
+                                employee_share=amount,
+                                employer_share=Decimal("0.00"),
+                                source_type='ManualDeduction',
+                                source_id=deduction.id,
+                                calculation_method='fixed',
+                            ))
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error applying manual deductions: {e}")
+        
+        # 2. Apply Company-wide Manual Deductions
+        try:
+            # Recurring for all
+            recurring_all = ManualDeduction.objects.filter(
+                is_deleted=False,
+                is_active=True,
+                deduction_type='recurring_all',
+                effective_date__isnull=False,
+                effective_date__lte=self.week_end,
+            ).filter(
+                models.Q(end_date__isnull=True) | models.Q(end_date__gte=self.week_start)
+            )
+            
+            for deduction in recurring_all:
+                key = f"manual_all_{deduction.id}_{deduction.name.lower().replace(' ', '_')}"
+                amount = self._q(Decimal(deduction.amount))
+                deductions_map[key] = amount
+                
+                deduction_records.append(PayrollDeduction(
+                    payroll=self,
+                    category='manual',
+                    name=deduction.name,
+                    description=f"Company-wide: {deduction.description}",
+                    employee_share=amount,
+                    employer_share=Decimal("0.00"),
+                    source_type='ManualDeduction',
+                    source_id=deduction.id,
+                    calculation_method='fixed',
+                ))
+            
+            # One-time for all
+            onetime_all = ManualDeduction.objects.filter(
+                is_deleted=False,
+                is_active=True,
+                deduction_type='onetime_all',
+            )
+            
+            for deduction in onetime_all:
+                should_apply = False
+                
+                if deduction.effective_date is None:
+                    if deduction.applied_date is None:
+                        should_apply = True
+                else:
+                    if (deduction.effective_date >= self.week_start and 
+                        deduction.effective_date < self.week_end):
+                        if deduction.applied_date is None or deduction.applied_date == self.week_start:
+                            should_apply = True
+                
+                if should_apply:
+                    key = f"manual_onetime_{deduction.id}_{deduction.name.lower().replace(' ', '_')}"
+                    amount = self._q(Decimal(deduction.amount))
+                    deductions_map[key] = amount
+                    
+                    deduction_records.append(PayrollDeduction(
+                        payroll=self,
+                        category='manual',
+                        name=deduction.name,
+                        description=f"One-time (all): {deduction.description}",
+                        employee_share=amount,
+                        employer_share=Decimal("0.00"),
+                        source_type='ManualDeduction',
+                        source_id=deduction.id,
+                        calculation_method='fixed',
+                    ))
+                    
+                    if not deduction.applied_date:
+                        deduction.applied_date = self.week_start
+                        deduction.save(update_fields=['applied_date'])
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error applying company-wide deductions: {e}")
+        
+        # 3. Apply Government Benefits
+        try:
+            gov_benefits = GovernmentBenefit.objects.filter(
+                is_active=True,
+                effective_start__lte=self.week_start,
+            ).filter(
+                models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
+            )
+            
+            for benefit in gov_benefits:
+                employee_share = benefit.compute_employee_share(self.gross_pay)
+                employer_share = benefit.compute_employer_share(self.gross_pay)
+                
+                if employee_share > 0:
+                    key = benefit.benefit_type
+                    deductions_map[key] = employee_share
+                    
+                    category = 'tax' if benefit.benefit_type == 'bir_tax' else 'government'
+                    
+                    deduction_records.append(PayrollDeduction(
+                        payroll=self,
+                        category=category,
+                        name=benefit.name,
+                        description=benefit.description,
+                        employee_share=employee_share,
+                        employer_share=employer_share,
+                        source_type='GovernmentBenefit',
+                        source_id=benefit.id,
+                        calculation_method=benefit.calculation_method,
+                        basis_amount=self.gross_pay if benefit.calculation_method in ['percentage', 'progressive_tax'] else None,
+                        rate=benefit.employee_share_rate if benefit.calculation_method == 'percentage' else None,
+                    ))
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error applying government benefits: {e}")
+        
+        # 4. Apply Legacy Percentage Deductions (if any still exist)
+        try:
+            percentage_deductions = PercentageDeduction.objects.filter(
+                is_active=True,
+                effective_start__lte=self.week_start,
+            ).filter(
+                models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
+            )
+            
+            for pct_deduction in percentage_deductions:
+                key = pct_deduction.name.lower().replace(' ', '_')
+                if key not in deductions_map:
+                    amount = self._q(self.gross_pay * Decimal(pct_deduction.rate))
+                    deductions_map[key] = amount
+                    
+                    deduction_records.append(PayrollDeduction(
+                        payroll=self,
+                        category='other',
+                        name=pct_deduction.name,
+                        description=pct_deduction.description,
+                        employee_share=amount,
+                        employer_share=Decimal("0.00"),
+                        source_type='PercentageDeduction',
+                        source_id=pct_deduction.id,
+                        calculation_method='percentage',
+                        basis_amount=self.gross_pay,
+                        rate=pct_deduction.rate,
+                    ))
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error applying percentage deductions: {e}")
+        
+        return deductions_map, deduction_records
+
+
+class PayrollDeduction(models.Model):
+    """
+    Individual deduction line item for a payroll period.
+    Provides structured breakdown of all deductions with proper categorization.
+    
+    This model stores the COMPUTED deduction amounts for historical record keeping,
+    but deductions are DERIVED from source models (ManualDeduction, GovernmentBenefit, etc.)
+    during payroll generation.
+    """
+    
+    DEDUCTION_CATEGORIES = [
+        ('manual', 'Manual Deduction'),
+        ('government', 'Government Benefit'),
+        ('tax', 'Withholding Tax'),
+        ('late_penalty', 'Late Penalty'),
+        ('other', 'Other'),
+    ]
+    
+    payroll = models.ForeignKey(
+        WeeklyPayroll,
+        on_delete=models.CASCADE,
+        related_name='deduction_items'
+    )
+    
+    category = models.CharField(max_length=20, choices=DEDUCTION_CATEGORIES)
+    name = models.CharField(max_length=100, help_text="Deduction name (e.g., 'SSS', 'Loan Repayment')")
+    description = models.TextField(blank=True)
+    
+    # Amount breakdown
+    employee_share = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Amount deducted from employee's pay"
+    )
+    employer_share = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Amount paid by employer (for reporting, not deducted from employee)"
+    )
+    
+    # Source tracking
+    source_type = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Source model name (e.g., 'ManualDeduction', 'GovernmentBenefit')"
+    )
+    source_id = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="ID of the source record"
+    )
+    
+    # Calculation metadata
+    calculation_method = models.CharField(
+        max_length=20,
+        blank=True,
+        help_text="How this was calculated (fixed, percentage, progressive_tax)"
+    )
+    basis_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Base amount used for calculation (e.g., gross pay for percentage deductions)"
+    )
+    rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text="Rate used for percentage calculations"
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['category', 'name']
+        indexes = [
+            models.Index(fields=['payroll', 'category']),
+            models.Index(fields=['source_type', 'source_id']),
+        ]
+    
+    def __str__(self):
+        return f"{self.payroll} - {self.name}: ₱{self.employee_share}"
+    
+    @property
+    def total_amount(self) -> Decimal:
+        """Total deduction (employee + employer share)"""
+        return self.employee_share + self.employer_share
 
 
 class PayrollSettings(models.Model):
@@ -881,6 +1641,21 @@ class PayrollSettings(models.Model):
     )
     special_holiday_no_work_pays = models.BooleanField(
         default=False, help_text="Pay +30% daily even if no work on special non-working holiday."
+    )
+    
+    # Payroll cutoff configuration
+    payroll_cutoff_day = models.PositiveIntegerField(
+        default=4,  # Friday
+        choices=[
+            (0, "Monday"),
+            (1, "Tuesday"),
+            (2, "Wednesday"),
+            (3, "Thursday"),
+            (4, "Friday"),
+            (5, "Saturday"),
+            (6, "Sunday"),
+        ],
+        help_text="Last day of payroll week (0=Monday, 4=Friday). Week starts the day after this cutoff.",
     )
 
     class Meta:

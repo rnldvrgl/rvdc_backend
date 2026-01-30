@@ -7,7 +7,7 @@ from django.db.models import Q
 from datetime import date
 from django.utils import timezone
 
-from attendance.models import DailyAttendance, LeaveBalance, LeaveRequest, Offense
+from attendance.models import DailyAttendance, LeaveBalance, LeaveRequest, Offense, OvertimeRequest
 from attendance.api.serializers import (
     DailyAttendanceSerializer,
     ClockInSerializer,
@@ -20,6 +20,8 @@ from attendance.api.serializers import (
     RejectLeaveSerializer,
     OffenseSerializer,
     OffenseStatisticsSerializer,
+    OvertimeRequestSerializer,
+    OvertimeRequestApproveSerializer,
 )
 
 
@@ -114,14 +116,13 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
             )
             .first()
         )
-        
+
         # Check if employee is currently suspended
         is_suspended = Offense.is_employee_suspended(request.user)
         suspension_info = None
         
         if is_suspended:
-            from django.utils import timezone
-            today = timezone.now().date()
+            today = timezone.localdate()
             suspension = Offense.objects.filter(
                 employee=request.user,
                 severity_level='SUSPENSION',
@@ -173,10 +174,10 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
         
         # Check if employee is currently suspended
         from attendance.models import Offense
-        from users.models import User
+        from users.models import CustomUser
         
         try:
-            employee = User.objects.get(id=employee_id)
+            employee = CustomUser.objects.get(id=employee_id)
             if Offense.is_employee_suspended(employee):
                 # Get suspension details for error message
                 from django.utils import timezone
@@ -193,7 +194,7 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
                         {'detail': f'Employee is currently suspended until {suspension.suspension_end_date}. Cannot clock in.'},
                         status=status.HTTP_403_FORBIDDEN
                     )
-        except User.DoesNotExist:
+        except CustomUser.DoesNotExist:
             pass
         
         # Check if attendance already exists for this employee on this date
@@ -906,5 +907,73 @@ class OffenseViewSet(viewsets.ModelViewSet):
         employee_id = pk
         offenses = Offense.objects.filter(employee_id=employee_id).order_by('-date')
         serializer = self.get_serializer(offenses, many=True)
+        return Response(serializer.data)
+
+
+class OvertimeRequestViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for overtime request management.
+    
+    Permissions:
+    - Admin/Manager: Can view all, approve/reject requests
+    - Employees: Can view and create their own requests
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get_serializer_class(self):
+        if self.action == 'approve':
+            return OvertimeRequestApproveSerializer
+        return OvertimeRequestSerializer
+    
+    def get_queryset(self):
+        user = self.request.user
+        queryset = OvertimeRequest.objects.all().select_related("employee", "approved_by")
+        
+        # Filter by employee for non-admin/manager users
+        if user.role not in ['admin', 'manager']:
+            queryset = queryset.filter(employee=user)
+        
+        # Filter parameters
+        employee_id = self.request.query_params.get('employee')
+        approved = self.request.query_params.get('approved')
+        date_from = self.request.query_params.get('date_from')
+        date_to = self.request.query_params.get('date_to')
+        
+        if employee_id:
+            queryset = queryset.filter(employee_id=employee_id)
+        if approved is not None:
+            queryset = queryset.filter(approved=approved.lower() == 'true')
+        if date_from:
+            queryset = queryset.filter(date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(date__lte=date_to)
+        
+        return queryset.order_by('-date', '-created_at')
+    
+    def perform_create(self, serializer):
+        """Create overtime request for the current user if not specified"""
+        user = self.request.user
+        # If employee not specified and user is not admin/manager, use current user
+        if 'employee' not in serializer.validated_data and user.role not in ['admin', 'manager']:
+            serializer.save(employee=user)
+        else:
+            serializer.save()
+    
+    @action(detail=True, methods=['patch'], permission_classes=[IsAuthenticated])
+    def approve(self, request, pk=None):
+        """Approve or reject an overtime request"""
+        overtime_request = self.get_object()
+        
+        # Only admin/manager can approve
+        if request.user.role not in ['admin', 'manager']:
+            return Response(
+                {"detail": "You don't have permission to approve overtime requests."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        serializer = self.get_serializer(overtime_request, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(approved_by=request.user)
+        
         return Response(serializer.data)
 

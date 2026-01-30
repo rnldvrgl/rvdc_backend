@@ -7,10 +7,13 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from payroll.models import (
     AdditionalEarning,
+    GovernmentBenefit,
     Holiday,
-    OvertimeRequest,
+    ManualDeduction,
+    PayrollDeduction,
     PayrollSettings,
-    TimeEntry,
+    PercentageDeduction,
+    TaxBracket,
     WeeklyPayroll,
 )
 from rest_framework import serializers
@@ -20,10 +23,13 @@ User = get_user_model()
 
 class MinimalUserSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
+    daily_rate = serializers.SerializerMethodField()
+    hourly_rate = serializers.SerializerMethodField()
+    role = serializers.CharField()
 
     class Meta:
         model = User
-        fields = ["id", "username", "first_name", "last_name", "full_name"]
+        fields = ["id", "username", "first_name", "last_name", "full_name", "daily_rate", "hourly_rate", "role"]
         read_only_fields = fields
 
     def get_full_name(self, obj: User) -> str:
@@ -38,154 +44,30 @@ class MinimalUserSerializer(serializers.ModelSerializer):
         except Exception:
             return f"{obj.first_name or ''} {obj.last_name or ''}".strip()
 
-
-class TimeEntrySerializer(serializers.ModelSerializer):
-    effective_hours = serializers.SerializerMethodField(read_only=True)
-    work_date = serializers.SerializerMethodField(read_only=True)
-    employee_detail = MinimalUserSerializer(source="employee", read_only=True)
-
-    employee = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.all(), required=False, allow_null=False
-    )
-
-    class Meta:
-        model = TimeEntry
-        fields = [
-            "id",
-            "employee",
-            "employee_detail",
-            "clock_in",
-            "clock_out",
-            "unpaid_break_minutes",
-            "source",
-            "approved",
-            "notes",
-            "is_deleted",
-            "created_at",
-            "updated_at",
-            "work_date",
-            "effective_hours",
-        ]
-        read_only_fields = [
-            "id",
-            "is_deleted",
-            "created_at",
-            "updated_at",
-            "work_date",
-            "effective_hours",
-        ]
-
-    def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
-        clock_in = attrs.get("clock_in", getattr(self.instance, "clock_in", None))
-        clock_out = attrs.get("clock_out", getattr(self.instance, "clock_out", None))
-        unpaid_break_minutes = attrs.get(
-            "unpaid_break_minutes", getattr(self.instance, "unpaid_break_minutes", 0)
-        )
-
-        if clock_in and clock_out and clock_out <= clock_in:
-            raise serializers.ValidationError(
-                {"clock_out": "clock_out must be after clock_in."}
-            )
-
-        if unpaid_break_minutes is not None and unpaid_break_minutes < 0:
-            raise serializers.ValidationError(
-                {"unpaid_break_minutes": "Must be non-negative."}
-            )
-
-        # Optional: ensure unpaid_break does not exceed total duration (soft check)
-        if clock_in and clock_out and unpaid_break_minutes:
-            total_minutes = (clock_out - clock_in).total_seconds() / 60.0
-            if unpaid_break_minutes > max(total_minutes, 0):
-                raise serializers.ValidationError(
-                    {"unpaid_break_minutes": "Break minutes exceed worked duration."}
-                )
-
-        return attrs
-
-    def create(self, validated_data: Dict[str, Any]) -> TimeEntry:
-        # Default employee to current user if not provided
-        if "employee" not in validated_data:
-            request = self.context.get("request")
-            if request and request.user and request.user.is_authenticated:
-                validated_data["employee"] = request.user
-        instance = super().create(validated_data)
-        return instance
-
-    def get_effective_hours(self, obj: TimeEntry) -> str:
-        # Render with 4 decimal places as a string for precision and consistency
+    def get_daily_rate(self, obj: User) -> Optional[str]:
+        """Return basic_salary as daily rate"""
         try:
-            return f"{obj.effective_hours}"
+            if obj.basic_salary:
+                return str(obj.basic_salary.quantize(Decimal('0.01')))
+            return None
         except Exception:
-            return "0.0"
+            return None
 
-    def get_work_date(self, obj: TimeEntry) -> str:
+    def get_hourly_rate(self, obj: User) -> Optional[str]:
+        """Calculate hourly rate from daily rate (basic_salary / 8 hours)"""
         try:
-            dt = obj.clock_in
-            local_dt = timezone.localtime(dt) if timezone.is_aware(dt) else dt
-            return local_dt.date().isoformat()
+            if obj.basic_salary:
+                hourly = obj.basic_salary / Decimal('8')
+                return str(hourly.quantize(Decimal('0.01')))
+            return None
         except Exception:
-            return ""
+            return None
 
-
-class TimeEntryBulkCreateSerializer(serializers.Serializer):
-    """
-    Bulk create time entries with the same time window for multiple employees.
-    Accepts:
-    - employee_ids: list[int]
-    - clock_in: datetime
-    - clock_out: datetime
-    - unpaid_break_minutes: int (>= 0, default 0)
-    - source: TimeEntry.SOURCE_CHOICES (default "manual")
-    - approved: bool (default True)
-    - notes: str
-    """
-
-    employee_ids = serializers.ListField(
-        child=serializers.IntegerField(min_value=1),
-        allow_empty=False,
-    )
-    clock_in = serializers.DateTimeField()
-    clock_out = serializers.DateTimeField()
-    unpaid_break_minutes = serializers.IntegerField(
-        required=False, min_value=0, default=0
-    )
-    source = serializers.ChoiceField(
-        choices=[c[0] for c in TimeEntry.SOURCE_CHOICES],
-        required=False,
-        default="manual",
-    )
-    approved = serializers.BooleanField(required=False, default=True)
-    notes = serializers.CharField(required=False, allow_blank=True)
-
-    def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
-        clock_in = attrs.get("clock_in")
-        clock_out = attrs.get("clock_out")
-
-        unpaid_break_minutes = attrs.get("unpaid_break_minutes", 0)
-
-        if clock_in and clock_out and clock_out <= clock_in:
-            raise serializers.ValidationError(
-                {"clock_out": "clock_out must be after clock_in."}
-            )
-
-        if unpaid_break_minutes is not None and unpaid_break_minutes < 0:
-            raise serializers.ValidationError(
-                {"unpaid_break_minutes": "Must be non-negative."}
-            )
-
-        if clock_in and clock_out and unpaid_break_minutes:
-            total_minutes = (clock_out - clock_in).total_seconds() / 60.0
-            if unpaid_break_minutes > max(total_minutes, 0):
-                raise serializers.ValidationError(
-                    {"unpaid_break_minutes": "Break minutes exceed worked duration."}
-                )
-
-        if not attrs.get("employee_ids"):
-            raise serializers.ValidationError(
-                {"employee_ids": "At least one employee id is required."}
-            )
-
-        return attrs
+    def get_role(self, obj: User) -> str:
+        try:
+            return obj.role
+        except Exception:
+            return "N/A"
 
 
 class AdditionalEarningSerializer(serializers.ModelSerializer):
@@ -249,67 +131,6 @@ class AdditionalEarningBulkCreateSerializer(serializers.Serializer):
         return attrs
 
 
-class OvertimeRequestSerializer(serializers.ModelSerializer):
-    employee_detail = MinimalUserSerializer(source="employee", read_only=True)
-    employee = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=True)
-
-    class Meta:
-        model = OvertimeRequest
-        fields = [
-            "id",
-            "employee",
-            "employee_detail",
-            "date",
-            "time_start",
-            "time_end",
-            "reason",
-            "approved",
-            "approved_by",
-            "approved_at",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = [
-            "id",
-            "approved",
-            "approved_by",
-            "approved_at",
-            "created_at",
-            "updated_at",
-        ]
-
-    def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
-        time_start = attrs.get("time_start", getattr(self.instance, "time_start", None))
-        time_end = attrs.get("time_end", getattr(self.instance, "time_end", None))
-        if time_start and time_end and time_end <= time_start:
-            raise serializers.ValidationError({"time_end": "time_end must be after time_start."})
-        return attrs
-
-
-class OvertimeRequestApproveSerializer(serializers.ModelSerializer):
-    approved = serializers.BooleanField(required=True)
-    approved_by = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False)
-
-    class Meta:
-        model = OvertimeRequest
-        fields = ["id", "approved", "approved_by", "approved_at"]
-        read_only_fields = ["id", "approved_at"]
-
-    def update(self, instance: OvertimeRequest, validated_data: Dict[str, Any]) -> OvertimeRequest:
-        approved = validated_data.get("approved", instance.approved)
-        instance.approved = approved
-        # Set approver from context request user if not explicitly provided
-        request = self.context.get("request")
-        approver = validated_data.get("approved_by")
-        if not approver and request and getattr(request, "user", None) and request.user.is_authenticated:
-            approver = request.user
-        instance.approved_by = approver
-        # Set timestamp when approved toggled to True
-        if approved and not instance.approved_at:
-            instance.approved_at = timezone.now()
-        instance.save(update_fields=["approved", "approved_by", "approved_at", "updated_at"])
-        return instance
-
 class DeductionsField(serializers.Field):
     """
     Validates a mapping of {string: number} and normalizes to {string: Decimal('0.00')}.
@@ -366,6 +187,11 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
     employee = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(), required=True
     )
+    received_by_detail = MinimalUserSerializer(source="received_by", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    
+    # Import here to avoid circular import
+    deduction_items = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = WeeklyPayroll
@@ -385,6 +211,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "approved_ot_hours",
             "total_hours",
             "allowances",
+            "additional_earnings_total",
             "gross_pay",
             "night_diff_pay",
             "approved_ot_pay",
@@ -392,14 +219,23 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "holiday_pay_special",
             "holiday_pay_total",
             "deductions",
+            "deduction_items",
             "total_deductions",
             "net_pay",
             "status",
+            "status_display",
+            "received_at",
+            "received_by",
+            "received_by_detail",
+            "disputed",
+            "disputed_reason",
+            "disputed_at",
             "notes",
             "is_deleted",
             "created_at",
             "updated_at",
         ]
+            
         read_only_fields = [
             "id",
             "regular_hours",
@@ -407,6 +243,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "night_diff_hours",
             "approved_ot_hours",
             "total_hours",
+            "additional_earnings_total",
             "gross_pay",
             "night_diff_pay",
             "approved_ot_pay",
@@ -414,6 +251,13 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "holiday_pay_special",
             "holiday_pay_total",
             "total_deductions",
+            "received_at",
+            "received_by",
+            "received_by_detail",
+            "disputed",
+            "disputed_reason",
+            "disputed_at",
+            "status_display",
             "created_at",
             "updated_at",
         ]
@@ -467,6 +311,15 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             return float(total)
         except Exception:
             return 0.0
+    
+    def get_deduction_items(self, obj: WeeklyPayroll) -> list:
+        """Return structured deduction breakdown."""
+        try:
+            from payroll.api.serializers_additions import PayrollDeductionSerializer
+            deduction_items = obj.deduction_items.all().order_by('category', 'name')
+            return PayrollDeductionSerializer(deduction_items, many=True).data
+        except Exception:
+            return []
 
 
 
@@ -487,6 +340,7 @@ class PayrollSettingsSerializer(serializers.ModelSerializer):
             "special_holiday_no_work_pays",
             "overtime_multiplier",
             "night_diff_multiplier",
+            "payroll_cutoff_day",
             "updated_at",
         ]
         read_only_fields = ["id", "updated_at"]
@@ -496,3 +350,260 @@ class HolidaySerializer(serializers.ModelSerializer):
     class Meta:
         model = Holiday
         fields = ["id", "date", "name", "kind", "is_deleted"]
+
+
+class ManualDeductionSerializer(serializers.ModelSerializer):
+    employee_detail = MinimalUserSerializer(source="employee", read_only=True)
+    created_by_detail = MinimalUserSerializer(source="created_by", read_only=True)
+    deduction_type_display = serializers.CharField(source="get_deduction_type_display", read_only=True)
+    
+    class Meta:
+        model = ManualDeduction
+        fields = [
+            "id",
+            "name",
+            "description",
+            "deduction_type",
+            "deduction_type_display",
+            "employee",
+            "employee_detail",
+            "amount",
+            "effective_date",
+            "end_date",
+            "is_active",
+            "applied_date",
+            "is_deleted",
+            "created_by",
+            "created_by_detail",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at", "applied_date"]
+    
+    def validate(self, attrs):
+        # Validate per_employee deductions have employee
+        deduction_type = attrs.get("deduction_type")
+        employee = attrs.get("employee")
+        
+        if deduction_type == "per_employee" and not employee:
+            raise serializers.ValidationError({
+                "employee": "Per employee deductions must have an employee assigned."
+            })
+        
+        if deduction_type in ["recurring_all", "onetime_all"] and employee:
+            raise serializers.ValidationError({
+                "employee": "Recurring/One-time for all deductions cannot have a specific employee."
+            })
+        
+        # Auto-set effective_date to today for one-time per_employee deductions if not provided
+        effective_date = attrs.get("effective_date")
+        if deduction_type == "per_employee" and not effective_date:
+            # One-time deduction - set to today so it applies to next payroll
+            from django.utils import timezone
+            attrs["effective_date"] = timezone.now().date()
+        
+        # Validate amount is positive
+        amount = attrs.get("amount")
+        if amount is not None and amount <= 0:
+            raise serializers.ValidationError({
+                "amount": "Amount must be greater than zero."
+            })
+        
+        # Validate dates
+        effective_date = attrs.get("effective_date")
+        end_date = attrs.get("end_date")
+        
+        if end_date and effective_date and end_date < effective_date:
+            raise serializers.ValidationError({
+                "end_date": "End date must be on or after the effective date."
+            })
+        
+        return attrs
+
+
+class TaxBracketSerializer(serializers.ModelSerializer):
+    created_by_detail = MinimalUserSerializer(source="created_by", read_only=True)
+    
+    class Meta:
+        model = TaxBracket
+        fields = [
+            "id",
+            "min_income",
+            "max_income",
+            "base_tax",
+            "rate",
+            "effective_start",
+            "effective_end",
+            "is_active",
+            "created_by",
+            "created_by_detail",
+            "created_at",
+        ]
+        read_only_fields = ["created_at", "created_by"]
+    
+    def validate(self, attrs):
+        min_income = attrs.get("min_income")
+        max_income = attrs.get("max_income")
+        
+        if max_income and min_income and max_income < min_income:
+            raise serializers.ValidationError({
+                "max_income": "Maximum income must be greater than or equal to minimum income."
+            })
+        
+        effective_start = attrs.get("effective_start")
+        effective_end = attrs.get("effective_end")
+        
+        if effective_end and effective_start and effective_end < effective_start:
+            raise serializers.ValidationError({
+                "effective_end": "End date must be on or after the start date."
+            })
+        
+        return attrs
+
+
+class PercentageDeductionSerializer(serializers.ModelSerializer):
+    created_by_detail = MinimalUserSerializer(source="created_by", read_only=True)
+    deduction_type_display = serializers.CharField(source="get_deduction_type_display", read_only=True)
+    
+    class Meta:
+        model = PercentageDeduction
+        fields = [
+            "id",
+            "name",
+            "deduction_type",
+            "deduction_type_display",
+            "rate",
+            "description",
+            "effective_start",
+            "effective_end",
+            "is_active",
+            "created_by",
+            "created_by_detail",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["created_at", "updated_at", "created_by"]
+    
+    def validate(self, attrs):
+        rate = attrs.get("rate")
+        if rate is not None and (rate < 0 or rate > 1):
+            raise serializers.ValidationError({
+                "rate": "Rate must be between 0 and 1 (e.g., 0.05 for 5%)."
+            })
+        
+        effective_start = attrs.get("effective_start")
+        effective_end = attrs.get("effective_end")
+        
+        if effective_end and effective_start and effective_end < effective_start:
+            raise serializers.ValidationError({
+                "effective_end": "End date must be on or after the start date."
+            })
+        
+        return attrs
+
+class GovernmentBenefitSerializer(serializers.ModelSerializer):
+    """Serializer for GovernmentBenefit model."""
+    
+    class Meta:
+        model = GovernmentBenefit
+        fields = [
+            'id',
+            'benefit_type',
+            'name',
+            'calculation_method',
+            'employee_share_amount',
+            'employee_share_rate',
+            'employer_share_amount',
+            'employer_share_rate',
+            'effective_start',
+            'effective_end',
+            'is_active',
+            'description',
+            'created_at',
+            'updated_at',
+            'created_by',
+        ]
+        read_only_fields = ['created_at', 'updated_at', 'created_by']
+    
+    def validate(self, attrs):
+        """Validate government benefit data."""
+        calculation_method = attrs.get('calculation_method')
+        benefit_type = attrs.get('benefit_type')
+        
+        # Validate calculation method matches benefit type
+        if benefit_type == 'bir_tax' and calculation_method != 'progressive_tax':
+            raise serializers.ValidationError({
+                'calculation_method': 'BIR tax must use progressive_tax calculation method.'
+            })
+        
+        # Ensure required fields are present for each calculation method
+        if calculation_method == 'fixed':
+            if not attrs.get('employee_share_amount'):
+                raise serializers.ValidationError({
+                    'employee_share_amount': 'Required for fixed calculation method.'
+                })
+        elif calculation_method == 'percentage':
+            if not attrs.get('employee_share_rate'):
+                raise serializers.ValidationError({
+                    'employee_share_rate': 'Required for percentage calculation method.'
+                })
+        # Progressive tax uses TaxBracket.compute_tax() method, no additional field required
+        
+        # Validate date range
+        effective_start = attrs.get('effective_start')
+        effective_end = attrs.get('effective_end')
+        if effective_end and effective_start and effective_end < effective_start:
+            raise serializers.ValidationError({
+                'effective_end': 'End date must be on or after start date.'
+            })
+        
+        # Validate rates are between 0 and 1
+        employee_rate = attrs.get('employee_share_rate')
+        employer_rate = attrs.get('employer_share_rate')
+        
+        if employee_rate is not None and (employee_rate < 0 or employee_rate > 1):
+            raise serializers.ValidationError({
+                'employee_share_rate': 'Rate must be between 0 and 1 (e.g., 0.05 for 5%).'
+            })
+        
+        if employer_rate is not None and (employer_rate < 0 or employer_rate > 1):
+            raise serializers.ValidationError({
+                'employer_share_rate': 'Rate must be between 0 and 1 (e.g., 0.05 for 5%).'
+            })
+        
+        return attrs
+
+
+class PayrollDeductionSerializer(serializers.ModelSerializer):
+    """
+    Read-only serializer for PayrollDeduction line items.
+    These are auto-generated and should not be created/updated directly.
+    """
+    
+    total_amount = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        read_only=True,
+        help_text="employee_share + employer_share"
+    )
+    
+    class Meta:
+        model = PayrollDeduction
+        fields = [
+            'id',
+            'payroll',
+            'category',
+            'name',
+            'description',
+            'employee_share',
+            'employer_share',
+            'total_amount',
+            'source_type',
+            'source_id',
+            'calculation_method',
+            'basis_amount',
+            'rate',
+            'applied_date',
+            'created_at',
+        ]
+        read_only_fields = fields  # All fields are read-only

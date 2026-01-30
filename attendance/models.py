@@ -934,8 +934,7 @@ class Offense(models.Model):
     @staticmethod
     def is_employee_suspended(employee):
         """Check if employee is currently suspended"""
-        from django.utils import timezone
-        today = timezone.now().date()
+        today = timezone.localdate()
         
         # Check for active suspensions
         active_suspension = Offense.objects.filter(
@@ -946,3 +945,44 @@ class Offense(models.Model):
         ).exists()
         
         return active_suspension
+
+
+class OvertimeRequest(models.Model):
+    """
+    An employee-filed overtime request that must be approved by management
+    before inclusion in salary computation.
+
+    - time_start / time_end: precise datetime window of the OT.
+    - approved: gate for payroll inclusion.
+    """
+    employee = models.ForeignKey(
+        "users.CustomUser",
+        on_delete=models.CASCADE,
+        related_name="overtime_requests",
+    )
+    date = models.DateField()
+    time_start = models.DateTimeField()
+    time_end = models.DateTimeField()
+    reason = models.TextField(blank=True)
+    approved = models.BooleanField(default=False)
+    approved_by = models.ForeignKey(
+        "users.CustomUser",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="approved_overtime_requests",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["employee", "date"]),
+            models.Index(fields=["approved"]),
+        ]
+        ordering = ["-date", "employee_id"]
+
+    def __str__(self):
+        return f"OT {self.employee_id} | {self.date} | {self.time_start}—{self.time_end}"
