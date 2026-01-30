@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timedelta
 import io
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Dict, Optional
 
+from analytics import models
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
@@ -16,13 +17,13 @@ from payroll.api.filters import (
 )
 from payroll.api.serializers import (
     AdditionalEarningSerializer,
+    GovernmentBenefitSerializer,
     HolidaySerializer,
     ManualDeductionSerializer,
     PayrollSettingsSerializer,
     PercentageDeductionSerializer,
     TaxBracketSerializer,
     WeeklyPayrollSerializer,
-    GovernmentBenefitSerializer
 )
 from payroll.models import (
     AdditionalEarning,
@@ -38,7 +39,6 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from analytics import models
 from utils.filters.options import (
     get_user_options,
 )
@@ -128,29 +128,30 @@ class WeeklyPayrollGenerateView(APIView):
     - employee_id: int (required)
     - notes: string (optional)
     - include_unapproved: bool (optional, default False)
-    
+
     Week is auto-calculated based on PayrollSettings.payroll_cutoff_day.
     Generates payroll for the most recent completed week.
     """
     permission_classes = [permissions.IsAdminUser]
-    
+
     def post(self, request, *args, **kwargs):
-        from django.contrib.auth import get_user_model
         from datetime import datetime, timedelta
-        
+
+        from django.contrib.auth import get_user_model
+
         User = get_user_model()
-        
+
         # Validate input
         employee_id = request.data.get('employee_id')
         notes = request.data.get('notes', '')
         include_unapproved = request.data.get('include_unapproved', False)
-        
+
         if not employee_id:
             return Response(
                 {'employee_id': ['This field is required.']},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Get payroll settings for cutoff day
         try:
             settings_obj = PayrollSettings.objects.first()
@@ -158,26 +159,26 @@ class WeeklyPayrollGenerateView(APIView):
                 settings_obj = PayrollSettings.objects.create()
         except Exception:
             settings_obj = None
-        
+
         cutoff_day = getattr(settings_obj, 'payroll_cutoff_day', 4)  # Default Friday
-        
+
         # Calculate most recent completed week
         # If today is Thursday and cutoff is Friday, use week ending last Friday
         today = datetime.now().date()
         current_weekday = today.weekday()  # 0=Monday, 6=Sunday
-        
+
         # Days since last cutoff day
         days_since_cutoff = (current_weekday - cutoff_day) % 7
         if days_since_cutoff == 0 and datetime.now().time().hour < 23:
             # Today is cutoff day but not end of day yet - use previous week
             days_since_cutoff = 7
-        
+
         # Last completed cutoff date
         last_cutoff = today - timedelta(days=days_since_cutoff)
-        
+
         # Week starts the day after last week's cutoff (7 days before this cutoff)
         week_start = last_cutoff - timedelta(days=6)
-        
+
         # Get employee
         try:
             employee = User.objects.get(id=employee_id, is_deleted=False)
@@ -186,32 +187,32 @@ class WeeklyPayrollGenerateView(APIView):
                 {'employee_id': ['Employee not found.']},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
+
         # Check if employee has basic_salary
         if not employee.basic_salary or employee.basic_salary <= 0:
             return Response(
                 {'employee_id': ['Employee does not have a valid basic salary configured.']},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Calculate hourly rate from basic_salary (per week) / 40 hours
         hourly_rate = Decimal(employee.basic_salary) / Decimal('40.00')
-        
+
         # Check if payroll already exists
         existing = WeeklyPayroll.objects.filter(
             employee=employee,
             week_start=week_start,
             is_deleted=False
         ).first()
-        
+
         if existing:
             return Response(
                 {'detail': f'Payroll already exists for this employee and week (ID: {existing.id}).'},
                 status=status.HTTP_409_CONFLICT
             )
-        
+
         overtime_multiplier = Decimal(getattr(settings_obj, 'overtime_multiplier', Decimal('1.50')) or '1.50')
-        
+
         # Create payroll
         try:
             with transaction.atomic():
@@ -224,12 +225,12 @@ class WeeklyPayrollGenerateView(APIView):
                     notes=notes,
                     status='draft'
                 )
-                
+
                 # Compute from daily attendance
                 payroll.compute_from_daily_attendance(
                     include_unapproved=include_unapproved
                 )
-                
+
                 payroll.save(
                     update_fields=[
                         'regular_hours',
@@ -250,7 +251,7 @@ class WeeklyPayrollGenerateView(APIView):
                         'updated_at',
                     ]
                 )
-                
+
                 # Create structured deduction records
                 payroll.create_deduction_records()
         except IntegrityError:
@@ -268,7 +269,7 @@ class WeeklyPayrollGenerateView(APIView):
                 },
                 status=status.HTTP_409_CONFLICT
             )
-        
+
         serializer = WeeklyPayrollSerializer(payroll)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -279,29 +280,29 @@ class WeeklyPayrollPreviewView(APIView):
     Request body:
     - employee_id: int (required)
     - include_unapproved: bool (optional, default False)
-    
+
     Week is auto-calculated based on PayrollSettings.payroll_cutoff_day.
     """
     permission_classes = [permissions.IsAuthenticated]
-    
+
     def post(self, request, *args, **kwargs):
-        from django.contrib.auth import get_user_model
         from datetime import datetime, timedelta
+
         from attendance.models import DailyAttendance
-        from collections import defaultdict
-        
+        from django.contrib.auth import get_user_model
+
         User = get_user_model()
-        
+
         # Validate input
         employee_id = request.data.get('employee_id')
         include_unapproved = request.data.get('include_unapproved', False)
-        
+
         if not employee_id:
             return Response(
                 {'employee_id': ['This field is required.']},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Get payroll settings for cutoff day
         try:
             settings_obj = PayrollSettings.objects.first()
@@ -309,21 +310,21 @@ class WeeklyPayrollPreviewView(APIView):
                 settings_obj = PayrollSettings.objects.create()
         except Exception:
             settings_obj = None
-        
+
         cutoff_day = getattr(settings_obj, 'payroll_cutoff_day', 4)  # Default Friday
-        
+
         # Calculate most recent completed week
         today = datetime.now().date()
         current_weekday = today.weekday()
-        
+
         days_since_cutoff = (current_weekday - cutoff_day) % 7
         if days_since_cutoff == 0 and datetime.now().time().hour < 23:
             days_since_cutoff = 7
-        
+
         last_cutoff = today - timedelta(days=days_since_cutoff)
         week_start = last_cutoff - timedelta(days=6)
         week_end = week_start + timedelta(days=6)
-        
+
         # Get employee
         try:
             employee = User.objects.get(id=employee_id, is_deleted=False)
@@ -332,17 +333,17 @@ class WeeklyPayrollPreviewView(APIView):
                 {'employee_id': ['Employee not found.']},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
+
         # Check if employee has basic_salary
         if not employee.basic_salary or employee.basic_salary <= 0:
             return Response(
                 {'employee_id': ['Employee does not have a valid basic salary configured.']},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Calculate hourly rate
         hourly_rate = Decimal(employee.basic_salary) / Decimal('40.00')
-        
+
         # Get attendance records
         attendance_qs = DailyAttendance.objects.filter(
             employee=employee,
@@ -350,19 +351,19 @@ class WeeklyPayrollPreviewView(APIView):
             date__lt=week_end,
             is_deleted=False,
         )
-        
+
         if not include_unapproved:
             attendance_qs = attendance_qs.filter(status='APPROVED')
-        
+
         # Calculate hours and penalties
         regular_hours_total = Decimal('0.00')
         overtime_hours_total = Decimal('0.00')
         late_penalties_total = Decimal('0.00')
         attendance_breakdown = []
-        
+
         for attendance in attendance_qs:
             paid_hours = Decimal(attendance.paid_hours or 0)
-            
+
             # Per-day overtime: >8 paid hours = overtime at 1.5×
             if paid_hours > Decimal('8.00'):
                 daily_regular = Decimal('8.00')
@@ -370,13 +371,13 @@ class WeeklyPayrollPreviewView(APIView):
             else:
                 daily_regular = paid_hours
                 daily_overtime = Decimal('0.00')
-            
+
             regular_hours_total += daily_regular
             overtime_hours_total += daily_overtime
-            
+
             if attendance.late_penalty_amount:
                 late_penalties_total += Decimal(attendance.late_penalty_amount)
-            
+
             attendance_breakdown.append({
                 'date': attendance.date,
                 'attendance_type': attendance.attendance_type,
@@ -385,12 +386,12 @@ class WeeklyPayrollPreviewView(APIView):
                 'overtime_hours': float(daily_overtime),
                 'late_penalty': float(attendance.late_penalty_amount or 0),
             })
-        
+
         overtime_multiplier = Decimal(getattr(settings_obj, 'overtime_multiplier', Decimal('1.50')) or '1.50')
-        
+
         # Calculate pay
         base_pay = (regular_hours_total * hourly_rate) + (overtime_hours_total * hourly_rate * overtime_multiplier)
-        
+
         # Get additional earnings
         add_qs = employee.additional_earnings.filter(
             is_deleted=False,
@@ -399,20 +400,20 @@ class WeeklyPayrollPreviewView(APIView):
         )
         if not include_unapproved:
             add_qs = add_qs.filter(approved=True)
-        
+
         additional_total = sum((Decimal(e.amount) for e in add_qs), Decimal('0'))
-        
+
         # Calculate gross and net
         gross_pay = base_pay + additional_total
-        
+
         # Basic deductions (late penalties)
         deductions_map = {}
         if late_penalties_total > 0:
             deductions_map['late_penalty'] = float(late_penalties_total)
-        
+
         total_deductions = late_penalties_total
         net_pay = gross_pay - total_deductions
-        
+
         preview_data = {
             'employee': {
                 'id': employee.id,
@@ -433,7 +434,7 @@ class WeeklyPayrollPreviewView(APIView):
             'net_pay': float(net_pay),
             'attendance_breakdown': attendance_breakdown,
         }
-        
+
         return Response(preview_data, status=status.HTTP_200_OK)
 
 
@@ -568,43 +569,48 @@ class WeeklyPayrollUpdateStatusView(APIView):
     - status: string (required, one of: draft, approved, paid)
     """
     permission_classes = [permissions.IsAdminUser]
-    
+
     def get_object(self, pk: int) -> WeeklyPayroll:
         try:
             return WeeklyPayroll.objects.get(pk=pk, is_deleted=False)
         except WeeklyPayroll.DoesNotExist:
             raise NotFound(detail="Payroll record not found.")
-    
+
     def patch(self, request, pk: int, *args, **kwargs):
         payroll = self.get_object(pk)
-        
+
         new_status = request.data.get('status')
         if not new_status:
             return Response(
                 {'status': ['This field is required.']},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         if new_status not in ['draft', 'approved', 'paid']:
             return Response(
                 {'status': ['Invalid status. Must be one of: draft, approved, paid.']},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Business rule: can only move forward (draft -> approved -> paid)
         status_order = {'draft': 0, 'approved': 1, 'paid': 2}
         current_order = status_order.get(payroll.status, 0)
         new_order = status_order.get(new_status, 0)
-        
+
         if new_order < current_order:
             return Response(
                 {'status': [f'Cannot move status backwards from {payroll.status} to {new_status}.']},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
+        old_status = payroll.status
         payroll.status = new_status
         payroll.save(update_fields=['status', 'updated_at'])
-        
+
+        # When approving payroll, finalize deductions (mark one-time deductions as applied)
+        if old_status == 'draft' and new_status == 'approved':
+            payroll.finalize_deductions()
+
         serializer = WeeklyPayrollSerializer(payroll)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -767,21 +773,21 @@ class WeeklyPayrollBulkGenerateView(APIView):
     - include_unapproved: bool (default False)
     - notes: string
     - employee_ids: list[int] (optional - if provided, only generate for these employees)
-    
+
     Returns:
     - created: list of created payroll objects
     - skipped: list of {employee_id, employee_name, reason} for skipped employees
     - errors: list of {employee_id, employee_name, error} for failed generations
     """
     permission_classes = [permissions.IsAdminUser]
-    
+
     def post(self, request, *args, **kwargs):
         from users.models import CustomUser as User
-        
+
         include_unapproved = bool(request.data.get('include_unapproved', False))
         notes = request.data.get('notes', '')
         employee_ids = request.data.get('employee_ids')
-        
+
         # Get payroll settings for cutoff calculation
         try:
             settings_obj = PayrollSettings.objects.first()
@@ -789,29 +795,29 @@ class WeeklyPayrollBulkGenerateView(APIView):
                 settings_obj = PayrollSettings.objects.create()
         except Exception:
             settings_obj = None
-        
+
         cutoff_day = getattr(settings_obj, 'payroll_cutoff_day', 4)
-        
+
         # Calculate week range
         today = datetime.now().date()
         current_weekday = today.weekday()
         days_since_cutoff = (current_weekday - cutoff_day) % 7
         if days_since_cutoff == 0 and datetime.now().time().hour < 23:
             days_since_cutoff = 7
-        
+
         last_cutoff = today - timedelta(days=days_since_cutoff)
         week_start = last_cutoff - timedelta(days=6)
         week_end = week_start + timedelta(days=6)
-        
+
         # Get employees
         employees_qs = User.objects.filter(is_deleted=False, is_active=True)
         if employee_ids:
             employees_qs = employees_qs.filter(id__in=employee_ids)
-        
+
         created = []
         skipped = []
         errors = []
-        
+
         for employee in employees_qs:
             # Check if employee has basic_salary
             if not employee.basic_salary or employee.basic_salary <= 0:
@@ -821,14 +827,14 @@ class WeeklyPayrollBulkGenerateView(APIView):
                     'reason': 'No valid basic salary configured'
                 })
                 continue
-            
+
             # Check if payroll already exists
             existing = WeeklyPayroll.objects.filter(
                 employee=employee,
                 week_start=week_start,
                 is_deleted=False
             ).first()
-            
+
             if existing:
                 skipped.append({
                     'employee_id': employee.id,
@@ -836,11 +842,11 @@ class WeeklyPayrollBulkGenerateView(APIView):
                     'reason': f'Payroll already exists (ID: {existing.id})'
                 })
                 continue
-            
+
             try:
                 hourly_rate = Decimal(employee.basic_salary) / Decimal('40.00')
                 overtime_multiplier = Decimal(getattr(settings_obj, 'overtime_multiplier', Decimal('1.50')) or '1.50')
-                
+
                 with transaction.atomic():
                     payroll = WeeklyPayroll.objects.create(
                         employee=employee,
@@ -851,9 +857,9 @@ class WeeklyPayrollBulkGenerateView(APIView):
                         notes=notes,
                         status='draft'
                     )
-                    
+
                     payroll.compute_from_daily_attendance(include_unapproved=include_unapproved)
-                    
+
                     payroll.save(update_fields=[
                         'regular_hours', 'overtime_hours', 'night_diff_hours',
                         'approved_ot_hours', 'allowances', 'additional_earnings_total',
@@ -861,9 +867,9 @@ class WeeklyPayrollBulkGenerateView(APIView):
                         'holiday_pay_regular', 'holiday_pay_special', 'holiday_pay_total',
                         'deductions', 'total_deductions', 'net_pay', 'updated_at'
                     ])
-                    
+
                     created.append(WeeklyPayrollSerializer(payroll).data)
-            
+
             except IntegrityError:
                 # Race condition: payroll was created between check and creation
                 existing = WeeklyPayroll.objects.filter(
@@ -882,7 +888,7 @@ class WeeklyPayrollBulkGenerateView(APIView):
                     'employee_name': employee.get_full_name(),
                     'error': str(e)
                 })
-        
+
         return Response({
             'week_start': week_start,
             'week_end': week_end,
@@ -901,16 +907,16 @@ class WeeklyPayrollMarkReceivedView(APIView):
     Only allowed if status is 'paid'.
     """
     permission_classes = [permissions.IsAuthenticated]
-    
+
     def get_object(self, pk: int) -> WeeklyPayroll:
         try:
             return WeeklyPayroll.objects.get(pk=pk, is_deleted=False)
         except WeeklyPayroll.DoesNotExist:
             raise NotFound(detail="Payroll record not found.")
-    
+
     def post(self, request, pk: int, *args, **kwargs):
         payroll = self.get_object(pk)
-        
+
         # Check if payroll belongs to user (unless admin)
         if not request.user.role or request.user.role not in ['admin', 'manager']:
             if payroll.employee_id != request.user.id:
@@ -918,20 +924,20 @@ class WeeklyPayrollMarkReceivedView(APIView):
                     {'detail': 'You can only mark your own payroll as received.'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-        
+
         # Check if payroll is paid
         if payroll.status != 'paid':
             return Response(
                 {'detail': 'Only paid payroll can be marked as received.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Mark as received
         payroll.status = 'received'
         payroll.received_at = timezone.now()
         payroll.received_by = request.user
         payroll.save(update_fields=['status', 'received_at', 'received_by', 'updated_at'])
-        
+
         return Response(
             WeeklyPayrollSerializer(payroll).data,
             status=status.HTTP_200_OK
@@ -945,16 +951,16 @@ class WeeklyPayrollDisputeView(APIView):
     - reason: string (required)
     """
     permission_classes = [permissions.IsAuthenticated]
-    
+
     def get_object(self, pk: int) -> WeeklyPayroll:
         try:
             return WeeklyPayroll.objects.get(pk=pk, is_deleted=False)
         except WeeklyPayroll.DoesNotExist:
             raise NotFound(detail="Payroll record not found.")
-    
+
     def post(self, request, pk: int, *args, **kwargs):
         payroll = self.get_object(pk)
-        
+
         # Check if payroll belongs to user (unless admin)
         if not request.user.role or request.user.role not in ['admin', 'manager']:
             if payroll.employee_id != request.user.id:
@@ -962,27 +968,27 @@ class WeeklyPayrollDisputeView(APIView):
                     {'detail': 'You can only dispute your own payroll.'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-        
+
         # Check if payroll is paid or received
         if payroll.status not in ['paid', 'received']:
             return Response(
                 {'detail': 'Only paid or received payroll can be disputed.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         reason = request.data.get('reason', '').strip()
         if not reason:
             return Response(
                 {'reason': ['Dispute reason is required.']},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Mark as disputed
         payroll.disputed = True
         payroll.disputed_reason = reason
         payroll.disputed_at = timezone.now()
         payroll.save(update_fields=['disputed', 'disputed_reason', 'disputed_at', 'updated_at'])
-        
+
         return Response(
             WeeklyPayrollSerializer(payroll).data,
             status=status.HTTP_200_OK
@@ -997,29 +1003,41 @@ class WeeklyPayrollBulkUpdateStatusView(APIView):
     - status: string (required, one of: draft, approved, paid)
     """
     permission_classes = [permissions.IsAdminUser]
-    
+
     def patch(self, request, *args, **kwargs):
         payroll_ids = request.data.get('payroll_ids', [])
         new_status = request.data.get('status', '').strip()
-        
+
         if not payroll_ids or not isinstance(payroll_ids, list):
             return Response(
                 {'payroll_ids': ['Must provide a list of payroll IDs.']},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         if new_status not in ['draft', 'approved', 'paid']:
             return Response(
                 {'status': ['Invalid status. Must be one of: draft, approved, paid.']},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
-        # Update payrolls
-        updated_count = WeeklyPayroll.objects.filter(
+
+        # Get payrolls to update
+        payrolls = WeeklyPayroll.objects.filter(
             id__in=payroll_ids,
             is_deleted=False
-        ).update(status=new_status)
-        
+        )
+
+        # Track which payrolls were draft before update (for finalization)
+        draft_payroll_ids = list(payrolls.filter(status='draft').values_list('id', flat=True))
+
+        # Update payrolls
+        updated_count = payrolls.update(status=new_status)
+
+        # If approving payrolls, finalize deductions for those that were draft
+        if new_status == 'approved' and draft_payroll_ids:
+            approved_payrolls = WeeklyPayroll.objects.filter(id__in=draft_payroll_ids)
+            for payroll in approved_payrolls:
+                payroll.finalize_deductions()
+
         return Response({
             'updated_count': updated_count,
             'status': new_status
@@ -1179,43 +1197,43 @@ class ManualDeductionViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["name", "description"]
     ordering_fields = ["name", "amount", "effective_date", "created_at"]
-    
+
     def get_queryset(self):
         """
         Admins see all deductions.
         Employees see only their own per_employee deductions.
         """
         queryset = ManualDeduction.objects.filter(is_deleted=False).select_related("employee", "created_by")
-        
+
         user = self.request.user
-        if not user.role or user.role not in ["admin", "manager"]:
+        if not user.role or user.role not in ["admin"]:
             # Regular employees see only their own per_employee deductions
             queryset = queryset.filter(employee=user)
-        
+
         # Apply filters
         deduction_type = self.request.query_params.get("deduction_type")
         if deduction_type:
             queryset = queryset.filter(deduction_type=deduction_type)
-        
+
         is_active = self.request.query_params.get("is_active")
         if is_active is not None:
             queryset = queryset.filter(is_active=is_active.lower() in ["true", "1"])
-        
+
         employee_id = self.request.query_params.get("employee")
         if employee_id:
             queryset = queryset.filter(employee_id=employee_id)
-        
+
         return queryset.order_by("-created_at")
-    
+
     def perform_create(self, serializer):
         """Set created_by to current user"""
         serializer.save(created_by=self.request.user)
-    
+
     def perform_destroy(self, instance):
         """Soft delete the deduction"""
         instance.is_deleted = True
         instance.save(update_fields=["is_deleted"])
-    
+
     @action(detail=True, methods=["post"], url_path="activate")
     def activate(self, request, pk=None):
         """Activate a deduction"""
@@ -1224,7 +1242,7 @@ class ManualDeductionViewSet(viewsets.ModelViewSet):
         deduction.save(update_fields=["is_active"])
         serializer = self.get_serializer(deduction)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=["post"], url_path="deactivate")
     def deactivate(self, request, pk=None):
         """Deactivate a deduction"""
@@ -1233,7 +1251,7 @@ class ManualDeductionViewSet(viewsets.ModelViewSet):
         deduction.save(update_fields=["is_active"])
         serializer = self.get_serializer(deduction)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['get'])
     def company_wide(self, request):
         """Get all active company-wide deductions (recurring_all and onetime_all)"""
@@ -1243,32 +1261,32 @@ class ManualDeductionViewSet(viewsets.ModelViewSet):
         )
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['get'])
     def for_employee(self, request):
         """Get all active deductions for a specific employee"""
         from rest_framework import status
-        
+
         employee_id = request.query_params.get('employee_id')
         if not employee_id:
             return Response(
                 {'error': 'employee_id parameter is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Per-employee deductions
         per_employee = self.get_queryset().filter(
             deduction_type='per_employee',
             employee_id=employee_id,
             is_active=True
         )
-        
+
         # Company-wide recurring deductions
         recurring_all = self.get_queryset().filter(
             deduction_type='recurring_all',
             is_active=True
         )
-        
+
         # Combine both
         combined = list(per_employee) + list(recurring_all)
         serializer = self.get_serializer(combined, many=True)
@@ -1284,15 +1302,15 @@ class TaxBracketViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     ordering_fields = ["min_income", "effective_start", "created_at"]
-    
+
     def get_queryset(self):
         queryset = TaxBracket.objects.select_related("created_by").all()
-        
+
         # Filter by active status
         is_active = self.request.query_params.get("is_active")
         if is_active is not None:
             queryset = queryset.filter(is_active=is_active.lower() in ["true", "1"])
-        
+
         # Filter by effective date
         as_of_date = self.request.query_params.get("as_of_date")
         if as_of_date:
@@ -1302,26 +1320,26 @@ class TaxBracketViewSet(viewsets.ModelViewSet):
             ).filter(
                 Q(effective_end__isnull=True) | Q(effective_end__gte=as_of_date)
             )
-        
+
         return queryset.order_by("min_income")
-    
+
     def perform_create(self, serializer):
         """Set created_by to current user"""
         serializer.save(created_by=self.request.user)
-    
+
     @action(detail=False, methods=["get"])
     def active(self, request):
         """Get currently active tax brackets"""
         from django.utils import timezone
         today = timezone.now().date()
-        
+
         qs = self.get_queryset().filter(
             is_active=True,
             effective_start__lte=today,
         ).filter(
             models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=today)
         )
-        
+
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
 
@@ -1336,20 +1354,20 @@ class PercentageDeductionViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["name", "description"]
     ordering_fields = ["name", "rate", "effective_start", "created_at"]
-    
+
     def get_queryset(self):
         queryset = PercentageDeduction.objects.select_related("created_by").all()
-        
+
         # Filter by active status
         is_active = self.request.query_params.get("is_active")
         if is_active is not None:
             queryset = queryset.filter(is_active=is_active.lower() in ["true", "1"])
-        
+
         # Filter by deduction type
         deduction_type = self.request.query_params.get("deduction_type")
         if deduction_type:
             queryset = queryset.filter(deduction_type=deduction_type)
-        
+
         # Filter by effective date
         as_of_date = self.request.query_params.get("as_of_date")
         if as_of_date:
@@ -1359,27 +1377,27 @@ class PercentageDeductionViewSet(viewsets.ModelViewSet):
             ).filter(
                 Q(effective_end__isnull=True) | Q(effective_end__gte=as_of_date)
             )
-        
+
         return queryset.order_by("-created_at")
-    
+
     def perform_create(self, serializer):
         """Set created_by to current user"""
         serializer.save(created_by=self.request.user)
-    
+
     @action(detail=False, methods=["get"])
     def active(self, request):
         """Get currently active percentage deductions"""
-        from django.utils import timezone
         from django.db.models import Q
+        from django.utils import timezone
         today = timezone.now().date()
-        
+
         qs = self.get_queryset().filter(
             is_active=True,
             effective_start__lte=today,
         ).filter(
             Q(effective_end__isnull=True) | Q(effective_end__gte=today)
         )
-        
+
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
 
@@ -1394,30 +1412,30 @@ class GovernmentBenefitViewSet(viewsets.ModelViewSet):
     ViewSet for managing government benefits (SSS, PhilHealth, Pag-IBIG, BIR Tax).
     Supports CRUD operations and active benefit filtering.
     """
-    
+
     serializer_class = GovernmentBenefitSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["benefit_type", "notes"]
     ordering_fields = ["effective_start", "benefit_type", "created_at"]
     ordering = ["-effective_start"]
-    
+
     def get_queryset(self):
-        from payroll.models import GovernmentBenefit
         from django.db.models import Q
-        
+        from payroll.models import GovernmentBenefit
+
         queryset = GovernmentBenefit.objects.all()
-        
+
         # Filter by benefit type
         benefit_type = self.request.query_params.get("benefit_type")
         if benefit_type:
             queryset = queryset.filter(benefit_type=benefit_type)
-        
+
         # Filter by active status
         is_active = self.request.query_params.get("is_active")
         if is_active is not None:
             queryset = queryset.filter(is_active=is_active.lower() == "true")
-        
+
         # Filter by effective date
         as_of_date = self.request.query_params.get("as_of_date")
         if as_of_date:
@@ -1426,48 +1444,48 @@ class GovernmentBenefitViewSet(viewsets.ModelViewSet):
             ).filter(
                 Q(effective_end__isnull=True) | Q(effective_end__gte=as_of_date)
             )
-        
+
         return queryset
-    
+
     def perform_create(self, serializer):
         """Set created_by to current user"""
         serializer.save(created_by=self.request.user)
-    
+
     @action(detail=False, methods=["get"])
     def active(self, request):
         """Get currently active government benefits"""
-        from django.utils import timezone
         from django.db.models import Q
+        from django.utils import timezone
         from payroll.models import GovernmentBenefit
-        
+
         today = timezone.now().date()
-        
+
         qs = GovernmentBenefit.objects.filter(
             is_active=True,
             effective_start__lte=today,
         ).filter(
             Q(effective_end__isnull=True) | Q(effective_end__gte=today)
         ).order_by("benefit_type")
-        
+
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=["get"])
     def by_type(self, request):
         """Get benefits grouped by type"""
-        from payroll.models import GovernmentBenefit
         from django.db.models import Q
         from django.utils import timezone
-        
+        from payroll.models import GovernmentBenefit
+
         today = timezone.now().date()
         benefit_type = request.query_params.get("type")
-        
+
         if not benefit_type:
             return Response(
                 {"error": "benefit_type parameter is required"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         qs = GovernmentBenefit.objects.filter(
             benefit_type=benefit_type,
             is_active=True,
@@ -1475,6 +1493,6 @@ class GovernmentBenefitViewSet(viewsets.ModelViewSet):
         ).filter(
             Q(effective_end__isnull=True) | Q(effective_end__gte=today)
         ).order_by("-effective_start")
-        
+
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)

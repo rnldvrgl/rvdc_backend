@@ -11,12 +11,13 @@ Tax brackets for weekly payroll computation based on TRAIN Law:
 
 Usage:
     python manage.py seed_tax_brackets_2025
-    
+
     # Or via Docker:
     docker-compose exec api python manage.py seed_tax_brackets_2025
 """
 
 from decimal import Decimal
+
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 from payroll.models import TaxBracket
@@ -27,16 +28,16 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         self.stdout.write(self.style.SUCCESS('🇵🇭 Seeding 2025 BIR Tax Brackets (TRAIN Law)...'))
-        
+
         # Deactivate old tax brackets
         old_brackets = TaxBracket.objects.filter(is_active=True)
         if old_brackets.exists():
             count = old_brackets.update(is_active=False, effective_end=timezone.now().date())
             self.stdout.write(self.style.WARNING(f'   Deactivated {count} old tax bracket(s)'))
-        
+
         # TRAIN Law tax brackets converted to weekly basis
         # Annual → Monthly → Weekly (÷ 12 months ÷ 4.33 weeks)
-        
+
         brackets = [
             {
                 'min_income': Decimal('0.00'),
@@ -81,10 +82,10 @@ class Command(BaseCommand):
                 'description': '₱2,202,500 + 35% on excess over ₱8,000,000/year (weekly base: ₱42,067.20)'
             },
         ]
-        
+
         created_count = 0
         self.stdout.write('')
-        
+
         for bracket_data in brackets:
             bracket, created = TaxBracket.objects.update_or_create(
                 min_income=bracket_data['min_income'],
@@ -97,22 +98,22 @@ class Command(BaseCommand):
                     'is_active': True,
                 }
             )
-            
+
             if created:
                 created_count += 1
-                
+
             # Display bracket info
             max_display = f"₱{bracket_data['max_income']:,.2f}" if bracket_data['max_income'] else "No limit"
             rate_display = f"{bracket_data['rate'] * 100:.0f}%"
-            
+
             icon = '🆕' if created else '🔄'
             action = 'Created' if created else 'Updated'
-            
+
             self.stdout.write(
                 f"   {icon} {action}: ₱{bracket_data['min_income']:,.2f} - {max_display} "
                 f"(Base: ₱{bracket_data['base_tax']:,.2f}, Rate: {rate_display})"
             )
-        
+
         self.stdout.write('')
         self.stdout.write(self.style.SUCCESS(f'✅ Successfully seeded {len(brackets)} tax brackets!'))
         self.stdout.write('')

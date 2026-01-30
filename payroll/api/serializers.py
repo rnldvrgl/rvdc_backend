@@ -4,7 +4,6 @@ from decimal import Decimal
 from typing import Any, Dict, Mapping, Optional
 
 from django.contrib.auth import get_user_model
-from django.utils import timezone
 from payroll.models import (
     AdditionalEarning,
     GovernmentBenefit,
@@ -189,7 +188,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
     )
     received_by_detail = MinimalUserSerializer(source="received_by", read_only=True)
     status_display = serializers.CharField(source="get_status_display", read_only=True)
-    
+
     # Import here to avoid circular import
     deduction_items = serializers.SerializerMethodField(read_only=True)
 
@@ -235,7 +234,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-            
+
         read_only_fields = [
             "id",
             "regular_hours",
@@ -311,7 +310,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             return float(total)
         except Exception:
             return 0.0
-    
+
     def get_deduction_items(self, obj: WeeklyPayroll) -> list:
         """Return structured deduction breakdown."""
         try:
@@ -356,7 +355,7 @@ class ManualDeductionSerializer(serializers.ModelSerializer):
     employee_detail = MinimalUserSerializer(source="employee", read_only=True)
     created_by_detail = MinimalUserSerializer(source="created_by", read_only=True)
     deduction_type_display = serializers.CharField(source="get_deduction_type_display", read_only=True)
-    
+
     class Meta:
         model = ManualDeduction
         fields = [
@@ -379,51 +378,51 @@ class ManualDeductionSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at", "applied_date"]
-    
+
     def validate(self, attrs):
         # Validate per_employee deductions have employee
         deduction_type = attrs.get("deduction_type")
         employee = attrs.get("employee")
-        
+
         if deduction_type == "per_employee" and not employee:
             raise serializers.ValidationError({
                 "employee": "Per employee deductions must have an employee assigned."
             })
-        
+
         if deduction_type in ["recurring_all", "onetime_all"] and employee:
             raise serializers.ValidationError({
                 "employee": "Recurring/One-time for all deductions cannot have a specific employee."
             })
-        
+
         # Auto-set effective_date to today for one-time per_employee deductions if not provided
         effective_date = attrs.get("effective_date")
         if deduction_type == "per_employee" and not effective_date:
             # One-time deduction - set to today so it applies to next payroll
             from django.utils import timezone
             attrs["effective_date"] = timezone.now().date()
-        
+
         # Validate amount is positive
         amount = attrs.get("amount")
         if amount is not None and amount <= 0:
             raise serializers.ValidationError({
                 "amount": "Amount must be greater than zero."
             })
-        
+
         # Validate dates
         effective_date = attrs.get("effective_date")
         end_date = attrs.get("end_date")
-        
+
         if end_date and effective_date and end_date < effective_date:
             raise serializers.ValidationError({
                 "end_date": "End date must be on or after the effective date."
             })
-        
+
         return attrs
 
 
 class TaxBracketSerializer(serializers.ModelSerializer):
     created_by_detail = MinimalUserSerializer(source="created_by", read_only=True)
-    
+
     class Meta:
         model = TaxBracket
         fields = [
@@ -440,31 +439,31 @@ class TaxBracketSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["created_at", "created_by"]
-    
+
     def validate(self, attrs):
         min_income = attrs.get("min_income")
         max_income = attrs.get("max_income")
-        
+
         if max_income and min_income and max_income < min_income:
             raise serializers.ValidationError({
                 "max_income": "Maximum income must be greater than or equal to minimum income."
             })
-        
+
         effective_start = attrs.get("effective_start")
         effective_end = attrs.get("effective_end")
-        
+
         if effective_end and effective_start and effective_end < effective_start:
             raise serializers.ValidationError({
                 "effective_end": "End date must be on or after the start date."
             })
-        
+
         return attrs
 
 
 class PercentageDeductionSerializer(serializers.ModelSerializer):
     created_by_detail = MinimalUserSerializer(source="created_by", read_only=True)
     deduction_type_display = serializers.CharField(source="get_deduction_type_display", read_only=True)
-    
+
     class Meta:
         model = PercentageDeduction
         fields = [
@@ -483,27 +482,27 @@ class PercentageDeductionSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at", "created_by"]
-    
+
     def validate(self, attrs):
         rate = attrs.get("rate")
         if rate is not None and (rate < 0 or rate > 1):
             raise serializers.ValidationError({
                 "rate": "Rate must be between 0 and 1 (e.g., 0.05 for 5%)."
             })
-        
+
         effective_start = attrs.get("effective_start")
         effective_end = attrs.get("effective_end")
-        
+
         if effective_end and effective_start and effective_end < effective_start:
             raise serializers.ValidationError({
                 "effective_end": "End date must be on or after the start date."
             })
-        
+
         return attrs
 
 class GovernmentBenefitSerializer(serializers.ModelSerializer):
     """Serializer for GovernmentBenefit model."""
-    
+
     class Meta:
         model = GovernmentBenefit
         fields = [
@@ -524,18 +523,18 @@ class GovernmentBenefitSerializer(serializers.ModelSerializer):
             'created_by',
         ]
         read_only_fields = ['created_at', 'updated_at', 'created_by']
-    
+
     def validate(self, attrs):
         """Validate government benefit data."""
         calculation_method = attrs.get('calculation_method')
         benefit_type = attrs.get('benefit_type')
-        
+
         # Validate calculation method matches benefit type
         if benefit_type == 'bir_tax' and calculation_method != 'progressive_tax':
             raise serializers.ValidationError({
                 'calculation_method': 'BIR tax must use progressive_tax calculation method.'
             })
-        
+
         # Ensure required fields are present for each calculation method
         if calculation_method == 'fixed':
             if not attrs.get('employee_share_amount'):
@@ -548,7 +547,7 @@ class GovernmentBenefitSerializer(serializers.ModelSerializer):
                     'employee_share_rate': 'Required for percentage calculation method.'
                 })
         # Progressive tax uses TaxBracket.compute_tax() method, no additional field required
-        
+
         # Validate date range
         effective_start = attrs.get('effective_start')
         effective_end = attrs.get('effective_end')
@@ -556,21 +555,21 @@ class GovernmentBenefitSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 'effective_end': 'End date must be on or after start date.'
             })
-        
+
         # Validate rates are between 0 and 1
         employee_rate = attrs.get('employee_share_rate')
         employer_rate = attrs.get('employer_share_rate')
-        
+
         if employee_rate is not None and (employee_rate < 0 or employee_rate > 1):
             raise serializers.ValidationError({
                 'employee_share_rate': 'Rate must be between 0 and 1 (e.g., 0.05 for 5%).'
             })
-        
+
         if employer_rate is not None and (employer_rate < 0 or employer_rate > 1):
             raise serializers.ValidationError({
                 'employer_share_rate': 'Rate must be between 0 and 1 (e.g., 0.05 for 5%).'
             })
-        
+
         return attrs
 
 
@@ -579,14 +578,14 @@ class PayrollDeductionSerializer(serializers.ModelSerializer):
     Read-only serializer for PayrollDeduction line items.
     These are auto-generated and should not be created/updated directly.
     """
-    
+
     total_amount = serializers.DecimalField(
         max_digits=10,
         decimal_places=2,
         read_only=True,
         help_text="employee_share + employer_share"
     )
-    
+
     class Meta:
         model = PayrollDeduction
         fields = [
