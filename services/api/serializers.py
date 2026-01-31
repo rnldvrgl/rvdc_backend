@@ -23,8 +23,10 @@ from services.business_logic import (
 )
 from services.models import (
     ApplianceItemUsed,
+    PaymentType,
     Service,
     ServiceAppliance,
+    ServicePayment,
     TechnicianAssignment,
 )
 
@@ -592,3 +594,93 @@ class ServiceCancellationSerializer(serializers.Serializer):
         )
 
         return result
+
+
+# ----------------------------------
+# Service Payment Serializers
+# ----------------------------------
+class ServicePaymentSerializer(serializers.ModelSerializer):
+    """Serializer for ServicePayment model."""
+
+    received_by_name = serializers.CharField(
+        source="received_by.get_full_name", read_only=True
+    )
+    payment_type_display = serializers.CharField(
+        source="get_payment_type_display", read_only=True
+    )
+
+    class Meta:
+        model = ServicePayment
+        fields = [
+            "id",
+            "service",
+            "payment_type",
+            "payment_type_display",
+            "amount",
+            "payment_date",
+            "received_by",
+            "received_by_name",
+            "notes",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class CreateServicePaymentSerializer(serializers.Serializer):
+    """Serializer for creating a service payment."""
+
+    payment_type = serializers.ChoiceField(choices=PaymentType.choices)
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2)
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate_amount(self, value):
+        """Validate payment amount is positive."""
+        if value <= 0:
+            raise ValidationError("Payment amount must be greater than zero.")
+        return value
+
+    def validate(self, data):
+        """Validate payment doesn't exceed balance due."""
+        service = self.context.get("service")
+        if not service:
+            raise ValidationError("Service context is required.")
+
+        amount = data["amount"]
+        balance_due = service.balance_due
+
+        if amount > balance_due:
+            raise ValidationError(
+                f"Payment amount (₱{amount}) exceeds balance due (₱{balance_due}). "
+                f"Total revenue: ₱{service.total_revenue}, Already paid: ₱{service.total_paid}"
+            )
+
+        return data
+
+    def save(self):
+        """Create the service payment."""
+        from services.business_logic import ServicePaymentManager
+
+        service = self.context.get("service")
+        user = self.context.get("request").user if self.context.get("request") else None
+
+        payment = ServicePaymentManager.create_payment(
+            service=service,
+            payment_type=self.validated_data["payment_type"],
+            amount=self.validated_data["amount"],
+            received_by=user,
+            notes=self.validated_data.get("notes", ""),
+        )
+
+        return payment
+
+
+class ServicePaymentSummarySerializer(serializers.Serializer):
+    """Serializer for service payment summary."""
+
+    service_id = serializers.IntegerField()
+    total_revenue = serializers.DecimalField(max_digits=10, decimal_places=2)
+    total_paid = serializers.DecimalField(max_digits=10, decimal_places=2)
+    balance_due = serializers.DecimalField(max_digits=10, decimal_places=2)
+    payment_status = serializers.CharField()
+    payments = ServicePaymentSerializer(many=True)

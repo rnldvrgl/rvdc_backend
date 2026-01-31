@@ -596,3 +596,347 @@ class HelperFunctionTest(StallSetupMixin, TestCase):
         self.assertIn("main_revenue", revenue)
         self.assertIn("sub_revenue", revenue)
         self.assertIn("total_revenue", revenue)
+
+
+# ----------------------------------
+# Service Payment Tests
+# ----------------------------------
+class ServicePaymentManagerTest(StallSetupMixin, TransactionTestCase):
+    """Test ServicePaymentManager operations."""
+
+    def test_create_payment_success(self):
+        """Test successful payment creation."""
+        from services.business_logic import ServicePaymentManager
+        from services.models import PaymentStatus, PaymentType
+
+        # Create service with revenue
+        service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            total_revenue=Decimal("1000.00"),
+        )
+
+        # Create payment
+        payment = ServicePaymentManager.create_payment(
+            service=service,
+            payment_type=PaymentType.CASH,
+            amount=Decimal("500.00"),
+            received_by=self.user,
+            notes="Partial payment",
+        )
+
+        self.assertIsNotNone(payment)
+        self.assertEqual(payment.amount, Decimal("500.00"))
+        self.assertEqual(payment.payment_type, PaymentType.CASH)
+        self.assertEqual(payment.received_by, self.user)
+        self.assertEqual(payment.notes, "Partial payment")
+
+        # Check service payment status updated
+        service.refresh_from_db()
+        self.assertEqual(service.payment_status, PaymentStatus.PARTIAL)
+        self.assertEqual(service.total_paid, Decimal("500.00"))
+        self.assertEqual(service.balance_due, Decimal("500.00"))
+
+    def test_create_payment_full_amount(self):
+        """Test payment for full amount marks service as paid."""
+        from services.business_logic import ServicePaymentManager
+        from services.models import PaymentStatus, PaymentType
+
+        service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            total_revenue=Decimal("1000.00"),
+        )
+
+        payment = ServicePaymentManager.create_payment(
+            service=service,
+            payment_type=PaymentType.GCASH,
+            amount=Decimal("1000.00"),
+            received_by=self.user,
+        )
+
+        service.refresh_from_db()
+        self.assertEqual(service.payment_status, PaymentStatus.PAID)
+        self.assertEqual(service.total_paid, Decimal("1000.00"))
+        self.assertEqual(service.balance_due, Decimal("0.00"))
+
+    def test_create_payment_multiple_partial(self):
+        """Test multiple partial payments."""
+        from services.business_logic import ServicePaymentManager
+        from services.models import PaymentStatus, PaymentType
+
+        service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            total_revenue=Decimal("1000.00"),
+        )
+
+        # First payment
+        ServicePaymentManager.create_payment(
+            service=service,
+            payment_type=PaymentType.CASH,
+            amount=Decimal("300.00"),
+            received_by=self.user,
+        )
+        service.refresh_from_db()
+        self.assertEqual(service.payment_status, PaymentStatus.PARTIAL)
+        self.assertEqual(service.total_paid, Decimal("300.00"))
+
+        # Second payment
+        ServicePaymentManager.create_payment(
+            service=service,
+            payment_type=PaymentType.CASH,
+            amount=Decimal("200.00"),
+            received_by=self.user,
+        )
+        service.refresh_from_db()
+        self.assertEqual(service.payment_status, PaymentStatus.PARTIAL)
+        self.assertEqual(service.total_paid, Decimal("500.00"))
+
+        # Final payment
+        ServicePaymentManager.create_payment(
+            service=service,
+            payment_type=PaymentType.GCASH,
+            amount=Decimal("500.00"),
+            received_by=self.user,
+        )
+        service.refresh_from_db()
+        self.assertEqual(service.payment_status, PaymentStatus.PAID)
+        self.assertEqual(service.total_paid, Decimal("1000.00"))
+        self.assertEqual(service.balance_due, Decimal("0.00"))
+
+    def test_create_payment_overpayment_blocked(self):
+        """Test that overpayment is prevented."""
+        from services.business_logic import ServicePaymentManager
+        from services.models import PaymentType
+
+        service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            total_revenue=Decimal("1000.00"),
+        )
+
+        # Try to pay more than balance
+        with self.assertRaises(ValidationError) as cm:
+            ServicePaymentManager.create_payment(
+                service=service,
+                payment_type=PaymentType.CASH,
+                amount=Decimal("1500.00"),
+                received_by=self.user,
+            )
+
+        self.assertIn("exceeds balance due", str(cm.exception))
+
+    def test_create_payment_negative_amount_blocked(self):
+        """Test that negative payment amount is prevented."""
+        from services.business_logic import ServicePaymentManager
+        from services.models import PaymentType
+
+        service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            total_revenue=Decimal("1000.00"),
+        )
+
+        with self.assertRaises(ValidationError) as cm:
+            ServicePaymentManager.create_payment(
+                service=service,
+                payment_type=PaymentType.CASH,
+                amount=Decimal("-100.00"),
+                received_by=self.user,
+            )
+
+        self.assertIn("must be greater than zero", str(cm.exception))
+
+    def test_create_payment_zero_amount_blocked(self):
+        """Test that zero payment amount is prevented."""
+        from services.business_logic import ServicePaymentManager
+        from services.models import PaymentType
+
+        service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            total_revenue=Decimal("1000.00"),
+        )
+
+        with self.assertRaises(ValidationError) as cm:
+            ServicePaymentManager.create_payment(
+                service=service,
+                payment_type=PaymentType.CASH,
+                amount=Decimal("0.00"),
+                received_by=self.user,
+            )
+
+        self.assertIn("must be greater than zero", str(cm.exception))
+
+    def test_get_outstanding_services(self):
+        """Test getting services with outstanding balances."""
+        from services.business_logic import ServicePaymentManager
+        from services.models import PaymentType
+
+        # Create paid service
+        paid_service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            total_revenue=Decimal("1000.00"),
+        )
+        ServicePaymentManager.create_payment(
+            service=paid_service,
+            payment_type=PaymentType.CASH,
+            amount=Decimal("1000.00"),
+            received_by=self.user,
+        )
+
+        # Create unpaid service
+        unpaid_service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            total_revenue=Decimal("500.00"),
+        )
+
+        # Create partial service
+        partial_service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            total_revenue=Decimal("800.00"),
+        )
+        ServicePaymentManager.create_payment(
+            service=partial_service,
+            payment_type=PaymentType.CASH,
+            amount=Decimal("300.00"),
+            received_by=self.user,
+        )
+
+        # Get outstanding services
+        outstanding = ServicePaymentManager.get_outstanding_services()
+
+        self.assertEqual(outstanding.count(), 2)
+        self.assertIn(unpaid_service, outstanding)
+        self.assertIn(partial_service, outstanding)
+        self.assertNotIn(paid_service, outstanding)
+
+    def test_get_outstanding_services_by_stall(self):
+        """Test getting outstanding services filtered by stall."""
+        from services.business_logic import ServicePaymentManager
+
+        # Create unpaid service for main stall
+        main_service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            total_revenue=Decimal("500.00"),
+        )
+
+        # Create another stall and unpaid service
+        other_stall = Stall.objects.create(
+            name="Other", location="Somewhere", stall_type="other"
+        )
+        other_service = Service.objects.create(
+            client=self.client_obj,
+            stall=other_stall,
+            total_revenue=Decimal("300.00"),
+        )
+
+        # Get outstanding for main stall only
+        outstanding = ServicePaymentManager.get_outstanding_services(stall=self.main_stall)
+
+        self.assertEqual(outstanding.count(), 1)
+        self.assertIn(main_service, outstanding)
+        self.assertNotIn(other_service, outstanding)
+
+    def test_get_payment_summary(self):
+        """Test getting payment summary for a service."""
+        from services.business_logic import ServicePaymentManager
+        from services.models import PaymentType
+
+        service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            total_revenue=Decimal("1000.00"),
+        )
+
+        # Add two payments
+        ServicePaymentManager.create_payment(
+            service=service,
+            payment_type=PaymentType.CASH,
+            amount=Decimal("400.00"),
+            received_by=self.user,
+            notes="First payment",
+        )
+        ServicePaymentManager.create_payment(
+            service=service,
+            payment_type=PaymentType.GCASH,
+            amount=Decimal("300.00"),
+            received_by=self.user,
+            notes="Second payment",
+        )
+
+        summary = ServicePaymentManager.get_payment_summary(service)
+
+        self.assertEqual(summary["service_id"], service.id)
+        self.assertEqual(summary["total_revenue"], 1000.00)
+        self.assertEqual(summary["total_paid"], 700.00)
+        self.assertEqual(summary["balance_due"], 300.00)
+        self.assertEqual(summary["payment_status"], "partial")
+        self.assertEqual(len(summary["payments"]), 2)
+
+    def test_void_payment(self):
+        """Test voiding a payment."""
+        from services.business_logic import ServicePaymentManager
+        from services.models import PaymentStatus, PaymentType
+
+        service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            total_revenue=Decimal("1000.00"),
+        )
+
+        payment = ServicePaymentManager.create_payment(
+            service=service,
+            payment_type=PaymentType.CASH,
+            amount=Decimal("500.00"),
+            received_by=self.user,
+        )
+
+        service.refresh_from_db()
+        self.assertEqual(service.payment_status, PaymentStatus.PARTIAL)
+
+        # Void the payment
+        ServicePaymentManager.void_payment(payment, reason="Mistake")
+
+        service.refresh_from_db()
+        self.assertEqual(service.payment_status, PaymentStatus.UNPAID)
+        self.assertEqual(service.total_paid, Decimal("0.00"))
+        self.assertEqual(service.payments.count(), 0)
+
+    def test_payment_with_completed_service(self):
+        """Test payment workflow with completed service."""
+        from services.business_logic import ServicePaymentManager
+        from services.models import PaymentType
+
+        # Create and complete service
+        service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            status=ServiceStatus.PENDING,
+        )
+        appliance = ServiceAppliance.objects.create(
+            service=service, appliance_type=self.appliance_type, labor_fee=500
+        )
+
+        # Complete service (this calculates revenue)
+        complete_service(service, user=self.user)
+
+        service.refresh_from_db()
+        total_revenue = service.total_revenue
+
+        # Now make payment
+        payment = ServicePaymentManager.create_payment(
+            service=service,
+            payment_type=PaymentType.CASH,
+            amount=total_revenue,
+            received_by=self.user,
+        )
+
+        service.refresh_from_db()
+        self.assertEqual(service.payment_status, "paid")
+        self.assertEqual(service.balance_due, Decimal("0.00"))

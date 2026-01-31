@@ -485,3 +485,147 @@ def cancel_service(service, reason="", user=None):
 def calculate_revenue(service):
     """Shortcut to calculate service revenue."""
     return RevenueCalculator.calculate_service_revenue(service, save=True)
+
+
+# ----------------------------------
+# Service Payment Manager
+# ----------------------------------
+class ServicePaymentManager:
+    """
+    Manager for service payment operations.
+
+    Handles payment creation, validation, and status updates.
+    Prevents overpayment and ensures data integrity.
+    """
+
+    @staticmethod
+    def create_payment(service, payment_type, amount, received_by=None, notes=""):
+        """
+        Create a payment for a service.
+
+        Args:
+            service: Service instance
+            payment_type: Payment type (cash, gcash, etc.)
+            amount: Payment amount (Decimal)
+            received_by: User who received the payment (optional)
+            notes: Additional notes (optional)
+
+        Returns:
+            ServicePayment instance
+
+        Raises:
+            ValidationError: If payment would cause overpayment or invalid amount
+        """
+        from services.models import ServicePayment
+
+        # Validate amount
+        if amount <= 0:
+            raise ValidationError("Payment amount must be greater than zero.")
+
+        # Check for overpayment
+        total_revenue = service.total_revenue
+        total_paid = service.total_paid
+        balance_due = total_revenue - total_paid
+
+        if amount > balance_due:
+            raise ValidationError(
+                f"Payment amount (₱{amount}) exceeds balance due (₱{balance_due}). "
+                f"Total revenue: ₱{total_revenue}, Already paid: ₱{total_paid}"
+            )
+
+        # Create payment
+        with transaction.atomic():
+            payment = ServicePayment.objects.create(
+                service=service,
+                payment_type=payment_type,
+                amount=amount,
+                received_by=received_by,
+                notes=notes,
+            )
+            # Payment status is automatically updated by the model's save() method
+
+        return payment
+
+    @staticmethod
+    def get_outstanding_services(stall=None):
+        """
+        Get services with outstanding balances (unpaid or partial).
+
+        Args:
+            stall: Optional stall to filter by
+
+        Returns:
+            QuerySet of Service instances
+        """
+        from services.models import PaymentStatus, Service
+
+        qs = Service.objects.filter(
+            payment_status__in=[PaymentStatus.UNPAID, PaymentStatus.PARTIAL]
+        )
+
+        if stall:
+            qs = qs.filter(stall=stall)
+
+        return qs.order_by('-created_at')
+
+    @staticmethod
+    def get_payment_summary(service):
+        """
+        Get a payment summary for a service.
+
+        Args:
+            service: Service instance
+
+        Returns:
+            dict with payment details
+        """
+        return {
+            'service_id': service.id,
+            'total_revenue': float(service.total_revenue),
+            'total_paid': float(service.total_paid),
+            'balance_due': float(service.balance_due),
+            'payment_status': service.payment_status,
+            'payments': [
+                {
+                    'id': p.id,
+                    'payment_type': p.payment_type,
+                    'amount': float(p.amount),
+                    'payment_date': p.payment_date.isoformat(),
+                    'received_by': p.received_by.get_full_name() if p.received_by else None,
+                    'notes': p.notes,
+                }
+                for p in service.payments.all()
+            ],
+        }
+
+    @staticmethod
+    def void_payment(payment, reason=""):
+        """
+        Void/delete a payment and update service payment status.
+
+        Args:
+            payment: ServicePayment instance
+            reason: Reason for voiding (optional)
+
+        Returns:
+            Service instance (after update)
+        """
+        with transaction.atomic():
+            service = payment.service
+            payment.delete()
+            # Payment status is automatically updated by the model's delete signal
+            service.update_payment_status()
+            service.refresh_from_db()
+
+        return service
+
+
+def create_service_payment(service, payment_type, amount, received_by=None, notes=""):
+    """Shortcut to create a service payment."""
+    return ServicePaymentManager.create_payment(
+        service=service,
+        payment_type=payment_type,
+        amount=amount,
+        received_by=received_by,
+        notes=notes,
+    )

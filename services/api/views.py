@@ -14,13 +14,15 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from services.api.serializers import (
     ApplianceItemUsedSerializer,
+    CreateServicePaymentSerializer,
     ServiceApplianceSerializer,
     ServiceCancellationSerializer,
     ServiceCompletionSerializer,
+    ServicePaymentSerializer,
     ServiceSerializer,
     TechnicianAssignmentSerializer,
 )
-from services.business_logic import RevenueCalculator
+from services.business_logic import RevenueCalculator, ServicePaymentManager
 from services.models import (
     ApplianceItemUsed,
     Service,
@@ -53,6 +55,10 @@ class ServiceViewSet(viewsets.ModelViewSet):
     - POST /services/{id}/complete/ - Complete service (consume stock, create transactions)
     - POST /services/{id}/cancel/ - Cancel service (release reserved stock)
     - POST /services/{id}/recalculate_revenue/ - Recalculate revenue attribution
+    - POST /services/{id}/payments/ - Record a payment for a service
+    - GET /services/{id}/payments/ - List all payments for a service
+    - GET /services/{id}/payment_summary/ - Get payment summary for a service
+    - GET /services/outstanding/ - List services with outstanding balances
     - GET /services/filters/ - Get filter options
     - GET /services/revenue_report/ - Get revenue summary
     """
@@ -245,6 +251,134 @@ class ServiceViewSet(viewsets.ModelViewSet):
         ]
 
         return get_role_based_filter_response(request, filters_config, ordering_config)
+
+    @action(detail=True, methods=["post"], url_path="payments")
+    def create_payment(self, request, pk=None):
+        """
+        Record a payment for a service.
+
+        Request body:
+        {
+            "payment_type": "cash",  // Required: cash, gcash, credit, debit, cheque
+            "amount": "500.00",      // Required: payment amount
+            "notes": "Partial payment"  // Optional
+        }
+
+        Response:
+        {
+            "id": 1,
+            "service": 123,
+            "payment_type": "cash",
+            "payment_type_display": "Cash",
+            "amount": "500.00",
+            "payment_date": "2024-01-15T10:30:00Z",
+            "received_by": 5,
+            "received_by_name": "John Doe",
+            "notes": "Partial payment",
+            "created_at": "2024-01-15T10:30:00Z",
+            "updated_at": "2024-01-15T10:30:00Z"
+        }
+        """
+        service = self.get_object()
+
+        serializer = CreateServicePaymentSerializer(
+            data=request.data,
+            context={"service": service, "request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        payment = serializer.save()
+
+        # Return the created payment
+        output_serializer = ServicePaymentSerializer(payment)
+        return Response(output_serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get"], url_path="payments")
+    def list_payments(self, request, pk=None):
+        """
+        List all payments for a service.
+
+        Response:
+        [
+            {
+                "id": 1,
+                "service": 123,
+                "payment_type": "cash",
+                "amount": "500.00",
+                ...
+            },
+            ...
+        ]
+        """
+        service = self.get_object()
+        payments = service.payments.all()
+        serializer = ServicePaymentSerializer(payments, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get"], url_path="payment-summary")
+    def payment_summary(self, request, pk=None):
+        """
+        Get payment summary for a service.
+
+        Response:
+        {
+            "service_id": 123,
+            "total_revenue": "1000.00",
+            "total_paid": "500.00",
+            "balance_due": "500.00",
+            "payment_status": "partial",
+            "payments": [...]
+        }
+        """
+        service = self.get_object()
+        summary = ServicePaymentManager.get_payment_summary(service)
+        return Response(summary, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="outstanding")
+    def outstanding(self, request):
+        """
+        List services with outstanding balances (unpaid or partial).
+
+        Query params:
+        - stall: Filter by stall ID (optional)
+        - start_date: Filter services from this date (YYYY-MM-DD)
+        - end_date: Filter services to this date (YYYY-MM-DD)
+
+        Response:
+        [
+            {
+                "id": 123,
+                "client": {...},
+                "total_revenue": "1000.00",
+                "total_paid": "500.00",
+                "balance_due": "500.00",
+                "payment_status": "partial",
+                ...
+            },
+            ...
+        ]
+        """
+        from inventory.models import Stall
+
+        # Get outstanding services
+        stall_id = request.query_params.get("stall")
+        stall = None
+        if stall_id:
+            try:
+                stall = Stall.objects.get(id=stall_id)
+            except Stall.DoesNotExist:
+                return Response(
+                    {"error": f"Stall with ID {stall_id} not found."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        qs = ServicePaymentManager.get_outstanding_services(stall=stall)
+
+        # Apply date filters
+        qs = filter_by_date_range(request, qs)
+
+        # Serialize
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 # --------------------------

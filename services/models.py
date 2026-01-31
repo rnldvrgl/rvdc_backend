@@ -2,9 +2,29 @@ from datetime import datetime, timedelta
 
 from clients.models import Client
 from django.db import models
+from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
 from inventory.models import Item, Stock
 from users.models import CustomUser
 from utils.enums import ApplianceStatus, ServiceMode, ServiceStatus, ServiceType
+
+
+# ----------------------------------
+# Payment Enums
+# ----------------------------------
+class PaymentType(models.TextChoices):
+    CASH = "cash", _("Cash")
+    GCASH = "gcash", _("GCash")
+    CREDIT = "credit", _("Credit")
+    DEBIT = "debit", _("Debit")
+    CHEQUE = "cheque", _("Cheque")
+
+
+class PaymentStatus(models.TextChoices):
+    UNPAID = "unpaid", _("Unpaid")
+    PARTIAL = "partial", _("Partial")
+    PAID = "paid", _("Paid")
+    REFUNDED = "refunded", _("Refunded")
 
 
 # ----------------------------------
@@ -95,6 +115,14 @@ class Service(models.Model):
         help_text="Total service revenue (main + sub)",
     )
 
+    # Payment tracking
+    payment_status = models.CharField(
+        max_length=10,
+        choices=PaymentStatus.choices,
+        default=PaymentStatus.UNPAID,
+        help_text="Payment status of this service",
+    )
+
     class Meta:
         ordering = ["-created_at"]
 
@@ -126,6 +154,75 @@ class Service(models.Model):
             dt = datetime.combine(self.scheduled_date, self.scheduled_time)
             return (dt + timedelta(minutes=self.estimated_duration)).time()
         return None
+
+    @property
+    def total_paid(self):
+        """Total amount paid for this service across all payments."""
+        return sum(payment.amount for payment in self.payments.all())
+
+    @property
+    def balance_due(self):
+        """Remaining balance for this service."""
+        return max(self.total_revenue - self.total_paid, 0)
+
+    def update_payment_status(self):
+        """Update payment status based on total paid vs total revenue."""
+        total = self.total_revenue
+        paid = self.total_paid
+
+        if paid == 0:
+            self.payment_status = PaymentStatus.UNPAID
+        elif paid < total:
+            self.payment_status = PaymentStatus.PARTIAL
+        else:
+            self.payment_status = PaymentStatus.PAID
+
+        self.save(update_fields=["payment_status"])
+
+
+# ----------------------------------
+# Service Payment
+# ----------------------------------
+class ServicePayment(models.Model):
+    """Payment record for a service."""
+
+    service = models.ForeignKey(
+        Service, related_name="payments", on_delete=models.CASCADE
+    )
+    payment_type = models.CharField(max_length=10, choices=PaymentType.choices)
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Amount paid in this transaction",
+    )
+    payment_date = models.DateTimeField(default=timezone.now)
+    received_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="service_payments_received",
+        help_text="User who received this payment",
+    )
+    notes = models.TextField(
+        blank=True, help_text="Additional notes about this payment"
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-payment_date"]
+        verbose_name = "Service Payment"
+        verbose_name_plural = "Service Payments"
+
+    def __str__(self):
+        return f"{self.payment_type}: ₱{self.amount} for Service #{self.service.id}"
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # Automatically update the related service's payment status
+        self.service.update_payment_status()
 
 
 # ----------------------------------
