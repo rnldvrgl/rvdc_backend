@@ -1,5 +1,17 @@
 from datetime import datetime, time, timedelta
 
+from analytics.business_logic import (
+    ClientAnalytics,
+    DashboardAnalytics,
+    InventoryAnalytics,
+    OutstandingAnalytics,
+    PaymentAnalytics,
+    RevenueAnalytics,
+    ServiceAnalytics,
+    WarrantyAnalytics,
+    get_date_range_from_request,
+    get_stall_from_request,
+)
 from clients.models import Client
 from django.db.models import (
     Count,
@@ -13,8 +25,11 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from expenses.models import Expense
 from inventory.models import StockRoomStock
+from rest_framework import permissions, status
+from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.viewsets import ViewSet
 from sales.models import SalesItem, SalesPayment, SalesTransaction
 
 
@@ -313,3 +328,239 @@ class UnpaidSalesStatusView(APIView):
         return Response(
             [{"status": q["payment_status"], "count": q["count"]} for q in queryset]
         )
+
+
+# ----------------------------------
+# New Comprehensive Analytics Views
+# ----------------------------------
+class AnalyticsViewSet(ViewSet):
+    """
+    Comprehensive analytics endpoints.
+
+    Provides analytics for:
+    - Revenue (sales + services)
+    - Payment collections
+    - Outstanding balances and aging
+    - Service performance
+    - Technician productivity
+    - Warranty claims
+    - Client behavior
+    - Inventory turnover
+    - Dashboard summaries
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    @action(detail=False, methods=["get"], url_path="revenue-summary")
+    def revenue_summary(self, request):
+        """
+        Get revenue summary for sales and services.
+
+        Query params:
+        - start_date: YYYY-MM-DD (default: 30 days ago)
+        - end_date: YYYY-MM-DD (default: today)
+        - stall: Stall ID (optional)
+
+        Returns comprehensive revenue breakdown.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        stall = get_stall_from_request(request)
+
+        data = RevenueAnalytics.get_revenue_summary(start_date, end_date, stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="revenue-over-time")
+    def revenue_over_time(self, request):
+        """
+        Get revenue over time (daily, weekly, or monthly).
+
+        Query params:
+        - start_date, end_date, stall (as above)
+        - period: 'day', 'week', or 'month' (default: 'day')
+
+        Returns time-series revenue data.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        stall = get_stall_from_request(request)
+        period = request.query_params.get("period", "day")
+
+        data = RevenueAnalytics.get_revenue_over_time(start_date, end_date, stall, period)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="payment-collections")
+    def payment_collections(self, request):
+        """
+        Get payment collection summary.
+
+        Query params:
+        - start_date, end_date, stall
+
+        Returns total collections from sales and services.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        stall = get_stall_from_request(request)
+
+        data = PaymentAnalytics.get_collection_summary(start_date, end_date, stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="payment-methods")
+    def payment_methods(self, request):
+        """
+        Get payment method breakdown.
+
+        Query params:
+        - start_date, end_date, stall
+
+        Returns breakdown by payment type (cash, gcash, etc.).
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        stall = get_stall_from_request(request)
+
+        data = PaymentAnalytics.get_payment_method_breakdown(start_date, end_date, stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="outstanding-summary")
+    def outstanding_summary(self, request):
+        """
+        Get outstanding balance summary.
+
+        Query params:
+        - stall (optional)
+
+        Returns outstanding balances for sales and services.
+        """
+        stall = get_stall_from_request(request)
+
+        data = OutstandingAnalytics.get_outstanding_summary(stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="aging-report")
+    def aging_report(self, request):
+        """
+        Get aging report for outstanding balances.
+
+        Query params:
+        - stall (optional)
+
+        Returns balances bucketed by age (0-30, 31-60, 61-90, 90+ days).
+        """
+        stall = get_stall_from_request(request)
+
+        data = OutstandingAnalytics.get_aging_report(stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="service-summary")
+    def service_summary(self, request):
+        """
+        Get service performance summary.
+
+        Query params:
+        - start_date, end_date, stall
+
+        Returns service metrics including completion rates and revenue.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        stall = get_stall_from_request(request)
+
+        data = ServiceAnalytics.get_service_summary(start_date, end_date, stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="technician-productivity")
+    def technician_productivity(self, request):
+        """
+        Get technician productivity report.
+
+        Query params:
+        - start_date, end_date
+
+        Returns productivity metrics for each technician.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+
+        data = ServiceAnalytics.get_technician_productivity(start_date, end_date)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="warranty-summary")
+    def warranty_summary(self, request):
+        """
+        Get warranty claims summary.
+
+        Query params:
+        - start_date, end_date
+
+        Returns warranty claim metrics and costs.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+
+        data = WarrantyAnalytics.get_warranty_summary(start_date, end_date)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="top-clients")
+    def top_clients(self, request):
+        """
+        Get top clients by spending.
+
+        Query params:
+        - start_date, end_date
+        - limit: Number of clients to return (default: 10)
+
+        Returns top clients ranked by total spending.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        limit = int(request.query_params.get("limit", 10))
+
+        data = ClientAnalytics.get_top_clients(start_date, end_date, limit)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="inventory-summary")
+    def inventory_summary(self, request):
+        """
+        Get inventory health summary.
+
+        Query params:
+        - stall (optional)
+
+        Returns inventory metrics including stock levels and value.
+        """
+        stall = get_stall_from_request(request)
+
+        data = InventoryAnalytics.get_inventory_summary(stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="stock-turnover")
+    def stock_turnover(self, request):
+        """
+        Get stock turnover analysis.
+
+        Query params:
+        - start_date, end_date
+        - limit: Number of items to return (default: 20)
+
+        Returns items ranked by movement/turnover.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        limit = int(request.query_params.get("limit", 20))
+
+        data = InventoryAnalytics.get_stock_turnover(start_date, end_date, limit)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="dashboard")
+    def dashboard(self, request):
+        """
+        Get consolidated dashboard summary.
+
+        Query params:
+        - start_date, end_date, stall
+
+        Returns comprehensive dashboard data including:
+        - Revenue summary
+        - Collection summary
+        - Outstanding balances
+        - Service metrics
+        - Inventory health
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        stall = get_stall_from_request(request)
+
+        data = DashboardAnalytics.get_dashboard_summary(start_date, end_date, stall)
+        return Response(data, status=status.HTTP_200_OK)
