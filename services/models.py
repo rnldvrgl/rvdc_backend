@@ -75,6 +75,26 @@ class Service(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Revenue tracking for two-stall architecture
+    main_stall_revenue = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Revenue attributed to Main stall (labor + aircon units)",
+    )
+    sub_stall_revenue = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Revenue attributed to Sub stall (parts)",
+    )
+    total_revenue = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Total service revenue (main + sub)",
+    )
+
     class Meta:
         ordering = ["-created_at"]
 
@@ -173,6 +193,14 @@ class ServiceAppliance(models.Model):
     labor_is_free = models.BooleanField(
         default=False, help_text="Mark labor for this appliance as free."
     )
+    # Promo support - track original amount before discount
+    labor_original_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Original labor fee before promo discount (e.g., free installation)",
+    )
 
     class Meta:
         ordering = ["appliance_type__name", "brand"]
@@ -211,6 +239,17 @@ class ApplianceItemUsed(BaseItemUsed):
     )
     is_free = models.BooleanField(
         default=False, help_text="Mark this part as free to the customer."
+    )
+
+    # Promo support - track free quantity for promotions (e.g., first 10ft copper tube free)
+    free_quantity = models.PositiveIntegerField(
+        default=0,
+        help_text="Quantity given free as part of promotion",
+    )
+    promo_name = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Name of applied promotion (e.g., 'Free 10ft Copper Tube Promo')",
     )
 
     # Link to an Expense created automatically when items are consumed from

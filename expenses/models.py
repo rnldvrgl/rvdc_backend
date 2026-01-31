@@ -1,7 +1,5 @@
 from django.db import models
 
-from inventory.models import StockTransfer
-
 
 class Expense(models.Model):
     stall = models.ForeignKey(
@@ -23,20 +21,12 @@ class Expense(models.Model):
     is_paid = models.BooleanField(default=False)
     source = models.CharField(
         max_length=20,
-        choices=[("manual", "Manual"), ("transfer", "Transfer")],
+        choices=[("manual", "Manual"), ("service", "Service")],
         default="manual",
     )
-    transfer = models.OneToOneField(
-        StockTransfer,
-        on_delete=models.CASCADE,
-        related_name="expense",
-        null=True,
-        blank=True,
-    )
+
 
     def save(self, *args, **kwargs):
-        if self.source == "transfer" and not self.transfer:
-            raise ValueError("Transfer must be set for transfer expenses.")
         super().save(*args, **kwargs)
 
 

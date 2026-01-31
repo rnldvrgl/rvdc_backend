@@ -5,8 +5,6 @@ from inventory.models import (
     Stall,
     Stock,
     StockRoomStock,
-    StockTransfer,
-    StockTransferItem,
 )
 
 
@@ -97,32 +95,3 @@ class StockAdmin(admin.ModelAdmin):
     search_fields = ("stall__name", "item__name")
     ordering = ("stall__name", "item__name")
     raw_id_fields = ("stall", "item")
-
-
-@admin.register(StockTransfer)
-class StockTransferAdmin(admin.ModelAdmin):
-    list_display = (
-        "from_stall",
-        "to_stall",
-        "technician",
-        "transfer_date",
-        "is_finalized",
-        "finalized_at",
-    )
-    list_filter = ("from_stall", "to_stall", "is_finalized")
-    search_fields = ("from_stall__name", "to_stall__name", "technician__username")
-    ordering = ("-transfer_date",)
-    raw_id_fields = ("from_stall", "to_stall", "technician", "transferred_by")
-
-
-@admin.register(StockTransferItem)
-class StockTransferItemAdmin(admin.ModelAdmin):
-    list_display = ("transfer", "item", "quantity")
-    list_filter = ("transfer", "item")
-    search_fields = ("transfer__id", "item__name")
-    ordering = ("transfer__transfer_date",)
-    raw_id_fields = ("transfer", "item")
-    readonly_fields = ("transfer", "item", "quantity")
-
-    def has_delete_permission(self, request, obj=None):
-        return False

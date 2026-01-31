@@ -1,12 +1,10 @@
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from inventory.api.filters import (
     ItemFilter,
     StockFilter,
     StockRoomFilter,
-    StockTransferFilter,
 )
 from inventory.api.serializers import (
     ItemSerializer,
@@ -16,7 +14,6 @@ from inventory.api.serializers import (
     StockReadSerializer,
     StockRestockSerializer,
     StockRoomStockSerializer,
-    StockTransferSerializer,
     StockWriteSerializer,
 )
 from inventory.models import (
@@ -25,12 +22,10 @@ from inventory.models import (
     Stall,
     Stock,
     StockRoomStock,
-    StockTransfer,
 )
 from notifications.models import Notification
 from rest_framework import filters, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAdminUser, IsAuthenticated
 from rest_framework.response import Response
 from utils.filters.options import (
@@ -38,7 +33,6 @@ from utils.filters.options import (
     get_stall_options,
     get_status_options,
     get_unit_of_measure_options,
-    get_user_options,
 )
 from utils.filters.role_filters import get_role_based_filter_response
 from utils.inventory import (
@@ -47,7 +41,6 @@ from utils.inventory import (
 from utils.query import (
     filter_by_date_range,
     get_role_filtered_queryset,
-    get_transfer_role_filtered_queryset,
 )
 
 
@@ -356,75 +349,3 @@ class ProductCategoryViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return filter_by_date_range(self.request, super().get_queryset())
-
-
-class StockTransferViewSet(viewsets.ModelViewSet):
-    queryset = StockTransfer.objects.all()
-    serializer_class = StockTransferSerializer
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_class = StockTransferFilter
-    search_fields = ["from_stall__name", "to_stall__name"]
-
-    def get_queryset(self):
-        return get_transfer_role_filtered_queryset(
-            self.request, super().get_queryset(), "transfer_date"
-        )
-
-    @action(detail=False, methods=["get"], url_path="filters")
-    def get_filters(self, request):
-        filters_config = {
-            "technician": {
-                "options": lambda: get_user_options(include_roles=["technician"])
-            },
-            "is_finalized": {
-                "options": lambda: [
-                    {"label": "Finalized", "value": "true"},
-                    {"label": "Not Finalized", "value": "false"},
-                ],
-            },
-            "is_paid": {
-                "options": lambda: [
-                    {"label": "Paid", "value": "true"},
-                    {"label": "Unpaid", "value": "false"},
-                ],
-            },
-        }
-
-        ordering_config = [
-            {"label": "Transfer Date", "value": "transfer_date"},
-            {"label": "From Stall", "value": "from_stall__name"},
-            {"label": "To Stall", "value": "to_stall__name"},
-        ]
-
-        return get_role_based_filter_response(request, filters_config, ordering_config)
-
-    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
-    @transaction.atomic
-    def finalize(self, request, pk=None):
-        transfer = self.get_object()
-        if not transfer.can_be_finalized_by(request.user):
-            return Response(
-                {"detail": "You do not have permission to finalize this transfer."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        transfer.finalize(request.user)
-        return Response({"detail": "Stock transfer finalized."})
-
-    @action(
-        detail=True,
-        methods=["post"],
-        permission_classes=[IsAuthenticated],
-        url_path="mark-expense-as-paid",
-    )
-    @transaction.atomic
-    def mark_expense_as_paid(self, request, pk=None):
-        stock_transfer = self.get_object()
-
-        if not hasattr(stock_transfer, "expense") or stock_transfer.expense is None:
-            raise ValidationError("This stock transfer has no linked expense.")
-
-        stock_transfer.expense.is_paid = True
-        stock_transfer.expense.paid_at = timezone.now()
-        stock_transfer.expense.save()
-
-        return Response({"detail": "Expense marked as paid."})

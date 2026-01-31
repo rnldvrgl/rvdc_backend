@@ -1,16 +1,11 @@
 from django.db import models
 from django_filters import rest_framework as filters
-
 from inventory.models import (
     Item,
     Stock,
     StockRoomStock,
-    StockTransfer,
-    ProductCategory,
 )
-from users.models import CustomUser
 from utils.filters.base import make_zero_filter
-
 
 # --------------------------
 # Status Filter Mixins
@@ -113,30 +108,3 @@ class ItemFilter(filters.FilterSet):
             "cost_price",
             "retail_price",
         ]
-
-
-class StockTransferFilter(filters.FilterSet):
-    """
-    For filtering stock transfers (technician deliveries, etc.)
-    Includes payment state and finalized state.
-    """
-
-    is_finalized = filters.BooleanFilter()
-    is_paid = filters.BooleanFilter(method="filter_is_paid")
-    technician = filters.ModelChoiceFilter(
-        queryset=CustomUser.objects.filter(role="technician", is_deleted=False)
-    )
-
-    class Meta:
-        model = StockTransfer
-        fields = ["technician", "is_paid", "is_finalized"]
-
-    def filter_is_paid(self, queryset, name, value):
-        if value:
-            # Transfers that have an associated paid expense
-            return queryset.filter(expense__is_paid=True)
-        else:
-            # Transfers not paid or without any expense record
-            return queryset.filter(
-                models.Q(expense__isnull=True) | models.Q(expense__is_paid=False)
-            )
