@@ -323,7 +323,7 @@ class WeeklyPayrollPreviewView(APIView):
 
         last_cutoff = today - timedelta(days=days_since_cutoff)
         week_start = last_cutoff - timedelta(days=6)
-        week_end = week_start + timedelta(days=6)
+        week_end = last_cutoff  # Inclusive end date
 
         # Get employee
         try:
@@ -348,7 +348,7 @@ class WeeklyPayrollPreviewView(APIView):
         attendance_qs = DailyAttendance.objects.filter(
             employee=employee,
             date__gte=week_start,
-            date__lt=week_end,
+            date__lte=week_end,
             is_deleted=False,
         )
 
@@ -396,7 +396,7 @@ class WeeklyPayrollPreviewView(APIView):
         add_qs = employee.additional_earnings.filter(
             is_deleted=False,
             earning_date__gte=week_start,
-            earning_date__lt=week_end,
+            earning_date__lte=week_end,
         )
         if not include_unapproved:
             add_qs = add_qs.filter(approved=True)

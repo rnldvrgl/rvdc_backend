@@ -528,8 +528,9 @@ class WeeklyPayroll(models.Model):
 
     @property
     def week_end(self) -> date:
-        # Exclusive end date (week_start + 7 days)
-        return self.week_start + timedelta(days=7)
+        # Inclusive end date (week_start + 6 days)
+        # For Saturday-Friday week: if week_start is Saturday, week_end is Friday
+        return self.week_start + timedelta(days=6)
 
     @property
     def total_hours(self) -> Decimal:
@@ -644,7 +645,7 @@ class WeeklyPayroll(models.Model):
         add_qs = self.employee.additional_earnings.filter(
             is_deleted=False,
             earning_date__gte=self.week_start,
-            earning_date__lt=self.week_end,
+            earning_date__lte=self.week_end,
         )
         if not include_unapproved:
             add_qs = add_qs.filter(approved=True)
@@ -718,7 +719,7 @@ class WeeklyPayroll(models.Model):
         try:
             from payroll.models import Holiday
             holidays = Holiday.objects.filter(
-                is_deleted=False, date__gte=self.week_start, date__lt=self.week_end
+                is_deleted=False, date__gte=self.week_start, date__lte=self.week_end
             )
         except Exception:
             holidays = []
@@ -939,7 +940,7 @@ class WeeklyPayroll(models.Model):
         attendance_qs = DailyAttendance.objects.filter(
             employee=self.employee,
             date__gte=self.week_start,
-            date__lt=self.week_end,
+            date__lte=self.week_end,
             is_deleted=False,
         )
 
@@ -991,7 +992,7 @@ class WeeklyPayroll(models.Model):
         add_qs = self.employee.additional_earnings.filter(
             is_deleted=False,
             earning_date__gte=self.week_start,
-            earning_date__lt=self.week_end,
+            earning_date__lte=self.week_end,
         )
         if not include_unapproved:
             add_qs = add_qs.filter(approved=True)
@@ -1046,7 +1047,7 @@ class WeeklyPayroll(models.Model):
             holidays = Holiday.objects.filter(
                 is_deleted=False,
                 date__gte=self.week_start,
-                date__lt=self.week_end
+                date__lte=self.week_end
             )
         except Exception:
             holidays = []

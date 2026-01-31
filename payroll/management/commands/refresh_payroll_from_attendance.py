@@ -169,7 +169,7 @@ class Command(BaseCommand):
             attendance_qs = DailyAttendance.objects.filter(
                 employee=payroll.employee,
                 date__gte=payroll.week_start,
-                date__lt=payroll.week_end,
+                date__lte=payroll.week_end,
                 is_deleted=False,
                 status='APPROVED',
             )
