@@ -812,7 +812,7 @@ class InventoryAnalytics:
     @staticmethod
     def get_stock_turnover(start_date=None, end_date=None, limit=20):
         """Get stock turnover analysis."""
-        from inventory.models import Item
+        from inventory.models import Item, Stock
         from sales.models import SalesItem
         from services.models import ApplianceItemUsed
 
