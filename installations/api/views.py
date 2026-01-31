@@ -12,12 +12,21 @@ from installations.api.serializers import (
     AirconReservationSerializer,
     AirconSaleSerializer,
     AirconUnitSerializer,
+    FreeCleaningEligibilitySerializer,
+    FreeCleaningRedemptionSerializer,
+    WarrantyClaimApproveSerializer,
+    WarrantyClaimCancelSerializer,
+    WarrantyClaimCreateSerializer,
+    WarrantyClaimRejectSerializer,
+    WarrantyClaimSerializer,
+    WarrantyEligibilitySerializer,
 )
 from installations.models import (
     AirconBrand,
     AirconInstallation,
     AirconModel,
     AirconUnit,
+    WarrantyClaim,
 )
 from rest_framework import filters as drf_filters
 from rest_framework import status, viewsets
@@ -350,5 +359,276 @@ class AirconInstallationViewSet(viewsets.ModelViewSet):
         }
         ordering_config = [
             {"label": "ID", "value": "id"},
+        ]
+        return get_role_based_filter_response(request, filters_config, ordering_config)
+
+
+class WarrantyClaimViewSet(viewsets.ModelViewSet):
+    """
+    Warranty claim management and free cleaning redemption.
+
+    Endpoints:
+    - GET /warranty-claims/ - List all warranty claims
+    - POST /warranty-claims/ - Create new warranty claim
+    - GET /warranty-claims/{id}/ - Get claim details
+    - PUT/PATCH /warranty-claims/{id}/ - Update claim
+    - DELETE /warranty-claims/{id}/ - Delete claim
+    - POST /warranty-claims/{id}/approve/ - Approve claim and create service
+    - POST /warranty-claims/{id}/reject/ - Reject claim with reason
+    - POST /warranty-claims/{id}/cancel/ - Cancel claim
+    - POST /warranty-claims/{id}/complete/ - Mark claim as completed
+    - POST /warranty-claims/check-eligibility/ - Check warranty eligibility
+    - POST /warranty-claims/redeem-free-cleaning/ - Redeem free cleaning
+    - POST /warranty-claims/check-free-cleaning/ - Check free cleaning eligibility
+    """
+
+    queryset = WarrantyClaim.objects.all()
+    serializer_class = WarrantyClaimSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [
+        DjangoFilterBackend,
+        drf_filters.SearchFilter,
+        drf_filters.OrderingFilter,
+    ]
+    search_fields = [
+        "unit__serial_number",
+        "unit__model__name",
+        "unit__sale__client__name",
+        "issue_description",
+    ]
+    ordering_fields = ["claim_date", "status", "created_at"]
+    filterset_fields = ["status", "claim_type", "unit", "is_valid_claim"]
+
+    def get_queryset(self):
+        queryset = super().get_queryset().select_related(
+            'unit',
+            'unit__model',
+            'unit__model__brand',
+            'unit__sale',
+            'unit__sale__client',
+            'service',
+            'reviewed_by'
+        )
+        return get_role_filtered_queryset(self.request, queryset)
+
+    def create(self, request, *args, **kwargs):
+        """
+        Create a warranty claim.
+
+        Request body:
+        {
+            "unit_id": 123,
+            "claim_type": "repair",
+            "issue_description": "Unit not cooling properly",
+            "customer_notes": "Started happening last week"
+        }
+        """
+        serializer = WarrantyClaimCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        claim = serializer.save()
+
+        return Response(
+            WarrantyClaimSerializer(claim).data,
+            status=status.HTTP_201_CREATED
+        )
+
+    @action(detail=True, methods=["post"], url_path="approve")
+    def approve_claim(self, request, pk=None):
+        """
+        Approve a warranty claim and optionally create service.
+
+        Request body:
+        {
+            "technician_assessment": "Confirmed defective compressor",
+            "create_service": true,
+            "scheduled_date": "2024-01-20",
+            "scheduled_time": "10:00:00"
+        }
+        """
+        claim = self.get_object()
+
+        serializer = WarrantyClaimApproveSerializer(
+            data=request.data,
+            context={'request': request, 'claim': claim}
+        )
+        serializer.is_valid(raise_exception=True)
+        result = serializer.save()
+
+        response_data = {
+            'claim': WarrantyClaimSerializer(result['claim']).data,
+        }
+
+        if result.get('service'):
+            from services.api.serializers import ServiceSerializer
+            response_data['service'] = ServiceSerializer(result['service']).data
+
+        return Response(response_data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="reject")
+    def reject_claim(self, request, pk=None):
+        """
+        Reject a warranty claim.
+
+        Request body:
+        {
+            "rejection_reason": "Unit damage caused by improper use",
+            "is_valid_claim": false
+        }
+        """
+        claim = self.get_object()
+
+        serializer = WarrantyClaimRejectSerializer(
+            data=request.data,
+            context={'request': request, 'claim': claim}
+        )
+        serializer.is_valid(raise_exception=True)
+        claim = serializer.save()
+
+        return Response(
+            WarrantyClaimSerializer(claim).data,
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=["post"], url_path="cancel")
+    def cancel_claim(self, request, pk=None):
+        """
+        Cancel a warranty claim.
+
+        Request body:
+        {
+            "cancellation_reason": "Customer no longer needs service"
+        }
+        """
+        claim = self.get_object()
+
+        serializer = WarrantyClaimCancelSerializer(
+            data=request.data,
+            context={'claim': claim}
+        )
+        serializer.is_valid(raise_exception=True)
+        claim = serializer.save()
+
+        return Response(
+            WarrantyClaimSerializer(claim).data,
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=["post"], url_path="complete")
+    def complete_claim(self, request, pk=None):
+        """
+        Mark a warranty claim as completed.
+        """
+        from installations.business_logic import WarrantyClaimManager
+
+        claim = self.get_object()
+        claim = WarrantyClaimManager.complete_claim(claim)
+
+        return Response(
+            WarrantyClaimSerializer(claim).data,
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=False, methods=["post"], url_path="check-eligibility")
+    def check_warranty_eligibility(self, request):
+        """
+        Check if a unit is eligible for warranty claim.
+
+        Request body:
+        {
+            "unit_id": 123
+        }
+
+        Response:
+        {
+            "eligible": true,
+            "reason": "Unit is under warranty",
+            "warranty_days_left": 180,
+            "warranty_end_date": "2024-07-15"
+        }
+        """
+        serializer = WarrantyEligibilitySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = serializer.check()
+
+        return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["post"], url_path="redeem-free-cleaning")
+    def redeem_free_cleaning(self, request):
+        """
+        Redeem free cleaning for an aircon unit.
+
+        Request body:
+        {
+            "unit_id": 123,
+            "scheduled_date": "2024-01-20",
+            "scheduled_time": "14:00:00"
+        }
+
+        Response:
+        {
+            "service": {...},
+            "unit": {...}
+        }
+        """
+        serializer = FreeCleaningRedemptionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = serializer.save()
+
+        from services.api.serializers import ServiceSerializer
+
+        return Response({
+            'service': ServiceSerializer(result['service']).data,
+            'unit': AirconUnitSerializer(result['unit']).data,
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"], url_path="check-free-cleaning")
+    def check_free_cleaning_eligibility(self, request):
+        """
+        Check if a unit is eligible for free cleaning redemption.
+
+        Request body:
+        {
+            "unit_id": 123
+        }
+
+        Response:
+        {
+            "eligible": true,
+            "reason": "Unit is eligible for free cleaning",
+            "warranty_days_left": 180
+        }
+        """
+        serializer = FreeCleaningEligibilitySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = serializer.check()
+
+        return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="filters")
+    def get_filters(self, request):
+        filters_config = {
+            "status": {
+                "options": lambda: [
+                    {"label": label, "value": value}
+                    for value, label in WarrantyClaim.ClaimStatus.choices
+                ]
+            },
+            "claim_type": {
+                "options": lambda: [
+                    {"label": label, "value": value}
+                    for value, label in WarrantyClaim.ClaimType.choices
+                ]
+            },
+            "is_valid_claim": {
+                "options": lambda: [
+                    {"label": "Valid", "value": "true"},
+                    {"label": "Invalid", "value": "false"},
+                ]
+            },
+        }
+        ordering_config = [
+            {"label": "Claim Date", "value": "claim_date"},
+            {"label": "Status", "value": "status"},
+            {"label": "Created At", "value": "created_at"},
         ]
         return get_role_based_filter_response(request, filters_config, ordering_config)

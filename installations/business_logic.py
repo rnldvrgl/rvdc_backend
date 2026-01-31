@@ -590,3 +590,518 @@ def create_aircon_installation(unit, client, **kwargs):
 def get_available_aircons(model=None, brand=None):
     """Get available aircon units for sale."""
     return AirconInventoryManager.get_available_units(model, brand)
+
+
+# ============================================================================
+# Warranty Management
+# ============================================================================
+
+
+class WarrantyEligibilityChecker:
+    """Check warranty eligibility for aircon units."""
+
+    @staticmethod
+    def check_eligibility(unit):
+        """
+        Check if a unit is eligible for warranty service.
+
+        Args:
+            unit: AirconUnit instance
+
+        Returns:
+            dict with 'eligible' (bool) and 'reason' (str) keys
+
+        Raises:
+            ValidationError if unit is invalid
+        """
+        if not unit:
+            raise ValidationError("Unit is required")
+
+        # Unit must be sold
+        if not unit.is_sold:
+            return {
+                'eligible': False,
+                'reason': 'Unit has not been sold yet',
+            }
+
+        # Unit must have warranty
+        if unit.warranty_period_months == 0:
+            return {
+                'eligible': False,
+                'reason': 'Unit has no warranty coverage',
+            }
+
+        # Warranty must have started
+        if not unit.warranty_start_date:
+            return {
+                'eligible': False,
+                'reason': 'Warranty has not started yet',
+            }
+
+        # Check if under warranty
+        if not unit.is_under_warranty:
+            return {
+                'eligible': False,
+                'reason': f'Warranty has expired. Warranty ended on {unit.warranty_end_date}',
+                'warranty_end_date': unit.warranty_end_date,
+            }
+
+        # All checks passed
+        return {
+            'eligible': True,
+            'reason': 'Unit is under warranty',
+            'warranty_days_left': unit.warranty_days_left,
+            'warranty_end_date': unit.warranty_end_date,
+        }
+
+
+class WarrantyClaimManager:
+    """Manages warranty claim lifecycle."""
+
+    @staticmethod
+    @transaction.atomic
+    def create_claim(unit, issue_description, claim_type='repair', customer_notes='', **kwargs):
+        """
+        Create a warranty claim for an aircon unit.
+
+        Args:
+            unit: AirconUnit instance
+            issue_description: Description of the issue
+            claim_type: Type of claim (repair, replacement, parts, inspection)
+            customer_notes: Additional notes from customer
+            **kwargs: Additional fields for WarrantyClaim
+
+        Returns:
+            WarrantyClaim instance
+
+        Raises:
+            ValidationError if unit is not eligible for warranty
+        """
+        from installations.models import WarrantyClaim
+
+        # Check eligibility
+        eligibility = WarrantyEligibilityChecker.check_eligibility(unit)
+        if not eligibility['eligible']:
+            raise ValidationError({
+                'unit': f"Unit is not eligible for warranty claim: {eligibility['reason']}"
+            })
+
+        # Create claim
+        claim = WarrantyClaim.objects.create(
+            unit=unit,
+            claim_type=claim_type,
+            issue_description=issue_description,
+            customer_notes=customer_notes,
+            **kwargs
+        )
+
+        return claim
+
+    @staticmethod
+    @transaction.atomic
+    def approve_claim(claim, reviewed_by, technician_assessment='', create_service=True):
+        """
+        Approve a warranty claim and optionally create a service.
+
+        Args:
+            claim: WarrantyClaim instance
+            reviewed_by: CustomUser who is approving
+            technician_assessment: Assessment notes
+            create_service: Whether to auto-create service
+
+        Returns:
+            dict with 'claim' and optional 'service' keys
+
+        Raises:
+            ValidationError if claim cannot be approved
+        """
+        from django.utils import timezone
+
+        from installations.models import WarrantyClaim
+
+        if claim.status != WarrantyClaim.ClaimStatus.PENDING:
+            raise ValidationError(f"Cannot approve claim with status '{claim.get_status_display()}'")
+
+        # Update claim
+        claim.status = WarrantyClaim.ClaimStatus.APPROVED
+        claim.reviewed_by = reviewed_by
+        claim.reviewed_at = timezone.now()
+        claim.is_valid_claim = True
+        if technician_assessment:
+            claim.technician_assessment = technician_assessment
+        claim.save()
+
+        result = {'claim': claim}
+
+        # Create service if requested
+        if create_service:
+            service = WarrantyServiceHandler.create_warranty_service(claim)
+            result['service'] = service
+
+        return result
+
+    @staticmethod
+    @transaction.atomic
+    def reject_claim(claim, reviewed_by, rejection_reason, is_valid_claim=False):
+        """
+        Reject a warranty claim.
+
+        Args:
+            claim: WarrantyClaim instance
+            reviewed_by: CustomUser who is rejecting
+            rejection_reason: Reason for rejection
+            is_valid_claim: Whether claim was valid (affects warranty status)
+
+        Returns:
+            WarrantyClaim instance
+
+        Raises:
+            ValidationError if claim cannot be rejected
+        """
+        from django.utils import timezone
+
+        from installations.models import WarrantyClaim
+
+        if claim.status != WarrantyClaim.ClaimStatus.PENDING:
+            raise ValidationError(f"Cannot reject claim with status '{claim.get_status_display()}'")
+
+        if not rejection_reason:
+            raise ValidationError("Rejection reason is required")
+
+        # Update claim
+        claim.status = WarrantyClaim.ClaimStatus.REJECTED
+        claim.reviewed_by = reviewed_by
+        claim.reviewed_at = timezone.now()
+        claim.rejection_reason = rejection_reason
+        claim.is_valid_claim = is_valid_claim
+        claim.save()
+
+        return claim
+
+    @staticmethod
+    @transaction.atomic
+    def cancel_claim(claim, cancellation_reason=''):
+        """
+        Cancel a warranty claim.
+
+        Args:
+            claim: WarrantyClaim instance
+            cancellation_reason: Reason for cancellation
+
+        Returns:
+            WarrantyClaim instance
+        """
+        from installations.models import WarrantyClaim
+
+        if claim.status == WarrantyClaim.ClaimStatus.COMPLETED:
+            raise ValidationError("Cannot cancel a completed claim")
+
+        if claim.status == WarrantyClaim.ClaimStatus.CANCELLED:
+            raise ValidationError("Claim is already cancelled")
+
+        # Cancel linked service if exists
+        if claim.service and claim.service.status != 'completed':
+            from services.business_logic import ServiceCancellationHandler
+            ServiceCancellationHandler.cancel_service(claim.service)
+
+        # Update claim
+        claim.status = WarrantyClaim.ClaimStatus.CANCELLED
+        if cancellation_reason:
+            claim.customer_notes += f"\n\nCancellation reason: {cancellation_reason}"
+        claim.save()
+
+        return claim
+
+    @staticmethod
+    @transaction.atomic
+    def complete_claim(claim):
+        """
+        Mark a warranty claim as completed.
+
+        Args:
+            claim: WarrantyClaim instance
+
+        Returns:
+            WarrantyClaim instance
+
+        Raises:
+            ValidationError if claim cannot be completed
+        """
+        from django.utils import timezone
+
+        from installations.models import WarrantyClaim
+
+        if claim.status == WarrantyClaim.ClaimStatus.COMPLETED:
+            raise ValidationError("Claim is already completed")
+
+        if claim.status not in [
+            WarrantyClaim.ClaimStatus.APPROVED,
+            WarrantyClaim.ClaimStatus.IN_PROGRESS,
+        ]:
+            raise ValidationError(
+                f"Cannot complete claim with status '{claim.get_status_display()}'"
+            )
+
+        # Check if service is completed
+        if claim.service and claim.service.status != 'completed':
+            raise ValidationError(
+                "Cannot complete claim - linked service is not completed yet"
+            )
+
+        # Update claim
+        claim.status = WarrantyClaim.ClaimStatus.COMPLETED
+        claim.completed_at = timezone.now()
+        claim.save()
+
+        return claim
+
+
+class WarrantyServiceHandler:
+    """Handles creation and management of warranty services."""
+
+    @staticmethod
+    @transaction.atomic
+    def create_warranty_service(claim, scheduled_date=None, scheduled_time=None, **service_kwargs):
+        """
+        Create a service for a warranty claim.
+
+        Args:
+            claim: WarrantyClaim instance
+            scheduled_date: Optional scheduled date
+            scheduled_time: Optional scheduled time
+            **service_kwargs: Additional Service fields
+
+        Returns:
+            Service instance
+
+        Raises:
+            ValidationError if service cannot be created
+        """
+        from services.models import Service
+        from utils.enums import ServiceMode, ServiceStatus, ServiceType
+
+        from installations.models import WarrantyClaim
+
+        if claim.service:
+            raise ValidationError("Warranty claim already has a service linked")
+
+        if claim.status not in [
+            WarrantyClaim.ClaimStatus.APPROVED,
+            WarrantyClaim.ClaimStatus.IN_PROGRESS,
+        ]:
+            raise ValidationError(
+                f"Cannot create service for claim with status '{claim.get_status_display()}'"
+            )
+
+        # Get client from unit sale
+        if not claim.unit.sale:
+            raise ValidationError("Cannot create service - unit has no sale record")
+
+        client = claim.unit.sale.client
+
+        # Determine service type from claim type
+        service_type_map = {
+            'repair': ServiceType.REPAIR,
+            'replacement': ServiceType.REPAIR,
+            'parts': ServiceType.REPAIR,
+            'inspection': ServiceType.CHECK_UP,
+        }
+        service_type = service_type_map.get(claim.claim_type, ServiceType.REPAIR)
+
+        # Get main stall
+        main_stall = get_main_stall()
+        if not main_stall:
+            raise ValidationError("Main stall not configured")
+
+        # Create service
+        service_data = {
+            'client': client,
+            'stall': main_stall,
+            'service_type': service_type,
+            'service_mode': service_kwargs.pop('service_mode', ServiceMode.HOME_SERVICE),
+            'status': ServiceStatus.PENDING,
+            'description': f"WARRANTY CLAIM #{claim.id}: {claim.issue_description}",
+            'notes': f"Warranty claim for unit {claim.unit.serial_number}\n{claim.customer_notes}",
+        }
+
+        if scheduled_date:
+            service_data['scheduled_date'] = scheduled_date
+        if scheduled_time:
+            service_data['scheduled_time'] = scheduled_time
+
+        # Override with any additional kwargs
+        service_data.update(service_kwargs)
+
+        service = Service.objects.create(**service_data)
+
+        # Link service to claim
+        claim.service = service
+        claim.status = WarrantyClaim.ClaimStatus.IN_PROGRESS
+        claim.save()
+
+        return service
+
+
+class FreeCleaningManager:
+    """Manages free cleaning redemption for aircon units."""
+
+    @staticmethod
+    @transaction.atomic
+    def check_eligibility(unit):
+        """
+        Check if a unit is eligible for free cleaning redemption.
+
+        Args:
+            unit: AirconUnit instance
+
+        Returns:
+            dict with 'eligible' (bool) and 'reason' (str) keys
+        """
+        if not unit:
+            raise ValidationError("Unit is required")
+
+        # Unit must be sold
+        if not unit.is_sold:
+            return {
+                'eligible': False,
+                'reason': 'Unit has not been sold yet',
+            }
+
+        # Check if already redeemed
+        if unit.free_cleaning_redeemed:
+            return {
+                'eligible': False,
+                'reason': 'Free cleaning has already been redeemed',
+            }
+
+        # Check if under warranty (optional - you can remove this if free cleaning is lifetime)
+        if not unit.is_under_warranty:
+            return {
+                'eligible': False,
+                'reason': 'Unit is no longer under warranty',
+                'warranty_end_date': unit.warranty_end_date,
+            }
+
+        # All checks passed
+        return {
+            'eligible': True,
+            'reason': 'Unit is eligible for free cleaning',
+            'warranty_days_left': unit.warranty_days_left,
+        }
+
+    @staticmethod
+    @transaction.atomic
+    def redeem_free_cleaning(unit, scheduled_date=None, scheduled_time=None, **service_kwargs):
+        """
+        Redeem free cleaning for an aircon unit and create cleaning service.
+
+        Args:
+            unit: AirconUnit instance
+            scheduled_date: Optional scheduled date for cleaning
+            scheduled_time: Optional scheduled time for cleaning
+            **service_kwargs: Additional Service fields
+
+        Returns:
+            dict with 'service' and 'unit' keys
+
+        Raises:
+            ValidationError if unit is not eligible
+        """
+        from services.models import Service
+        from utils.enums import ServiceMode, ServiceStatus, ServiceType
+
+        # Check eligibility
+        eligibility = FreeCleaningManager.check_eligibility(unit)
+        if not eligibility['eligible']:
+            raise ValidationError({
+                'unit': f"Unit is not eligible for free cleaning: {eligibility['reason']}"
+            })
+
+        # Get client from unit sale
+        if not unit.sale:
+            raise ValidationError("Cannot create service - unit has no sale record")
+
+        client = unit.sale.client
+
+        # Get main stall
+        main_stall = get_main_stall()
+        if not main_stall:
+            raise ValidationError("Main stall not configured")
+
+        # Create cleaning service
+        service_data = {
+            'client': client,
+            'stall': main_stall,
+            'service_type': ServiceType.CLEANING,
+            'service_mode': service_kwargs.pop('service_mode', ServiceMode.HOME_SERVICE),
+            'status': ServiceStatus.PENDING,
+            'description': f"FREE CLEANING for {unit.model} (SN: {unit.serial_number})",
+            'notes': f"Free cleaning redemption for warranty unit\nSerial Number: {unit.serial_number}",
+        }
+
+        if scheduled_date:
+            service_data['scheduled_date'] = scheduled_date
+        if scheduled_time:
+            service_data['scheduled_time'] = scheduled_time
+
+        # Override with any additional kwargs
+        service_data.update(service_kwargs)
+
+        service = Service.objects.create(**service_data)
+
+        # Mark as redeemed
+        unit.free_cleaning_redeemed = True
+        unit.save()
+
+        return {
+            'service': service,
+            'unit': unit,
+        }
+
+    @staticmethod
+    def unredeemed_units(client=None):
+        """
+        Get units that haven't redeemed free cleaning yet.
+
+        Args:
+            client: Optional client to filter by
+
+        Returns:
+            QuerySet of AirconUnit instances
+        """
+        from installations.models import AirconUnit
+
+        queryset = AirconUnit.objects.filter(
+            is_sold=True,
+            free_cleaning_redeemed=False,
+        ).select_related('model', 'model__brand', 'sale', 'sale__client')
+
+        if client:
+            queryset = queryset.filter(sale__client=client)
+
+        return queryset
+
+
+# ============================================================================
+# Convenience Functions
+# ============================================================================
+
+
+def create_warranty_claim(unit, issue_description, **kwargs):
+    """Create a warranty claim for an aircon unit."""
+    return WarrantyClaimManager.create_claim(unit, issue_description, **kwargs)
+
+
+def check_warranty_eligibility(unit):
+    """Check if a unit is eligible for warranty service."""
+    return WarrantyEligibilityChecker.check_eligibility(unit)
+
+
+def redeem_free_cleaning(unit, **kwargs):
+    """Redeem free cleaning for an aircon unit."""
+    return FreeCleaningManager.redeem_free_cleaning(unit, **kwargs)
+
+
+def check_free_cleaning_eligibility(unit):
+    """Check if a unit is eligible for free cleaning redemption."""
+    return FreeCleaningManager.check_eligibility(unit)

@@ -245,3 +245,198 @@ class AirconItemUsed(models.Model):
 
     def __str__(self):
         return f"{self.item.name} x{self.total_quantity_used} for unit {self.unit.serial_number}"
+
+
+class WarrantyClaim(models.Model):
+    """Tracks warranty claims for aircon units."""
+
+    class ClaimStatus(models.TextChoices):
+        PENDING = "pending", "Pending Review"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+        IN_PROGRESS = "in_progress", "In Progress"
+        COMPLETED = "completed", "Completed"
+        CANCELLED = "cancelled", "Cancelled"
+
+    class ClaimType(models.TextChoices):
+        REPAIR = "repair", "Repair"
+        REPLACEMENT = "replacement", "Replacement"
+        PARTS = "parts", "Parts Replacement"
+        INSPECTION = "inspection", "Inspection"
+
+    unit = models.ForeignKey(
+        AirconUnit,
+        on_delete=models.PROTECT,
+        related_name="warranty_claims",
+        help_text="Aircon unit this claim is for",
+    )
+
+    # Link to the service created for this warranty claim
+    service = models.OneToOneField(
+        Service,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="warranty_claim",
+        help_text="Service created to handle this warranty claim",
+    )
+
+    claim_type = models.CharField(
+        max_length=20,
+        choices=ClaimType.choices,
+        default=ClaimType.REPAIR,
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=ClaimStatus.choices,
+        default=ClaimStatus.PENDING,
+    )
+
+    # Claim details
+    issue_description = models.TextField(
+        help_text="Description of the issue/defect reported by customer",
+    )
+
+    customer_notes = models.TextField(
+        blank=True,
+        help_text="Additional notes from customer",
+    )
+
+    # Internal assessment
+    technician_assessment = models.TextField(
+        blank=True,
+        help_text="Technician's assessment of the issue",
+    )
+
+    is_valid_claim = models.BooleanField(
+        default=True,
+        help_text="Whether this is a valid warranty claim (not customer misuse, etc.)",
+    )
+
+    # Approval workflow
+    reviewed_by = models.ForeignKey(
+        "users.CustomUser",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_warranty_claims",
+        help_text="Staff member who reviewed this claim",
+    )
+
+    reviewed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the claim was reviewed/approved/rejected",
+    )
+
+    rejection_reason = models.TextField(
+        blank=True,
+        help_text="Reason for rejection (if applicable)",
+    )
+
+    # Claim costs (if applicable)
+    estimated_cost = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Estimated cost of warranty repair/replacement",
+    )
+
+    actual_cost = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Actual cost incurred (if completed)",
+    )
+
+    # Timestamps
+    claim_date = models.DateTimeField(
+        default=timezone.now,
+        help_text="When the claim was submitted",
+    )
+
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the warranty service was completed",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-claim_date"]
+        verbose_name = "Warranty Claim"
+        verbose_name_plural = "Warranty Claims"
+
+    def clean(self):
+        """Validate warranty claim."""
+        # Check if unit is under warranty
+        if self.unit and not self.unit.is_under_warranty:
+            raise ValidationError(
+                {"unit": f"Unit {self.unit.serial_number} is not under warranty. "
+                         f"Warranty status: {self.unit.warranty_status}"}
+            )
+
+        # Check if unit has been sold
+        if self.unit and not self.unit.is_sold:
+            raise ValidationError(
+                {"unit": f"Unit {self.unit.serial_number} has not been sold yet."}
+            )
+
+        # If status is rejected, must have rejection reason
+        if self.status == self.ClaimStatus.REJECTED and not self.rejection_reason:
+            raise ValidationError(
+                {"rejection_reason": "Rejection reason is required when rejecting a claim."}
+            )
+
+        # If status is approved/in_progress/completed, must be valid claim
+        if self.status in [
+            self.ClaimStatus.APPROVED,
+            self.ClaimStatus.IN_PROGRESS,
+            self.ClaimStatus.COMPLETED,
+        ] and not self.is_valid_claim:
+            raise ValidationError(
+                {"is_valid_claim": "Cannot approve/process an invalid claim."}
+            )
+
+        # Service must be warranty service if linked
+        if self.service:
+            if self.service.service_type not in [ServiceType.REPAIR, ServiceType.CHECK_UP]:
+                raise ValidationError(
+                    {"service": "Warranty claim service must be a repair or check-up service."}
+                )
+
+    def save(self, *args, **kwargs):
+        run_clean = kwargs.pop("clean", True)
+        if run_clean:
+            self.full_clean()
+        super().save(*args, **kwargs)
+
+    @property
+    def is_pending(self):
+        """Check if claim is pending review."""
+        return self.status == self.ClaimStatus.PENDING
+
+    @property
+    def is_approved(self):
+        """Check if claim has been approved."""
+        return self.status in [
+            self.ClaimStatus.APPROVED,
+            self.ClaimStatus.IN_PROGRESS,
+            self.ClaimStatus.COMPLETED,
+        ]
+
+    @property
+    def warranty_days_remaining_at_claim(self):
+        """Get warranty days remaining when claim was submitted."""
+        if not self.unit or not self.unit.warranty_end_date:
+            return 0
+
+        claim_date_only = self.claim_date.date()
+        days_left = (self.unit.warranty_end_date - claim_date_only).days
+        return max(days_left, 0)
+
+    def __str__(self):
+        return f"Warranty Claim #{self.id} - {self.unit.serial_number} ({self.get_status_display()})"
