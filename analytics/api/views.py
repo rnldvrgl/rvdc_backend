@@ -12,6 +12,7 @@ from analytics.business_logic import (
     get_date_range_from_request,
     get_stall_from_request,
 )
+from attendance.models import LeaveRequest
 from clients.models import Client
 from django.db.models import (
     Count,
@@ -26,7 +27,6 @@ from django.utils.dateparse import parse_date
 from expenses.models import Expense
 from inventory.models import Stock, StockRoomStock
 from payroll.models import Holiday
-from attendance.models import LeaveRequest
 from rest_framework import permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -565,7 +565,8 @@ class AnalyticsViewSet(ViewSet):
 
         data = DashboardAnalytics.get_dashboard_summary(start_date, end_date, stall)
         return Response(data, status=status.HTTP_200_OK)
-=======
+
+
 class CalendarEventsView(APIView):
     """
     API endpoint for fetching calendar events (birthdays, holidays, schedules)
@@ -769,5 +770,3 @@ class CalendarEventsView(APIView):
                 })
 
         return Response(events)
-
->>>>>>> ab00ca4a4faca42fde81bd9a6853f2e24906e874
