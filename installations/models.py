@@ -1,9 +1,9 @@
-from django.db import models
-from django.core.exceptions import ValidationError
-from django.utils import timezone
-from dateutil.relativedelta import relativedelta
 from decimal import Decimal
 
+from dateutil.relativedelta import relativedelta
+from django.core.exceptions import ValidationError
+from django.db import models
+from django.utils import timezone
 from services.models import Service
 from utils.enums import AirconType, ServiceType
 
@@ -80,6 +80,17 @@ class AirconUnit(models.Model):
     model = models.ForeignKey(AirconModel, on_delete=models.PROTECT, null=True)
     serial_number = models.CharField(max_length=100, unique=True)
 
+    # Link to Main stall (owner of aircon units)
+    stall = models.ForeignKey(
+        "inventory.Stall",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="aircon_units",
+        limit_choices_to={"stall_type": "main", "is_system": True},
+        help_text="Main stall that owns this aircon unit",
+    )
+
     sale = models.ForeignKey(
         "sales.SalesTransaction",
         on_delete=models.SET_NULL,
@@ -109,10 +120,22 @@ class AirconUnit(models.Model):
     warranty_period_months = models.PositiveIntegerField(default=12)
     free_cleaning_redeemed = models.BooleanField(default=False)
 
+    # Track if unit is sold (convenience field)
+    is_sold = models.BooleanField(
+        default=False,
+        help_text="Marks if unit has been sold to customer",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def clean(self):
+        # Validate stall is Main stall
+        if self.stall and self.stall.stall_type != "main":
+            raise ValidationError(
+                {"stall": "Aircon units can only be owned by Main stall."}
+            )
+
         if self.installation:
             tx = self.installation.service.related_transaction
             if tx and self.sale != tx:
@@ -130,16 +153,26 @@ class AirconUnit(models.Model):
         if run_clean:
             self.full_clean()
 
+        # Auto-assign to Main stall if not set
+        if not self.stall:
+            from inventory.models import Stall
+            main_stall = Stall.objects.filter(
+                stall_type="main", is_system=True
+            ).first()
+            if main_stall:
+                self.stall = main_stall
+
         # Determine warranty start logic
-        if self.installation and self.installation.date_installed:
+        if self.installation and hasattr(self.installation, 'date_installed') and self.installation.date_installed:
             self.warranty_start_date = self.installation.date_installed
         elif self.sale and self.sale.created_at:
             self.warranty_start_date = self.sale.created_at.date()
         else:
             self.warranty_start_date = None  # Not yet started
 
-        # Clear reservation once sold or installed
+        # Mark as sold and clear reservation once sold or installed
         if self.sale or self.installation:
+            self.is_sold = True
             self.reserved_by = None
             self.reserved_at = None
 
@@ -182,7 +215,14 @@ class AirconUnit(models.Model):
 
     @property
     def is_available_for_sale(self):
-        return self.sale is None and self.reserved_by is None
+        return self.sale is None and self.reserved_by is None and not self.is_sold
+
+    @property
+    def sale_price(self):
+        """Get the actual sale price (promo price if available, else retail)."""
+        if self.model:
+            return self.model.promo_price
+        return Decimal("0.00")
 
     def __str__(self):
         return f"{self.model} (SN: {self.serial_number})"

@@ -1,0 +1,592 @@
+"""
+Business logic for aircon unit sales and installation workflows.
+
+This module handles:
+- Aircon unit inventory management (Main stall)
+- Aircon sales transactions
+- Installation service integration
+- Revenue attribution to Main stall
+- Warranty tracking
+"""
+
+from decimal import Decimal
+
+from django.db import transaction
+from rest_framework.exceptions import ValidationError
+
+
+def get_main_stall():
+    """Get the Main stall (services + aircon units)."""
+    from inventory.models import Stall
+    return Stall.objects.filter(stall_type='main', is_system=True).first()
+
+
+class AirconInventoryManager:
+    """Manages aircon unit inventory for Main stall."""
+
+    @staticmethod
+    def get_available_units(model=None, brand=None):
+        """
+        Get available aircon units for sale.
+
+        Args:
+            model: Optional AirconModel to filter by
+            brand: Optional AirconBrand to filter by
+
+        Returns:
+            QuerySet of available units
+        """
+        from installations.models import AirconUnit
+
+        queryset = AirconUnit.objects.filter(
+            sale__isnull=True,
+            is_sold=False,
+            reserved_by__isnull=True
+        ).select_related('model', 'model__brand', 'stall')
+
+        if model:
+            queryset = queryset.filter(model=model)
+
+        if brand:
+            queryset = queryset.filter(model__brand=brand)
+
+        return queryset
+
+    @staticmethod
+    def reserve_unit(unit, client, user=None):
+        """
+        Reserve an aircon unit for a client.
+
+        Args:
+            unit: AirconUnit instance
+            client: Client reserving the unit
+            user: User making the reservation (optional)
+
+        Returns:
+            Updated AirconUnit instance
+
+        Raises:
+            ValidationError: If unit is not available
+        """
+        from django.utils import timezone
+
+        with transaction.atomic():
+            # Lock the unit
+            from installations.models import AirconUnit
+            unit = AirconUnit.objects.select_for_update().get(pk=unit.pk)
+
+            # Check availability
+            if not unit.is_available_for_sale:
+                raise ValidationError(
+                    f"Unit {unit.serial_number} is not available for reservation."
+                )
+
+            # Reserve unit
+            unit.reserved_by = client
+            unit.reserved_at = timezone.now()
+            unit.save(update_fields=['reserved_by', 'reserved_at', 'updated_at'])
+
+            return unit
+
+    @staticmethod
+    def release_reservation(unit):
+        """
+        Release a reservation on an aircon unit.
+
+        Args:
+            unit: AirconUnit instance
+
+        Returns:
+            Updated AirconUnit instance
+        """
+        with transaction.atomic():
+            from installations.models import AirconUnit
+            unit = AirconUnit.objects.select_for_update().get(pk=unit.pk)
+
+            unit.reserved_by = None
+            unit.reserved_at = None
+            unit.save(update_fields=['reserved_by', 'reserved_at', 'updated_at'])
+
+            return unit
+
+    @staticmethod
+    def check_stock_level(model=None):
+        """
+        Check stock levels for aircon units.
+
+        Args:
+            model: Optional AirconModel to check
+
+        Returns:
+            dict with stock information
+        """
+        from installations.models import AirconUnit
+
+        queryset = AirconUnit.objects.all()
+        if model:
+            queryset = queryset.filter(model=model)
+
+        total = queryset.count()
+        available = queryset.filter(
+            sale__isnull=True,
+            is_sold=False,
+            reserved_by__isnull=True
+        ).count()
+        reserved = queryset.filter(reserved_by__isnull=False).count()
+        sold = queryset.filter(is_sold=True).count()
+
+        return {
+            'total': total,
+            'available': available,
+            'reserved': reserved,
+            'sold': sold,
+        }
+
+
+class AirconSalesHandler:
+    """Handles aircon unit sales transactions."""
+
+    @staticmethod
+    def sell_unit(unit, client, sales_clerk=None, payment_type='cash',
+                  create_transaction=True):
+        """
+        Sell an aircon unit to a client.
+
+        Args:
+            unit: AirconUnit instance to sell
+            client: Client purchasing the unit
+            sales_clerk: User making the sale (optional)
+            payment_type: Payment method
+            create_transaction: If True, creates SalesTransaction
+
+        Returns:
+            dict with sale information
+
+        Raises:
+            ValidationError: If unit is not available for sale
+        """
+        with transaction.atomic():
+            from sales.models import SalesItem, SalesPayment, SalesTransaction
+
+            from installations.models import AirconUnit
+
+            # Lock the unit
+            unit = AirconUnit.objects.select_for_update().get(pk=unit.pk)
+
+            # Validate availability
+            if unit.is_sold or unit.sale:
+                raise ValidationError(
+                    f"Unit {unit.serial_number} has already been sold."
+                )
+
+            if not unit.model:
+                raise ValidationError("Unit must have a model assigned.")
+
+            # Get Main stall
+            main_stall = get_main_stall()
+            if not main_stall:
+                raise ValidationError("Main stall not configured in system.")
+
+            # Ensure unit belongs to Main stall
+            if not unit.stall:
+                unit.stall = main_stall
+                unit.save(update_fields=['stall', 'updated_at'])
+
+            # Get sale price
+            sale_price = unit.sale_price
+
+            # Create sales transaction if requested
+            sales_transaction = None
+            if create_transaction:
+                sales_transaction = SalesTransaction.objects.create(
+                    stall=main_stall,
+                    client=client,
+                    sales_clerk=sales_clerk,
+                )
+
+                # Add aircon unit as sales item
+                SalesItem.objects.create(
+                    transaction=sales_transaction,
+                    item=None,  # Aircon is not inventory item
+                    description=f"Aircon Unit: {unit.model} (SN: {unit.serial_number})",
+                    quantity=1,
+                    final_price_per_unit=sale_price,
+                )
+
+                # Create payment if cash
+                if payment_type == 'cash':
+                    SalesPayment.objects.create(
+                        transaction=sales_transaction,
+                        payment_type='cash',
+                        amount=sale_price,
+                    )
+
+                # Link sale to unit
+                unit.sale = sales_transaction
+
+            # Mark unit as sold
+            unit.is_sold = True
+            unit.reserved_by = None
+            unit.reserved_at = None
+            unit.save(update_fields=[
+                'sale', 'is_sold', 'reserved_by', 'reserved_at',
+                'warranty_start_date', 'updated_at'
+            ])
+
+            return {
+                'unit': unit,
+                'sale_transaction': sales_transaction,
+                'sale_price': sale_price,
+                'client': client,
+            }
+
+    @staticmethod
+    def sell_multiple_units(units, client, sales_clerk=None, payment_type='cash'):
+        """
+        Sell multiple aircon units in a single transaction.
+
+        Args:
+            units: List of AirconUnit instances
+            client: Client purchasing the units
+            sales_clerk: User making the sale
+            payment_type: Payment method
+
+        Returns:
+            dict with sale information
+        """
+        from sales.models import SalesItem, SalesPayment, SalesTransaction
+
+        main_stall = get_main_stall()
+        if not main_stall:
+            raise ValidationError("Main stall not configured in system.")
+
+        with transaction.atomic():
+            # Create single sales transaction
+            sales_transaction = SalesTransaction.objects.create(
+                stall=main_stall,
+                client=client,
+                sales_clerk=sales_clerk,
+            )
+
+            total_amount = Decimal('0.00')
+            sold_units = []
+
+            for unit in units:
+                # Validate and sell each unit
+                result = AirconSalesHandler.sell_unit(
+                    unit=unit,
+                    client=client,
+                    sales_clerk=sales_clerk,
+                    payment_type=payment_type,
+                    create_transaction=False,  # We're creating one transaction
+                )
+
+                # Add to existing transaction
+                SalesItem.objects.create(
+                    transaction=sales_transaction,
+                    item=None,
+                    description=f"Aircon Unit: {unit.model} (SN: {unit.serial_number})",
+                    quantity=1,
+                    final_price_per_unit=result['sale_price'],
+                )
+
+                # Link sale to unit
+                unit.sale = sales_transaction
+                unit.save(update_fields=['sale', 'updated_at'])
+
+                total_amount += result['sale_price']
+                sold_units.append(unit)
+
+            # Create payment if cash
+            if payment_type == 'cash':
+                SalesPayment.objects.create(
+                    transaction=sales_transaction,
+                    payment_type=payment_type,
+                    amount=total_amount,
+                )
+
+            return {
+                'units': sold_units,
+                'sale_transaction': sales_transaction,
+                'total_amount': total_amount,
+                'client': client,
+            }
+
+
+class AirconInstallationHandler:
+    """Handles aircon installation workflows."""
+
+    @staticmethod
+    def create_installation_service(unit, client, scheduled_date=None,
+                                   scheduled_time=None, labor_fee=None,
+                                   apply_free_installation=False,
+                                   copper_tube_length=0,
+                                   user=None):
+        """
+        Create installation service for a sold aircon unit.
+
+        Args:
+            unit: AirconUnit instance (must be sold)
+            client: Client for the installation
+            scheduled_date: Date of installation
+            scheduled_time: Time of installation
+            labor_fee: Labor fee for installation (if not free)
+            apply_free_installation: Apply free installation promo
+            copper_tube_length: Length of copper tube needed (ft)
+            user: User creating the service
+
+        Returns:
+            dict with service and installation details
+        """
+        from inventory.models import Item
+        from services.business_logic import (
+            PromoManager,
+            RevenueCalculator,
+            StockReservationManager,
+        )
+        from services.models import ApplianceItemUsed, Service, ServiceAppliance
+        from utils.enums import ServiceMode, ServiceStatus, ServiceType
+
+        from installations.models import AirconInstallation
+
+        if not unit.is_sold:
+            raise ValidationError("Unit must be sold before installation can be scheduled.")
+
+        main_stall = get_main_stall()
+        if not main_stall:
+            raise ValidationError("Main stall not configured in system.")
+
+        with transaction.atomic():
+            # Create installation service
+            service = Service.objects.create(
+                client=client,
+                stall=main_stall,
+                service_type=ServiceType.INSTALLATION,
+                service_mode=ServiceMode.HOME_SERVICE,
+                scheduled_date=scheduled_date,
+                scheduled_time=scheduled_time,
+                status=ServiceStatus.PENDING,
+                description=f"Installation for Aircon Unit: {unit.model} (SN: {unit.serial_number})",
+            )
+
+            # Create aircon installation record
+            installation = AirconInstallation.objects.create(
+                service=service,
+                notes=f"Unit: {unit.serial_number}, Model: {unit.model}",
+            )
+
+            # Link unit to installation
+            unit.installation = installation
+            unit.save(update_fields=['installation', 'updated_at'])
+
+            # Create service appliance for the aircon
+            appliance = ServiceAppliance.objects.create(
+                service=service,
+                appliance_type=None,  # This is an aircon installation
+                brand=unit.model.brand.name if unit.model else None,
+                model=unit.model.name if unit.model else None,
+                labor_fee=labor_fee or Decimal('0.00'),
+            )
+
+            # Apply free installation promo if requested
+            if apply_free_installation:
+                PromoManager.apply_free_installation(appliance)
+                appliance.save(update_fields=[
+                    'labor_fee', 'labor_is_free', 'labor_original_amount'
+                ])
+
+            # Add copper tube if needed
+            if copper_tube_length > 0:
+                # Find copper tube item
+                copper_tube = Item.objects.filter(
+                    name__icontains='copper',
+                    unit_of_measure='ft',
+                    is_deleted=False
+                ).first()
+
+                if copper_tube:
+                    # Reserve stock
+                    stock = StockReservationManager.reserve_stock(
+                        item=copper_tube,
+                        quantity=copper_tube_length
+                    )
+
+                    # Create item usage
+                    item_used = ApplianceItemUsed.objects.create(
+                        appliance=appliance,
+                        item=copper_tube,
+                        quantity=copper_tube_length,
+                        stall_stock=stock,
+                    )
+
+                    # Apply copper tube promo (first 10ft free)
+                    free_qty, charged_qty, applied = PromoManager.apply_copper_tube_free_10ft(
+                        item_used
+                    )
+                    if applied:
+                        item_used.save(update_fields=['free_quantity', 'promo_name'])
+
+            # Calculate initial revenue
+            RevenueCalculator.calculate_service_revenue(service, save=True)
+
+            return {
+                'service': service,
+                'installation': installation,
+                'unit': unit,
+                'appliance': appliance,
+            }
+
+    @staticmethod
+    def complete_installation(installation, completion_date=None, user=None):
+        """
+        Complete an aircon installation.
+
+        Args:
+            installation: AirconInstallation instance
+            completion_date: Date of completion
+            user: User completing the installation
+
+        Returns:
+            dict with completion details
+        """
+        from services.business_logic import ServiceCompletionHandler
+        from utils.enums import ServiceStatus
+
+        service = installation.service
+
+        if service.status == ServiceStatus.COMPLETED:
+            raise ValidationError("Installation is already completed.")
+
+        with transaction.atomic():
+            # Complete the service (consumes stock, creates transactions)
+            result = ServiceCompletionHandler.complete_service(
+                service=service,
+                user=user,
+                create_receipt=True
+            )
+
+            # Update installation date if provided
+            if completion_date and hasattr(installation, 'date_installed'):
+                installation.date_installed = completion_date
+                installation.save(update_fields=['date_installed', 'updated_at'])
+
+            # Warranty starts on installation date
+            unit = installation.aircon_unit
+            if unit and completion_date:
+                unit.warranty_start_date = completion_date
+                unit.save(update_fields=['warranty_start_date', 'updated_at'])
+
+            return {
+                'installation': installation,
+                'service': service,
+                'completion_result': result,
+            }
+
+
+class AirconRevenueTracker:
+    """Tracks aircon unit sales revenue for Main stall."""
+
+    @staticmethod
+    def calculate_aircon_revenue(service=None, start_date=None, end_date=None):
+        """
+        Calculate aircon revenue for Main stall.
+
+        Args:
+            service: Optional specific service
+            start_date: Optional start date filter
+            end_date: Optional end date filter
+
+        Returns:
+            dict with revenue breakdown
+        """
+
+        from installations.models import AirconUnit
+
+        main_stall = get_main_stall()
+        if not main_stall:
+            return {
+                'total_units_sold': 0,
+                'total_revenue': Decimal('0.00'),
+            }
+
+        # Get sold units
+        units = AirconUnit.objects.filter(
+            stall=main_stall,
+            is_sold=True,
+            sale__isnull=False
+        )
+
+        if start_date:
+            units = units.filter(sale__created_at__gte=start_date)
+        if end_date:
+            units = units.filter(sale__created_at__lte=end_date)
+
+        # Calculate revenue
+        total_revenue = Decimal('0.00')
+        for unit in units:
+            total_revenue += unit.sale_price
+
+        return {
+            'total_units_sold': units.count(),
+            'total_revenue': total_revenue,
+            'units': units,
+        }
+
+    @staticmethod
+    def get_installation_revenue(start_date=None, end_date=None):
+        """
+        Get installation service revenue (labor fees).
+
+        Args:
+            start_date: Optional start date filter
+            end_date: Optional end date filter
+
+        Returns:
+            dict with installation revenue
+        """
+        from django.db.models import Sum
+        from services.models import Service
+        from utils.enums import ServiceStatus, ServiceType
+
+        queryset = Service.objects.filter(
+            service_type=ServiceType.INSTALLATION,
+            status=ServiceStatus.COMPLETED
+        )
+
+        if start_date:
+            queryset = queryset.filter(created_at__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(created_at__lte=end_date)
+
+        # Sum main stall revenue (labor fees)
+        total_labor_revenue = queryset.aggregate(
+            total=Sum('main_stall_revenue')
+        )['total'] or Decimal('0.00')
+
+        return {
+            'total_installations': queryset.count(),
+            'labor_revenue': total_labor_revenue,
+            'services': queryset,
+        }
+
+
+# Convenience functions
+
+def reserve_aircon_unit(unit, client, user=None):
+    """Reserve an aircon unit for a client."""
+    return AirconInventoryManager.reserve_unit(unit, client, user)
+
+
+def sell_aircon_unit(unit, client, sales_clerk=None, payment_type='cash'):
+    """Sell an aircon unit to a client."""
+    return AirconSalesHandler.sell_unit(unit, client, sales_clerk, payment_type)
+
+
+def create_aircon_installation(unit, client, **kwargs):
+    """Create installation service for a sold aircon unit."""
+    return AirconInstallationHandler.create_installation_service(unit, client, **kwargs)
+
+
+def get_available_aircons(model=None, brand=None):
+    """Get available aircon units for sale."""
+    return AirconInventoryManager.get_available_units(model, brand)
