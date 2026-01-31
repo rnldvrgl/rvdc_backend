@@ -1,12 +1,11 @@
-from rest_framework import viewsets, permissions, filters, serializers
-from clients.models import Client
+from clients.api.filters import ClientFilter
 from clients.api.serializers import ClientSerializer
+from clients.models import Client
 from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import filters, permissions, serializers, viewsets
+from rest_framework.decorators import action
 from utils.filters.role_filters import get_role_based_filter_response
 from utils.query import filter_by_date_range
-from clients.api.filters import ClientFilter
-from rest_framework.decorators import action
-from rest_framework.response import Response
 
 
 class ClientViewSet(viewsets.ModelViewSet):

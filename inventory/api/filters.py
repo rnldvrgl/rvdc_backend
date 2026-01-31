@@ -1,16 +1,13 @@
 from django.db import models
 from django_filters import rest_framework as filters
-
 from inventory.models import (
     Item,
     Stock,
     StockRoomStock,
     StockTransfer,
-    ProductCategory,
 )
 from users.models import CustomUser
 from utils.filters.base import make_zero_filter
-
 
 # --------------------------
 # Status Filter Mixins
@@ -26,7 +23,6 @@ class StatusFilterMixin:
 
     def filter_by_status(self, queryset, name, value):
         value = value.lower().strip()
-        available_expr = models.F("quantity") - models.F("reserved_quantity")
 
         if value == "no_stock":
             return queryset.filter(available_expr__lte=0)

@@ -11,7 +11,7 @@ from clients.models import Client
 from installations.api.serializers import AirconBrandSerializer
 from installations.models import AirconBrand
 from users.models import CustomUser
-from users.api.serializers import TechnicianSerializer, UserSerializer
+from users.api.serializers import EmployeesSerializer, UserSerializer
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from utils.enums import AirconType, BankChoices
@@ -63,13 +63,13 @@ class ClientChoicesAPIView(BaseChoicesAPIView):
     serializer_class = ClientSerializer
 
 
-class TechnicianChoicesAPIView(BaseChoicesAPIView):
+class EmployeesChoicesAPIView(BaseChoicesAPIView):
+    queryset = CustomUser.objects.exclude(role="admin").filter(is_deleted=False)
+    serializer_class = EmployeesSerializer
+
+
+class TechniciansChoicesAPIView(BaseChoicesAPIView):
     queryset = CustomUser.objects.filter(role="technician", is_deleted=False)
-    serializer_class = TechnicianSerializer
-
-
-class UsersChoicesAPIView(BaseChoicesAPIView):
-    queryset = CustomUser.objects.filter(is_deleted=False).exclude(role="technician")
     serializer_class = UserSerializer
 
 
