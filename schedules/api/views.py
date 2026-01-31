@@ -1,511 +1,464 @@
-"""
-API views for scheduling system.
+from datetime import datetime, timedelta
 
-Endpoints:
-- Schedule CRUD operations
-- Create schedules from services
-- Create pull-out/return schedules
-- Technician daily schedule view
-- Status updates (start, complete, cancel, reschedule)
-- Availability checking
-"""
-
-from datetime import datetime
-
-from rest_framework import permissions, status, viewsets
+from django.db.models import Count
+from django.utils import timezone
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from schedules.api.filters import ScheduleFilter
 from schedules.api.serializers import (
-    PullOutReturnScheduleSerializer,
-    ScheduleCreateFromServiceSerializer,
-    ScheduleRescheduleSerializer,
-    ScheduleSerializer,
-    ScheduleStatusHistorySerializer,
-    ScheduleStatusUpdateSerializer,
-    TechnicianAvailabilitySerializer,
+    ScheduleCreateUpdateSerializer,
+    ScheduleDetailSerializer,
+    ScheduleListSerializer,
 )
-from schedules.business_logic import (
-    ScheduleConflictChecker,
-    ScheduleManager,
-    get_available_technicians,
-    get_technician_daily_schedule,
-)
-from schedules.models import Schedule, ScheduleStatus
+from schedules.models import Schedule
 from users.models import CustomUser
+from utils.filters.role_filters import get_role_based_filter_response
 
 
 class ScheduleViewSet(viewsets.ModelViewSet):
     """
-    Schedule operations for technician appointments.
-
-    Endpoints:
-    - GET /schedules/ - List all schedules
-    - POST /schedules/ - Create schedule
-    - GET /schedules/{id}/ - Get schedule details
-    - PUT/PATCH /schedules/{id}/ - Update schedule
-    - DELETE /schedules/{id}/ - Delete schedule
-    - POST /schedules/create-from-service/ - Create schedule from service
-    - POST /schedules/create-pull-out-return/ - Create pull-out and return schedules
-    - GET /schedules/technician-daily/{technician_id}/{date}/ - Get technician's daily schedule
-    - POST /schedules/{id}/start/ - Start schedule
-    - POST /schedules/{id}/complete/ - Complete schedule
-    - POST /schedules/{id}/cancel/ - Cancel schedule
-    - POST /schedules/{id}/reschedule/ - Reschedule appointment
-    - POST /schedules/check-availability/ - Check technician availability
-    - GET /schedules/available-technicians/ - Get available technicians
+    ViewSet for Schedule model with CRUD operations and custom actions
+    Supports multiple technicians per schedule
     """
-
-    serializer_class = ScheduleSerializer
+    queryset = Schedule.objects.all().prefetch_related('technicians', 'client')
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_class = ScheduleFilter
+    search_fields = [
+        'client__full_name',
+        'technicians__first_name',
+        'technicians__last_name',
+        'service_type',
+        'notes',
+    ]
+    ordering_fields = [
+        'scheduled_datetime',
+        'created_at',
+        'service_type',
+    ]
+    ordering = ['-scheduled_datetime']
+
+    def get_serializer_class(self):
+        """Return appropriate serializer based on action"""
+        if self.action in ['create', 'update', 'partial_update']:
+            return ScheduleCreateUpdateSerializer
+        elif self.action == 'retrieve':
+            return ScheduleDetailSerializer
+        return ScheduleListSerializer
 
     def get_queryset(self):
-        queryset = Schedule.objects.all().select_related(
-            "client",
-            "technician",
-            "service",
-            "created_by",
-            "completed_by",
-        )
+        """Filter queryset based on user role and query parameters"""
+        queryset = super().get_queryset()
+        user = self.request.user
 
-        # Filter by date range
-        start_date = self.request.query_params.get("start_date")
-        end_date = self.request.query_params.get("end_date")
+        # Role-based filtering
+        if user.role == 'technician':
+            # Technicians can only see schedules where they are assigned
+            queryset = queryset.filter(technicians=user)
+        elif user.role in ['manager', 'clerk']:
+            # Managers and clerks see all schedules (could be filtered by stall if needed)
+            pass
 
-        if start_date:
-            queryset = queryset.filter(scheduled_date__gte=start_date)
-        if end_date:
-            queryset = queryset.filter(scheduled_date__lte=end_date)
+        # Apply distinct to avoid duplicates from ManyToMany joins
+        queryset = queryset.distinct()
 
-        # Filter by technician
-        technician_id = self.request.query_params.get("technician")
-        if technician_id:
-            queryset = queryset.filter(technician_id=technician_id)
+        # Filter by date range if provided
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
 
-        # Filter by status
-        status_filter = self.request.query_params.get("status")
-        if status_filter:
-            queryset = queryset.filter(status=status_filter)
-
-        # Filter by client
-        client_id = self.request.query_params.get("client")
-        if client_id:
-            queryset = queryset.filter(client_id=client_id)
-
-        # Filter by service
-        service_id = self.request.query_params.get("service")
-        if service_id:
-            queryset = queryset.filter(service_id=service_id)
+        if start_date and end_date:
+            try:
+                start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                queryset = queryset.filter(
+                    scheduled_datetime__date__gte=start.date(),
+                    scheduled_datetime__date__lte=end.date()
+                )
+            except (ValueError, AttributeError):
+                pass
 
         return queryset
 
-    @action(detail=False, methods=["post"], url_path="create-from-service")
-    def create_from_service(self, request):
-        """
-        Create a schedule from a service.
-
-        Request body:
-        {
-            "service_id": 123,
-            "schedule_type": "home_service",
-            "scheduled_date": "2024-01-15",
-            "scheduled_time": "14:00:00",
-            "technician_id": 5,
-            "estimated_duration": 60,
-            "notes": "Additional notes"
-        }
-        """
-        serializer = ScheduleCreateFromServiceSerializer(
-            data=request.data, context={"request": request}
-        )
-        serializer.is_valid(raise_exception=True)
-        schedule = serializer.save()
-
-        return Response(
-            ScheduleSerializer(schedule).data, status=status.HTTP_201_CREATED
-        )
-
-    @action(detail=False, methods=["post"], url_path="create-pull-out-return")
-    def create_pull_out_return(self, request):
-        """
-        Create both pull-out and return schedules for a pull_out_return service.
-
-        Request body:
-        {
-            "service_id": 123,
-            "pull_out_date": "2024-01-15",
-            "pull_out_time": "09:00:00",
-            "return_date": "2024-01-17",
-            "return_time": "14:00:00",
-            "technician_id": 5
-        }
-
-        Response:
-        {
-            "pull_out": {...},
-            "return": {...}
-        }
-        """
-        serializer = PullOutReturnScheduleSerializer(
-            data=request.data, context={"request": request}
-        )
-        serializer.is_valid(raise_exception=True)
-        result = serializer.save()
-
-        return Response(
-            {
-                "pull_out": ScheduleSerializer(result["pull_out"]).data,
-                "return": ScheduleSerializer(result["return"]).data,
-            },
-            status=status.HTTP_201_CREATED,
-        )
-
-    @action(
-        detail=False,
-        methods=["get"],
-        url_path="technician-daily/(?P<technician_id>[^/.]+)/(?P<date>[^/.]+)",
-    )
-    def technician_daily_schedule(self, request, technician_id=None, date=None):
-        """
-        Get a technician's schedule for a specific day.
-
-        URL: /schedules/technician-daily/{technician_id}/{date}/
-
-        Response:
-        {
-            "technician_id": 5,
-            "technician_name": "John Doe",
-            "date": "2024-01-15",
-            "schedules": [...],
-            "total_count": 3,
-            "total_duration": 180
-        }
-        """
-        try:
-            technician = CustomUser.objects.get(
-                id=technician_id, role="technician", is_active=True
-            )
-        except CustomUser.DoesNotExist:
-            return Response(
-                {"error": "Technician not found"}, status=status.HTTP_404_NOT_FOUND
-            )
-
-        try:
-            schedule_date = datetime.strptime(date, "%Y-%m-%d").date()
-        except ValueError:
-            return Response(
-                {"error": "Invalid date format. Use YYYY-MM-DD"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        schedules = get_technician_daily_schedule(technician, schedule_date)
-
-        total_duration = sum(s.estimated_duration for s in schedules)
-
-        return Response(
-            {
-                "technician_id": technician.id,
-                "technician_name": technician.get_full_name(),
-                "date": str(schedule_date),
-                "schedules": ScheduleSerializer(schedules, many=True).data,
-                "total_count": schedules.count(),
-                "total_duration_minutes": total_duration,
-            },
-            status=status.HTTP_200_OK,
-        )
-
-    @action(detail=True, methods=["post"], url_path="start")
-    def start_schedule(self, request, pk=None):
-        """
-        Mark schedule as started.
-
-        Response:
-        {
-            "id": 123,
-            "status": "in_progress",
-            "actual_start_time": "2024-01-15T14:05:00Z"
-        }
-        """
-        schedule = self.get_object()
-
-        try:
-            updated_schedule = ScheduleManager.start_schedule(
-                schedule=schedule, user=request.user
-            )
-
-            return Response(
-                ScheduleSerializer(updated_schedule).data, status=status.HTTP_200_OK
-            )
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-    @action(detail=True, methods=["post"], url_path="complete")
-    def complete_schedule(self, request, pk=None):
-        """
-        Mark schedule as completed.
-
-        Response:
-        {
-            "id": 123,
-            "status": "completed",
-            "actual_start_time": "2024-01-15T14:05:00Z",
-            "actual_end_time": "2024-01-15T15:15:00Z",
-            "actual_duration_minutes": 70
-        }
-        """
-        schedule = self.get_object()
-
-        try:
-            updated_schedule = ScheduleManager.complete_schedule(
-                schedule=schedule, user=request.user
-            )
-
-            return Response(
-                ScheduleSerializer(updated_schedule).data, status=status.HTTP_200_OK
-            )
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-    @action(detail=True, methods=["post"], url_path="cancel")
-    def cancel_schedule(self, request, pk=None):
-        """
-        Cancel a schedule.
-
-        Request body:
-        {
-            "reason": "Client cancelled"
-        }
-
-        Response:
-        {
-            "id": 123,
-            "status": "cancelled"
-        }
-        """
-        schedule = self.get_object()
-        reason = request.data.get("reason", "")
-
-        try:
-            updated_schedule = ScheduleManager.cancel_schedule(
-                schedule=schedule, reason=reason, user=request.user
-            )
-
-            return Response(
-                ScheduleSerializer(updated_schedule).data, status=status.HTTP_200_OK
-            )
-        except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-    @action(detail=True, methods=["post"], url_path="reschedule")
-    def reschedule(self, request, pk=None):
-        """
-        Reschedule an appointment.
-
-        Request body:
-        {
-            "new_date": "2024-01-16",
-            "new_time": "15:00:00",
-            "technician_id": 5,
-            "reason": "Client requested change"
-        }
-        """
-        schedule = self.get_object()
-
-        serializer = ScheduleRescheduleSerializer(
-            data=request.data, context={"schedule": schedule, "request": request}
-        )
-        serializer.is_valid(raise_exception=True)
-        updated_schedule = serializer.save()
-
-        return Response(
-            ScheduleSerializer(updated_schedule).data, status=status.HTTP_200_OK
-        )
-
-    @action(detail=True, methods=["post"], url_path="update-status")
-    def update_status(self, request, pk=None):
-        """
-        Update schedule status.
-
-        Request body:
-        {
-            "status": "confirmed",
-            "notes": "Client confirmed appointment"
-        }
-        """
-        schedule = self.get_object()
-
-        serializer = ScheduleStatusUpdateSerializer(
-            data=request.data, context={"schedule": schedule, "request": request}
-        )
-        serializer.is_valid(raise_exception=True)
-        updated_schedule = serializer.save()
-
-        return Response(
-            ScheduleSerializer(updated_schedule).data, status=status.HTTP_200_OK
-        )
-
-    @action(detail=True, methods=["get"], url_path="history")
-    def status_history(self, request, pk=None):
-        """
-        Get status change history for a schedule.
-
-        Response:
-        [
-            {
-                "status": "confirmed",
-                "notes": "Client confirmed",
-                "changed_by": "John Doe",
-                "changed_at": "2024-01-14T10:00:00Z"
-            }
-        ]
-        """
-        schedule = self.get_object()
-        history = schedule.status_history.all()
-
-        return Response(
-            ScheduleStatusHistorySerializer(history, many=True).data,
-            status=status.HTTP_200_OK,
-        )
-
-    @action(detail=False, methods=["post"], url_path="check-availability")
-    def check_availability(self, request):
-        """
-        Check if a technician is available at a specific time.
-
-        Request body:
-        {
-            "technician_id": 5,
-            "schedule_date": "2024-01-15",
-            "start_time": "14:00:00",
-            "duration_minutes": 60
-        }
-
-        Response:
-        {
-            "is_available": true,
-            "conflicts": []
-        }
-        or
-        {
-            "is_available": false,
-            "conflicts": [
-                {
-                    "id": 123,
-                    "scheduled_time": "13:30:00",
-                    "estimated_duration": 90
-                }
-            ]
-        }
-        """
-        serializer = TechnicianAvailabilitySerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        technician = CustomUser.objects.get(id=serializer.validated_data["technician_id"])
-
-        result = ScheduleConflictChecker.check_technician_conflict(
-            technician=technician,
-            schedule_date=serializer.validated_data["schedule_date"],
-            start_time=serializer.validated_data["start_time"],
-            duration_minutes=serializer.validated_data["duration_minutes"],
-        )
-
-        return Response(
-            {
-                "is_available": not result["has_conflict"],
-                "conflicts": ScheduleSerializer(result.get("conflicts", []), many=True).data,
-            },
-            status=status.HTTP_200_OK,
-        )
-
-    @action(detail=False, methods=["get"], url_path="available-technicians")
-    def available_technicians(self, request):
-        """
-        Get list of available technicians for a time slot.
-
-        Query params:
-        - date: YYYY-MM-DD
-        - time: HH:MM:SS
-        - duration: minutes (default 60)
-
-        Response:
-        [
-            {
-                "id": 5,
-                "name": "John Doe",
-                "email": "john@example.com"
-            }
-        ]
-        """
-        date_str = request.query_params.get("date")
-        time_str = request.query_params.get("time")
-        duration = int(request.query_params.get("duration", 60))
-
-        if not date_str or not time_str:
-            return Response(
-                {"error": "Both date and time are required"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            schedule_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-            schedule_time = datetime.strptime(time_str, "%H:%M:%S").time()
-        except ValueError:
-            return Response(
-                {"error": "Invalid date or time format"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        available = get_available_technicians(schedule_date, schedule_time, duration)
-
-        return Response(
-            [
-                {
-                    "id": tech.id,
-                    "name": tech.get_full_name(),
-                    "email": tech.email,
-                }
-                for tech in available
-            ],
-            status=status.HTTP_200_OK,
-        )
-
-    @action(detail=False, methods=["get"], url_path="filters")
+    @action(detail=False, methods=['get'], url_path='filters')
     def get_filters(self, request):
-        """Get filter options for schedule list."""
-        from utils.filters.options import get_client_options, get_user_options
-
+        """Return available filter options for the frontend"""
         filters_config = {
-            "technician": {"options": lambda: get_user_options(include_roles=["technician"])},
-            "client": {"options": lambda: get_client_options(include_number=True)},
-            "status": {
-                "options": lambda: [
-                    {"label": choice[1], "value": choice[0]}
-                    for choice in ScheduleStatus.choices
-                ]
+            'service_type': {
+                'options': lambda: [
+                    {'label': display, 'value': value}
+                    for value, display in Schedule.SERVICE_TYPES
+                ],
             },
-            "schedule_type": {
-                "options": lambda: [
-                    {"label": "Home Service", "value": "home_service"},
-                    {"label": "Pull-Out", "value": "pull_out"},
-                    {"label": "Return", "value": "return"},
-                    {"label": "On-Site", "value": "on_site"},
-                ]
+            'client': {
+                'options': lambda: [
+                    {
+                        'label': schedule.client.full_name,
+                        'value': schedule.client.id
+                    }
+                    for schedule in Schedule.objects.select_related('client')
+                    .distinct('client')
+                    .order_by('client__full_name')[:100]
+                ],
+            },
+            'technician': {
+                'options': lambda: [
+                    {
+                        'label': tech.get_full_name(),
+                        'value': tech.id
+                    }
+                    for tech in CustomUser.objects.filter(
+                        role='technician',
+                        is_deleted=False
+                    ).order_by('first_name', 'last_name')
+                ],
             },
         }
 
         ordering_config = [
-            {"label": "Date", "value": "scheduled_date"},
-            {"label": "Time", "value": "scheduled_time"},
-            {"label": "Status", "value": "status"},
+            {'label': 'Scheduled Date', 'value': 'scheduled_datetime'},
+            {'label': 'Client Name', 'value': 'client__full_name'},
+            {'label': 'Service Type', 'value': 'service_type'},
+            {'label': 'Created Date', 'value': 'created_at'},
         ]
 
-        # Simple response for now
-        return Response(
-            {
-                "filters": {
-                    key: config["options"]() if callable(config["options"]) else config["options"]
-                    for key, config in filters_config.items()
-                },
-                "ordering": ordering_config,
-            },
-            status=status.HTTP_200_OK,
-        )
+        return get_role_based_filter_response(request, filters_config, ordering_config)
+
+    @action(detail=False, methods=['get'], url_path='upcoming')
+    def upcoming(self, request):
+        """Get upcoming schedules (next 7 days)"""
+        now = timezone.now()
+        upcoming_date = now + timedelta(days=7)
+
+        queryset = self.get_queryset().filter(
+            scheduled_datetime__gte=now,
+            scheduled_datetime__lte=upcoming_date
+        ).order_by('scheduled_datetime')
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='today')
+    def today(self, request):
+        """Get schedules for today"""
+        today = timezone.now().date()
+
+        queryset = self.get_queryset().filter(
+            scheduled_datetime__date=today
+        ).order_by('scheduled_datetime')
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='by-technician/(?P<technician_id>[0-9]+)')
+    def by_technician(self, request, technician_id=None):
+        """Get schedules for a specific technician"""
+        queryset = self.get_queryset().filter(technicians__id=technician_id)
+
+        # Apply date filters if provided
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+
+        if start_date:
+            try:
+                queryset = queryset.filter(scheduled_datetime__date__gte=start_date)
+            except (ValueError, AttributeError):
+                pass
+
+        if end_date:
+            try:
+                queryset = queryset.filter(scheduled_datetime__date__lte=end_date)
+            except (ValueError, AttributeError):
+                pass
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='by-client/(?P<client_id>[0-9]+)')
+    def by_client(self, request, client_id=None):
+        """Get schedules for a specific client"""
+        queryset = self.get_queryset().filter(client_id=client_id)
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='unassigned')
+    def unassigned(self, request):
+        """Get schedules without any technicians assigned"""
+        queryset = self.get_queryset().annotate(
+            tech_count=Count('technicians')
+        ).filter(tech_count=0)
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'], url_path='calendar')
+    def calendar_view(self, request):
+        """Get schedules formatted for calendar display"""
+        queryset = self.get_queryset()
+
+        # Get date range from query params
+        start = request.query_params.get('start')
+        end = request.query_params.get('end')
+
+        if start and end:
+            try:
+                start_date = datetime.fromisoformat(start.replace('Z', '+00:00')).date()
+                end_date = datetime.fromisoformat(end.replace('Z', '+00:00')).date()
+                queryset = queryset.filter(
+                    scheduled_datetime__date__gte=start_date,
+                    scheduled_datetime__date__lte=end_date
+                )
+            except (ValueError, AttributeError):
+                pass
+
+        # Format for calendar
+        events = []
+        for schedule in queryset:
+            # Get all technician names
+            technician_names = [tech.get_full_name() for tech in schedule.technicians.all()]
+            technician_ids = [tech.id for tech in schedule.technicians.all()]
+
+            # Create title with technicians
+            tech_display = ", ".join(technician_names) if technician_names else "Unassigned"
+
+            events.append({
+                'id': f'schedule-{schedule.id}',
+                'title': f'{schedule.get_service_type_display()} - {schedule.client.full_name}',
+                'start': schedule.scheduled_datetime.isoformat(),
+                'allDay': False,
+                'extendedProps': {
+                    'type': 'schedule',
+                    'schedule_id': schedule.id,
+                    'service_type': schedule.service_type,
+                    'client_name': schedule.client.full_name,
+                    'client_id': schedule.client.id,
+                    'technician_names': technician_names,
+                    'technician_ids': technician_ids,
+                    'technician_display': tech_display,
+                    'technician_count': len(technician_names),
+                    'notes': schedule.notes,
+                }
+            })
+
+        return Response(events)
+
+    @action(detail=False, methods=['get'], url_path='conflicts')
+    def check_conflicts(self, request):
+        """Check for scheduling conflicts for technicians at a specific time"""
+        technician_ids = request.query_params.get('technician_ids')
+        scheduled_datetime = request.query_params.get('scheduled_datetime')
+        exclude_id = request.query_params.get('exclude_id')  # For updates
+
+        if not technician_ids or not scheduled_datetime:
+            return Response(
+                {'error': 'technician_ids (comma-separated) and scheduled_datetime are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # Parse technician IDs
+            tech_ids = [int(tid.strip()) for tid in technician_ids.split(',')]
+            scheduled_dt = datetime.fromisoformat(scheduled_datetime.replace('Z', '+00:00'))
+        except (ValueError, AttributeError):
+            return Response(
+                {'error': 'Invalid format for technician_ids or scheduled_datetime'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check for overlapping schedules (within 2 hours) for each technician
+        time_buffer = timedelta(hours=2)
+        start_time = scheduled_dt - time_buffer
+        end_time = scheduled_dt + time_buffer
+
+        all_conflicts = {}
+
+        for tech_id in tech_ids:
+            conflicting_schedules = Schedule.objects.filter(
+                technicians__id=tech_id,
+                scheduled_datetime__range=(start_time, end_time)
+            ).select_related('client').distinct()
+
+            # Exclude current schedule when updating
+            if exclude_id:
+                conflicting_schedules = conflicting_schedules.exclude(id=exclude_id)
+
+            if conflicting_schedules.exists():
+                technician = CustomUser.objects.get(id=tech_id)
+                all_conflicts[tech_id] = {
+                    'technician_name': technician.get_full_name(),
+                    'conflicts': [
+                        {
+                            'id': schedule.id,
+                            'client_name': schedule.client.full_name,
+                            'scheduled_datetime': schedule.scheduled_datetime.isoformat(),
+                            'service_type': schedule.service_type,
+                        }
+                        for schedule in conflicting_schedules
+                    ]
+                }
+
+        has_conflicts = len(all_conflicts) > 0
+
+        return Response({
+            'has_conflicts': has_conflicts,
+            'conflicts_by_technician': all_conflicts,
+            'total_conflicts': sum(len(c['conflicts']) for c in all_conflicts.values())
+        })
+
+    @action(detail=False, methods=['get'], url_path='statistics')
+    def statistics(self, request):
+        """Get schedule statistics"""
+        queryset = self.get_queryset()
+
+        # Get date range
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+
+        if start_date and end_date:
+            try:
+                queryset = queryset.filter(
+                    scheduled_datetime__date__gte=start_date,
+                    scheduled_datetime__date__lte=end_date
+                )
+            except (ValueError, AttributeError):
+                pass
+
+        # Count by service type
+        service_counts = {}
+        for service_type, display in Schedule.SERVICE_TYPES:
+            count = queryset.filter(service_type=service_type).count()
+            service_counts[service_type] = {
+                'label': display,
+                'count': count
+            }
+
+        # Count by technician
+        technician_counts = {}
+        technician_schedules = queryset.prefetch_related('technicians')
+        for schedule in technician_schedules:
+            for tech in schedule.technicians.all():
+                tech_name = tech.get_full_name()
+                if tech_name not in technician_counts:
+                    technician_counts[tech_name] = 0
+                technician_counts[tech_name] += 1
+
+        # Count unassigned schedules
+        unassigned_count = queryset.annotate(
+            tech_count=Count('technicians')
+        ).filter(tech_count=0).count()
+
+        # Count upcoming vs past
+        now = timezone.now()
+        upcoming_count = queryset.filter(scheduled_datetime__gte=now).count()
+        past_count = queryset.filter(scheduled_datetime__lt=now).count()
+
+        return Response({
+            'total': queryset.count(),
+            'by_service_type': service_counts,
+            'by_technician': technician_counts,
+            'unassigned': unassigned_count,
+            'upcoming': upcoming_count,
+            'past': past_count,
+        })
+
+    @action(detail=True, methods=['post'], url_path='add-technician')
+    def add_technician(self, request, pk=None):
+        """Add a technician to an existing schedule"""
+        schedule = self.get_object()
+        technician_id = request.data.get('technician_id')
+
+        if not technician_id:
+            return Response(
+                {'error': 'technician_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            technician = CustomUser.objects.get(
+                id=technician_id,
+                role='technician',
+                is_deleted=False
+            )
+        except CustomUser.DoesNotExist:
+            return Response(
+                {'error': 'Technician not found or invalid'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Check if already assigned
+        if schedule.technicians.filter(id=technician_id).exists():
+            return Response(
+                {'error': 'Technician already assigned to this schedule'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Add technician
+        schedule.technicians.add(technician)
+
+        serializer = self.get_serializer(schedule)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='remove-technician')
+    def remove_technician(self, request, pk=None):
+        """Remove a technician from a schedule"""
+        schedule = self.get_object()
+        technician_id = request.data.get('technician_id')
+
+        if not technician_id:
+            return Response(
+                {'error': 'technician_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            technician = CustomUser.objects.get(id=technician_id)
+        except CustomUser.DoesNotExist:
+            return Response(
+                {'error': 'Technician not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Remove technician
+        schedule.technicians.remove(technician)
+
+        serializer = self.get_serializer(schedule)
+        return Response(serializer.data)
+
+    def perform_create(self, serializer):
+        """Override to add custom logic when creating a schedule"""
+        serializer.save()
+
+    def perform_update(self, serializer):
+        """Override to add custom logic when updating a schedule"""
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        """Override to use soft delete if needed, or just delete"""
+        instance.delete()
+

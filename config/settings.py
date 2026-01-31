@@ -52,6 +52,8 @@ INSTALLED_APPS = [
     "installations",
     "receivables",
     "payroll",
+    "schedules",
+    "attendance",
 ]
 
 

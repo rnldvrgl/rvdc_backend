@@ -24,13 +24,17 @@ from django.db.models.functions import TruncDay
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from expenses.models import Expense
-from inventory.models import StockRoomStock
+from inventory.models import Stock, StockRoomStock
+from payroll.models import Holiday
+from attendance.models import LeaveRequest
 from rest_framework import permissions, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.viewsets import ViewSet
 from sales.models import SalesItem, SalesPayment, SalesTransaction
+from schedules.models import Schedule
+from users.models import CustomUser
 
 
 def get_date_range(request):
@@ -57,9 +61,6 @@ def get_stall_filter(request):
         return {"stall_id": user.assigned_stall}
 
     return {}
-
-
-from inventory.models import Stock
 
 
 class SummaryStatsView(APIView):
@@ -564,3 +565,209 @@ class AnalyticsViewSet(ViewSet):
 
         data = DashboardAnalytics.get_dashboard_summary(start_date, end_date, stall)
         return Response(data, status=status.HTTP_200_OK)
+=======
+class CalendarEventsView(APIView):
+    """
+    API endpoint for fetching calendar events (birthdays, holidays, schedules)
+    Supports multiple technicians per schedule
+
+    Query Parameters:
+        - start: Start date (ISO format)
+        - end: End date (ISO format)
+        - event_types: Comma-separated list of event types (birthday, holiday, schedule)
+        - technician_ids: Comma-separated list of technician IDs
+        - service_type: Filter schedules by service type
+    """
+
+    def get(self, request):
+        # Get date range from query params
+        start_param = request.query_params.get("start")
+        end_param = request.query_params.get("end")
+
+        if start_param and end_param:
+            start_date = parse_date(start_param)
+            end_date = parse_date(end_param)
+        else:
+            # Default to current month if no dates provided
+            now = timezone.now()
+            start_date = now.date().replace(day=1)
+            # Get last day of month
+            if now.month == 12:
+                end_date = now.date().replace(month=12, day=31)
+            else:
+                end_date = (now.date().replace(month=now.month + 1, day=1) - timedelta(days=1))
+
+        # Get filter parameters
+        event_types_param = request.query_params.get("event_types", "")
+        event_types = [t.strip() for t in event_types_param.split(",")] if event_types_param else []
+
+        # If no specific types requested, include all
+        include_birthdays = not event_types or "birthday" in event_types
+        include_holidays = not event_types or "holiday" in event_types
+        include_schedules = not event_types or "schedule" in event_types
+        include_leaves = not event_types or "leave" in event_types
+
+        # Additional filters
+        technician_ids_param = request.query_params.get("technician_ids")
+        service_type = request.query_params.get("service_type")
+
+        events = []
+
+        # Fetch birthdays
+        if include_birthdays:
+            birthdays = CustomUser.objects.filter(
+                is_deleted=False,
+                birthday__isnull=False
+            ).values('id', 'first_name', 'last_name', 'birthday')
+
+            for user in birthdays:
+                # Calculate birthday for current year range
+                birthday = user['birthday']
+                year_start = start_date.year
+                year_end = end_date.year
+
+                for year in range(year_start, year_end + 1):
+                    birthday_this_year = birthday.replace(year=year)
+                    if start_date <= birthday_this_year <= end_date:
+                        events.append({
+                            'id': f"birthday-{user['id']}-{year}",
+                            'title': f"{user['first_name']} {user['last_name']}'s Birthday",
+                            'start': birthday_this_year.isoformat(),
+                            'end': birthday_this_year.isoformat(),
+                            'allDay': True,
+                            'extendedProps': {
+                                'type': 'birthday',
+                                'user_id': user['id'],
+                                'user_name': f"{user['first_name']} {user['last_name']}",
+                            }
+                        })
+
+        # Fetch holidays
+        if include_holidays:
+            holidays = Holiday.objects.filter(
+                is_deleted=False,
+                date__gte=start_date,
+                date__lte=end_date
+            ).values('id', 'name', 'date', 'kind')
+
+            for holiday in holidays:
+                events.append({
+                    'id': f"holiday-{holiday['id']}",
+                    'title': holiday['name'],
+                    'start': holiday['date'].isoformat(),
+                    'end': holiday['date'].isoformat(),
+                    'allDay': True,
+                    'extendedProps': {
+                        'type': 'holiday',
+                        'holiday_id': holiday['id'],
+                        'holiday_type': holiday['kind'],
+                    }
+                })
+
+        # Fetch schedules with multiple technicians
+        if include_schedules:
+            schedules_query = Schedule.objects.filter(
+                scheduled_datetime__date__gte=start_date,
+                scheduled_datetime__date__lte=end_date
+            ).prefetch_related('technicians', 'client')
+
+            # Apply additional filters
+            if technician_ids_param:
+                try:
+                    tech_ids = [int(tid.strip()) for tid in technician_ids_param.split(',')]
+                    schedules_query = schedules_query.filter(technicians__id__in=tech_ids).distinct()
+                except ValueError:
+                    pass
+
+            if service_type:
+                schedules_query = schedules_query.filter(service_type=service_type)
+
+            for schedule in schedules_query:
+                # Get all technician information
+                technicians = schedule.technicians.all()
+                technician_names = [tech.get_full_name() for tech in technicians]
+                technician_ids = [tech.id for tech in technicians]
+
+                # Get display name for service type
+                service_type_dict = dict(Schedule.SERVICE_TYPES)
+                service_display = service_type_dict.get(schedule.service_type, schedule.service_type)
+
+                # Create title
+                tech_display = ", ".join(technician_names) if technician_names else "Unassigned"
+                title = f"{service_display} - {schedule.client.full_name}"
+                if technician_names:
+                    title += f" ({tech_display})"
+
+                events.append({
+                    'id': f"schedule-{schedule.id}",
+                    'title': title,
+                    'start': schedule.scheduled_datetime.isoformat(),
+                    'allDay': False,
+                    'extendedProps': {
+                        'type': 'schedule',
+                        'schedule_id': schedule.id,
+                        'service_type': schedule.service_type,
+                        'service_type_display': service_display,
+                        'client_name': schedule.client.full_name,
+                        'client_id': schedule.client.id,
+                        'technician_names': technician_names,
+                        'technician_ids': technician_ids,
+                        'technician_display': tech_display,
+                        'technician_count': len(technician_names),
+                        'notes': schedule.notes,
+                    }
+                })
+
+        # Fetch approved leaves
+        if include_leaves:
+            leaves = LeaveRequest.objects.filter(
+                status='APPROVED',
+                date__gte=start_date,
+                date__lte=end_date
+            ).select_related('employee').values(
+                'id', 'employee__first_name', 'employee__last_name',
+                'employee_id', 'leave_type', 'date', 'is_half_day',
+                'shift_period', 'reason'
+            )
+
+            for leave in leaves:
+                # Get leave type display
+                leave_type_display = dict(LeaveRequest.LEAVE_TYPE_CHOICES).get(
+                    leave['leave_type'], leave['leave_type']
+                )
+
+                # Get shift period display
+                shift_period_choices = {
+                    'AM': 'Morning',
+                    'PM': 'Afternoon',
+                    'FULL': 'Full Day'
+                }
+                shift_display = shift_period_choices.get(leave['shift_period'], 'Full Day')
+
+                # Build title
+                duration = f"Half Day - {shift_display}" if leave['is_half_day'] else "Full Day"
+                title = f"{leave['employee__first_name']} {leave['employee__last_name']} - {leave_type_display} ({duration})"
+
+                events.append({
+                    'id': f"leave-{leave['id']}",
+                    'title': title,
+                    'start': leave['date'].isoformat(),
+                    'end': leave['date'].isoformat(),
+                    'allDay': True,
+                    'extendedProps': {
+                        'type': 'leave',
+                        'leave_id': leave['id'],
+                        'employee_id': leave['employee_id'],
+                        'employee_name': f"{leave['employee__first_name']} {leave['employee__last_name']}",
+                        'leave_type': leave['leave_type'],
+                        'leave_type_display': leave_type_display,
+                        'is_half_day': leave['is_half_day'],
+                        'shift_period': leave['shift_period'],
+                        'shift_period_display': shift_display,
+                        'reason': leave['reason'],
+                    }
+                })
+
+        return Response(events)
+
+>>>>>>> ab00ca4a4faca42fde81bd9a6853f2e24906e874

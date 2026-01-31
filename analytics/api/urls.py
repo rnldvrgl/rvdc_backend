@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AnalyticsViewSet,
+    CalendarEventsView,
     CashFlowView,
     ExpensesOverTimeView,
     SalesOverTimeView,
@@ -40,6 +41,7 @@ urlpatterns = [
         UnpaidSalesStatusView.as_view(),
         name="unpaid-sales-status",
     ),
+    path("calendar/events/", CalendarEventsView.as_view(), name="calendar-events"),
 ]
 
 # Include router URLs

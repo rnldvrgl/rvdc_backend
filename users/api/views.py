@@ -2,7 +2,7 @@ from rest_framework import generics, permissions, filters
 from rest_framework.exceptions import NotFound
 from utils.query import filter_by_date_range
 from users.models import CustomUser
-from users.api.serializers import TechnicianSerializer, UserSerializer
+from users.api.serializers import EmployeesSerializer, UserSerializer
 from django_filters.rest_framework import DjangoFilterBackend
 
 
@@ -50,10 +50,10 @@ class AdminUserDetailView(generics.RetrieveUpdateDestroyAPIView):
         return {"request": self.request}
 
 
-class TechnicianListView(generics.ListCreateAPIView):
-    serializer_class = TechnicianSerializer
+class EmployeesListView(generics.ListCreateAPIView):
+    serializer_class = EmployeesSerializer
     permission_classes = [permissions.IsAuthenticated]
-    queryset = CustomUser.objects.filter(role="technician", is_deleted=False)
+    queryset = CustomUser.objects.exclude(role="admin").filter(is_deleted=False)
     filter_backends = [
         DjangoFilterBackend,
         filters.SearchFilter,
@@ -87,9 +87,9 @@ class TechnicianListView(generics.ListCreateAPIView):
         return filter_by_date_range(self.request, super().get_queryset())
 
 
-class TechnicianDetailView(generics.RetrieveUpdateDestroyAPIView):
-    serializer_class = TechnicianSerializer
-    queryset = CustomUser.objects.filter(role="technician", is_deleted=False)
+class UseraDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = EmployeesSerializer
+    queryset = CustomUser.objects.filter(is_deleted=False)
     permission_classes = [permissions.IsAuthenticated]
 
     def filter_queryset(self, queryset):

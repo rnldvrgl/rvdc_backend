@@ -22,10 +22,6 @@ FROM base AS development
 
 COPY . .
 
-RUN chmod +x /usr/src/app/entrypoint.sh
-
-ENTRYPOINT ["/usr/src/app/entrypoint.sh"]
-
 CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
 
 # ---- Production image ----

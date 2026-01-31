@@ -1,364 +1,190 @@
-"""
-API serializers for scheduling system.
-
-Handles:
-- Schedule creation from services (home_service, pull_out_return)
-- Technician daily schedules
-- Schedule status updates
-- Conflict checking
-"""
-
 from clients.models import Client
 from rest_framework import serializers
-from rest_framework.exceptions import ValidationError
-from schedules.models import (
-    Schedule,
-    ScheduleStatus,
-    ScheduleStatusHistory,
-    ScheduleType,
-)
-from services.models import Service
+from schedules.models import Schedule
 from users.models import CustomUser
-from utils.enums import ServiceMode
 
 
-class ScheduleSerializer(serializers.ModelSerializer):
-    """Main serializer for Schedule model."""
+class ScheduleClientSerializer(serializers.ModelSerializer):
+    """Nested serializer for client data in schedules"""
+    class Meta:
+        model = Client
+        fields = ['id', 'full_name', 'contact_number', 'address', 'city', 'province']
 
-    client_name = serializers.CharField(source="client.name", read_only=True)
-    technician_name = serializers.CharField(
-        source="technician.get_full_name", read_only=True
-    )
-    service_id = serializers.PrimaryKeyRelatedField(
-        source="service", queryset=Service.objects.all(), write_only=True, required=False
-    )
-    client_id = serializers.PrimaryKeyRelatedField(
-        source="client", queryset=Client.objects.all(), write_only=True
-    )
-    technician_id = serializers.PrimaryKeyRelatedField(
-        source="technician",
-        queryset=CustomUser.objects.filter(role="technician", is_active=True),
-        write_only=True,
-        required=False,
-        allow_null=True,
-    )
 
-    # Read-only computed fields
-    is_completed = serializers.BooleanField(read_only=True)
-    is_cancelled = serializers.BooleanField(read_only=True)
-    actual_duration_minutes = serializers.IntegerField(read_only=True)
-    location_address = serializers.CharField(read_only=True)
-    location_contact_person = serializers.CharField(read_only=True)
-    location_contact_number = serializers.CharField(read_only=True)
+class ScheduleTechnicianSerializer(serializers.ModelSerializer):
+    """Nested serializer for technician data in schedules"""
+    full_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'username', 'first_name', 'last_name', 'full_name', 'contact_number']
+
+    def get_full_name(self, obj):
+        return obj.get_full_name()
+
+
+class ScheduleListSerializer(serializers.ModelSerializer):
+    """Serializer for listing schedules with nested data"""
+    client = ScheduleClientSerializer(read_only=True)
+    technicians = ScheduleTechnicianSerializer(many=True, read_only=True)
+    service_type_display = serializers.CharField(source='get_service_type_display', read_only=True)
+    technician_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Schedule
         fields = [
-            "id",
-            "service",
-            "service_id",
-            "client",
-            "client_id",
-            "client_name",
-            "technician",
-            "technician_id",
-            "technician_name",
-            "schedule_type",
-            "scheduled_date",
-            "scheduled_time",
-            "estimated_duration",
-            "status",
-            "address",
-            "contact_person",
-            "contact_number",
-            "notes",
-            "internal_notes",
-            "actual_start_time",
-            "actual_end_time",
-            "completed_by",
-            "created_at",
-            "updated_at",
-            "created_by",
-            "is_completed",
-            "is_cancelled",
-            "actual_duration_minutes",
-            "location_address",
-            "location_contact_person",
-            "location_contact_number",
+            'id',
+            'client',
+            'technicians',
+            'technician_count',
+            'scheduled_datetime',
+            'service_type',
+            'service_type_display',
+            'notes',
+            'created_at',
         ]
-        read_only_fields = [
-            "actual_start_time",
-            "actual_end_time",
-            "completed_by",
-            "created_at",
-            "updated_at",
-            "created_by",
+
+    def get_technician_count(self, obj):
+        return obj.technicians.count()
+
+
+class ScheduleDetailSerializer(serializers.ModelSerializer):
+    """Serializer for schedule details with full nested data"""
+    client = ScheduleClientSerializer(read_only=True)
+    technicians = ScheduleTechnicianSerializer(many=True, read_only=True)
+    service_type_display = serializers.CharField(source='get_service_type_display', read_only=True)
+    technician_count = serializers.SerializerMethodField()
+    technician_names = serializers.CharField(source='get_technician_names', read_only=True)
+
+    class Meta:
+        model = Schedule
+        fields = [
+            'id',
+            'client',
+            'technicians',
+            'technician_count',
+            'technician_names',
+            'scheduled_datetime',
+            'service_type',
+            'service_type_display',
+            'notes',
+            'created_at',
         ]
+
+    def get_technician_count(self, obj):
+        return obj.technicians.count()
+
+
+class ScheduleCreateUpdateSerializer(serializers.ModelSerializer):
+    """Serializer for creating and updating schedules with multiple technicians"""
+    technicians = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=CustomUser.objects.filter(role='technician', is_deleted=False),
+        required=False,
+        allow_empty=True
+    )
+
+    class Meta:
+        model = Schedule
+        fields = [
+            'id',
+            'client',
+            'technicians',
+            'scheduled_datetime',
+            'service_type',
+            'notes',
+        ]
+
+    def validate_client(self, value):
+        """Validate that client exists and is not deleted"""
+        if not Client.objects.filter(id=value.id, is_deleted=False).exists():
+            raise serializers.ValidationError("Client not found or has been deleted.")
+        return value
+
+    def validate_technicians(self, value):
+        """Validate that all technicians exist and are valid"""
+        if value:
+            for technician in value:
+                if not CustomUser.objects.filter(
+                    id=technician.id,
+                    is_deleted=False,
+                    role='technician'
+                ).exists():
+                    raise serializers.ValidationError(
+                        f"Technician {technician.id} not found, has been deleted, or is not a technician."
+                    )
+        return value
+
+    def validate_scheduled_datetime(self, value):
+        """Validate that scheduled datetime is in the future"""
+        from django.utils import timezone
+        if value < timezone.now():
+            raise serializers.ValidationError(
+                "Scheduled datetime must be in the future."
+            )
+        return value
 
     def validate(self, data):
-        """Validate schedule data."""
-        # Validate technician role
-        technician = data.get("technician")
-        if technician and technician.role != "technician":
-            raise serializers.ValidationError(
-                {"technician": "Assigned user must have technician role."}
-            )
+        """Additional validation for schedule conflicts"""
+        from datetime import timedelta
 
-        # Validate service mode matches schedule type
-        service = data.get("service")
-        schedule_type = data.get("schedule_type")
+        technicians = data.get('technicians', [])
+        scheduled_datetime = data.get('scheduled_datetime')
 
-        if service and schedule_type:
-            if service.service_mode == ServiceMode.HOME_SERVICE:
-                if schedule_type not in [ScheduleType.HOME_SERVICE, ScheduleType.ON_SITE]:
-                    raise serializers.ValidationError(
-                        {
-                            "schedule_type": "Schedule type must be home_service or on_site for home_service mode."
-                        }
-                    )
-            elif service.service_mode == ServiceMode.PULL_OUT_RETURN:
-                if schedule_type not in [ScheduleType.PULL_OUT, ScheduleType.RETURN]:
-                    raise serializers.ValidationError(
-                        {
-                            "schedule_type": "Schedule type must be pull_out or return for pull_out_return service mode."
-                        }
-                    )
-            elif service.service_mode == ServiceMode.IN_SHOP:
-                raise serializers.ValidationError(
-                    {"service": "Cannot create schedule for in-shop services."}
+        if technicians and scheduled_datetime:
+            # Check for overlapping schedules (within 2 hours) for each technician
+            time_buffer = timedelta(hours=2)
+            start_time = scheduled_datetime - time_buffer
+            end_time = scheduled_datetime + time_buffer
+
+            conflicts = []
+            for technician in technicians:
+                conflicting_schedules = Schedule.objects.filter(
+                    technicians=technician,
+                    scheduled_datetime__range=(start_time, end_time)
                 )
+
+                # Exclude current instance when updating
+                if self.instance:
+                    conflicting_schedules = conflicting_schedules.exclude(id=self.instance.id)
+
+                if conflicting_schedules.exists():
+                    conflicts.append({
+                        'technician': technician.get_full_name(),
+                        'schedules': conflicting_schedules.count()
+                    })
+
+            if conflicts:
+                conflict_messages = [
+                    f"{conflict['technician']} has {conflict['schedules']} conflicting schedule(s)"
+                    for conflict in conflicts
+                ]
+                raise serializers.ValidationError({
+                    'technicians': conflict_messages
+                })
 
         return data
 
     def create(self, validated_data):
-        """Create schedule with user tracking."""
-        request = self.context.get("request")
-        if request and hasattr(request, "user"):
-            validated_data["created_by"] = request.user
-
-        return super().create(validated_data)
-
-
-class ScheduleCreateFromServiceSerializer(serializers.Serializer):
-    """Serializer for creating schedules from a service."""
-
-    service_id = serializers.IntegerField(help_text="Service ID to create schedule for")
-    schedule_type = serializers.ChoiceField(
-        choices=ScheduleType.choices, help_text="Type of schedule"
-    )
-    scheduled_date = serializers.DateField(
-        required=False, allow_null=True, help_text="Date (uses service date if not provided)"
-    )
-    scheduled_time = serializers.TimeField(
-        required=False, allow_null=True, help_text="Time (uses service time if not provided)"
-    )
-    technician_id = serializers.IntegerField(
-        required=False, allow_null=True, help_text="Technician ID (optional)"
-    )
-    estimated_duration = serializers.IntegerField(
-        required=False, allow_null=True, help_text="Duration in minutes"
-    )
-    notes = serializers.CharField(required=False, allow_blank=True)
-
-    def validate_service_id(self, value):
-        """Validate service exists."""
-        if not Service.objects.filter(id=value).exists():
-            raise serializers.ValidationError("Service not found.")
-        return value
-
-    def validate_technician_id(self, value):
-        """Validate technician exists."""
-        if value and not CustomUser.objects.filter(
-            id=value, role="technician", is_active=True
-        ).exists():
-            raise serializers.ValidationError("Technician not found or inactive.")
-        return value
-
-    def save(self):
-        """Create schedule from service."""
-        from schedules.business_logic import ScheduleManager
-
-        service = Service.objects.get(id=self.validated_data["service_id"])
-        technician = None
-        if self.validated_data.get("technician_id"):
-            technician = CustomUser.objects.get(id=self.validated_data["technician_id"])
-
-        user = self.context.get("request").user if self.context.get("request") else None
-
-        schedule = ScheduleManager.create_schedule_from_service(
-            service=service,
-            schedule_type=self.validated_data["schedule_type"],
-            scheduled_date=self.validated_data.get("scheduled_date"),
-            scheduled_time=self.validated_data.get("scheduled_time"),
-            technician=technician,
-            estimated_duration=self.validated_data.get("estimated_duration"),
-            notes=self.validated_data.get("notes", ""),
-            user=user,
-        )
-
+        """Create schedule with multiple technicians"""
+        technicians = validated_data.pop('technicians', [])
+        schedule = Schedule.objects.create(**validated_data)
+        if technicians:
+            schedule.technicians.set(technicians)
         return schedule
 
+    def update(self, instance, validated_data):
+        """Update schedule with multiple technicians"""
+        technicians = validated_data.pop('technicians', None)
 
-class PullOutReturnScheduleSerializer(serializers.Serializer):
-    """Serializer for creating pull-out and return schedules."""
+        # Update basic fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
 
-    service_id = serializers.IntegerField(help_text="Service ID (must be pull_out_return mode)")
-    pull_out_date = serializers.DateField(help_text="Date for pull-out")
-    pull_out_time = serializers.TimeField(help_text="Time for pull-out")
-    return_date = serializers.DateField(help_text="Date for return")
-    return_time = serializers.TimeField(help_text="Time for return")
-    technician_id = serializers.IntegerField(
-        required=False, allow_null=True, help_text="Technician ID (optional)"
-    )
+        # Update technicians if provided
+        if technicians is not None:
+            instance.technicians.set(technicians)
 
-    def validate_service_id(self, value):
-        """Validate service exists and is pull_out_return mode."""
-        try:
-            service = Service.objects.get(id=value)
-        except Service.DoesNotExist:
-            raise serializers.ValidationError("Service not found.")
+        return instance
 
-        if service.service_mode != ServiceMode.PULL_OUT_RETURN:
-            raise serializers.ValidationError(
-                "Service must have pull_out_return mode for this operation."
-            )
-
-        return value
-
-    def validate_technician_id(self, value):
-        """Validate technician exists."""
-        if value and not CustomUser.objects.filter(
-            id=value, role="technician", is_active=True
-        ).exists():
-            raise serializers.ValidationError("Technician not found or inactive.")
-        return value
-
-    def validate(self, data):
-        """Validate return is after pull-out."""
-        from datetime import datetime
-
-        pull_out_dt = datetime.combine(data["pull_out_date"], data["pull_out_time"])
-        return_dt = datetime.combine(data["return_date"], data["return_time"])
-
-        if return_dt <= pull_out_dt:
-            raise serializers.ValidationError("Return must be scheduled after pull-out.")
-
-        return data
-
-    def save(self):
-        """Create both pull-out and return schedules."""
-        from schedules.business_logic import create_pull_out_return_schedules
-
-        service = Service.objects.get(id=self.validated_data["service_id"])
-        technician = None
-        if self.validated_data.get("technician_id"):
-            technician = CustomUser.objects.get(id=self.validated_data["technician_id"])
-
-        user = self.context.get("request").user if self.context.get("request") else None
-
-        result = create_pull_out_return_schedules(
-            service=service,
-            pull_out_date=self.validated_data["pull_out_date"],
-            pull_out_time=self.validated_data["pull_out_time"],
-            return_date=self.validated_data["return_date"],
-            return_time=self.validated_data["return_time"],
-            technician=technician,
-            user=user,
-        )
-
-        return result
-
-
-class ScheduleStatusUpdateSerializer(serializers.Serializer):
-    """Serializer for updating schedule status."""
-
-    status = serializers.ChoiceField(choices=ScheduleStatus.choices)
-    notes = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-
-    def save(self):
-        """Update schedule status."""
-        from schedules.business_logic import ScheduleManager
-
-        schedule = self.context.get("schedule")
-        if not schedule:
-            raise ValidationError("Schedule instance required in context.")
-
-        user = self.context.get("request").user if self.context.get("request") else None
-
-        return ScheduleManager.update_schedule_status(
-            schedule=schedule,
-            new_status=self.validated_data["status"],
-            notes=self.validated_data.get("notes"),
-            user=user,
-        )
-
-
-class ScheduleRescheduleSerializer(serializers.Serializer):
-    """Serializer for rescheduling an appointment."""
-
-    new_date = serializers.DateField(help_text="New scheduled date")
-    new_time = serializers.TimeField(help_text="New scheduled time")
-    technician_id = serializers.IntegerField(
-        required=False,
-        allow_null=True,
-        help_text="New technician (optional, keeps existing if not provided)",
-    )
-    reason = serializers.CharField(required=False, allow_blank=True)
-
-    def validate_technician_id(self, value):
-        """Validate technician exists."""
-        if value and not CustomUser.objects.filter(
-            id=value, role="technician", is_active=True
-        ).exists():
-            raise serializers.ValidationError("Technician not found or inactive.")
-        return value
-
-    def save(self):
-        """Reschedule the appointment."""
-        from schedules.business_logic import ScheduleManager
-
-        schedule = self.context.get("schedule")
-        if not schedule:
-            raise ValidationError("Schedule instance required in context.")
-
-        technician = None
-        if self.validated_data.get("technician_id"):
-            technician = CustomUser.objects.get(id=self.validated_data["technician_id"])
-
-        user = self.context.get("request").user if self.context.get("request") else None
-
-        return ScheduleManager.reschedule(
-            schedule=schedule,
-            new_date=self.validated_data["new_date"],
-            new_time=self.validated_data["new_time"],
-            technician=technician,
-            reason=self.validated_data.get("reason"),
-            user=user,
-        )
-
-
-class ScheduleStatusHistorySerializer(serializers.ModelSerializer):
-    """Serializer for schedule status history."""
-
-    changed_by_name = serializers.CharField(source="changed_by.get_full_name", read_only=True)
-
-    class Meta:
-        model = ScheduleStatusHistory
-        fields = ["id", "status", "notes", "changed_by", "changed_by_name", "changed_at"]
-
-
-class TechnicianAvailabilitySerializer(serializers.Serializer):
-    """Serializer for checking technician availability."""
-
-    technician_id = serializers.IntegerField()
-    schedule_date = serializers.DateField()
-    start_time = serializers.TimeField()
-    duration_minutes = serializers.IntegerField(default=60)
-
-    def validate_technician_id(self, value):
-        """Validate technician exists."""
-        if not CustomUser.objects.filter(
-            id=value, role="technician", is_active=True
-        ).exists():
-            raise serializers.ValidationError("Technician not found or inactive.")
-        return value

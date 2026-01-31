@@ -5,7 +5,14 @@ services:
             target: development
         env_file:
             - .env.local
+        environment:
+            DJANGO_ENV_FILE: .env.local
         command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+        volumes:
+            - .:/usr/src/app
+        depends_on:
+            db:
+                condition: service_started
 
     db:
         env_file:

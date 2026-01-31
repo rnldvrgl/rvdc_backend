@@ -21,7 +21,6 @@ class StatusFilterMixin:
 
     def filter_by_status(self, queryset, name, value):
         value = value.lower().strip()
-        available_expr = models.F("quantity") - models.F("reserved_quantity")
 
         if value == "no_stock":
             return queryset.filter(available_expr__lte=0)
