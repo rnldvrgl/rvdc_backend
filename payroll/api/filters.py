@@ -1,31 +1,5 @@
 from django_filters import rest_framework as filters
-from payroll.models import AdditionalEarning, Holiday, TimeEntry, WeeklyPayroll
-
-
-class TimeEntryFilter(filters.FilterSet):
-  """
-  Filters for time entries:
-  - start_date/end_date: range on clock_in date (inclusive start, exclusive end)
-  - employee: by employee id
-  - approved: boolean
-  - source: one of TimeEntry.SOURCE_CHOICES
-  - employee__assigned_stall: filter by employee's assigned stall id
-  """
-  start_date = filters.DateFilter(field_name="clock_in", lookup_expr="date__gte")
-  end_date = filters.DateFilter(field_name="clock_in", lookup_expr="date__lt")
-  employee = filters.NumberFilter(field_name="employee_id")
-  approved = filters.BooleanFilter()
-  source = filters.CharFilter(field_name="source")
-  employee__assigned_stall = filters.NumberFilter(field_name="employee__assigned_stall_id")
-
-  class Meta:
-    model = TimeEntry
-    fields = [
-      "employee",
-      "approved",
-      "source",
-      "employee__assigned_stall",
-    ]
+from payroll.models import AdditionalEarning, Holiday, WeeklyPayroll
 
 
 class AdditionalEarningFilter(filters.FilterSet):

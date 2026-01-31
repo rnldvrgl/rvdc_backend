@@ -4,19 +4,28 @@ from rest_framework.routers import DefaultRouter
 
 router = DefaultRouter()
 router.register(r"holidays", views.HolidayViewSet, basename="holiday")
+router.register(r"manual-deductions", views.ManualDeductionViewSet, basename="manual-deduction")
+router.register(r"tax-brackets", views.TaxBracketViewSet, basename="tax-bracket")
+router.register(r"percentage-deductions", views.PercentageDeductionViewSet, basename="percentage-deduction")
+router.register(r"government-benefits", views.GovernmentBenefitViewSet, basename="government-benefit")
 
 name = "payroll"
 urlpatterns = [
-    # Time entries (clock in/out records)
+    # Weekly payroll generation and preview
     path(
-        "time-entries/",
-        views.TimeEntryListCreateView.as_view(),
-        name="timeentry-list",
+        "weekly-payrolls/generate/",
+        views.WeeklyPayrollGenerateView.as_view(),
+        name="weeklypayroll-generate",
     ),
     path(
-        "time-entries/<int:pk>/",
-        views.TimeEntryDetailView.as_view(),
-        name="timeentry-detail",
+        "weekly-payrolls/bulk-generate/",
+        views.WeeklyPayrollBulkGenerateView.as_view(),
+        name="weeklypayroll-bulk-generate",
+    ),
+    path(
+        "weekly-payrolls/preview/",
+        views.WeeklyPayrollPreviewView.as_view(),
+        name="weeklypayroll-preview",
     ),
     # Weekly payroll summaries
     path(
@@ -28,6 +37,30 @@ urlpatterns = [
         "weekly-payrolls/<int:pk>/",
         views.WeeklyPayrollDetailView.as_view(),
         name="weeklypayroll-detail",
+    ),
+    # Update payroll status
+    path(
+        "weekly-payrolls/<int:pk>/status/",
+        views.WeeklyPayrollUpdateStatusView.as_view(),
+        name="weeklypayroll-update-status",
+    ),
+    # Bulk update status
+    path(
+        "weekly-payrolls/bulk-update-status/",
+        views.WeeklyPayrollBulkUpdateStatusView.as_view(),
+        name="weeklypayroll-bulk-update-status",
+    ),
+    # Mark as received
+    path(
+        "weekly-payrolls/<int:pk>/mark-received/",
+        views.WeeklyPayrollMarkReceivedView.as_view(),
+        name="weeklypayroll-mark-received",
+    ),
+    # Dispute payroll
+    path(
+        "weekly-payrolls/<int:pk>/dispute/",
+        views.WeeklyPayrollDisputeView.as_view(),
+        name="weeklypayroll-dispute",
     ),
     # Weekly payroll filters
     path(
@@ -41,12 +74,6 @@ urlpatterns = [
         views.WeeklyPayrollRecomputeView.as_view(),
         name="weeklypayroll-recompute",
     ),
-    # Bulk time entries
-    path(
-        "time-entries/bulk/",
-        views.TimeEntryBulkCreateView.as_view(),
-        name="timeentry-bulk-create",
-    ),
     # Additional earnings
     path(
         "additional-earnings/",
@@ -57,33 +84,6 @@ urlpatterns = [
         "additional-earnings/<int:pk>/",
         views.AdditionalEarningDetailView.as_view(),
         name="additionalearning-detail",
-    ),
-    # Sessions Review (auto-closed entries)
-    path(
-        "sessions/review/",
-        views.SessionsReviewListView.as_view(),
-        name="sessions-review-list",
-    ),
-    path(
-        "sessions/review/<int:pk>/",
-        views.SessionReviewDetailPatchView.as_view(),
-        name="session-review-detail",
-    ),
-    # Overtime Requests
-    path(
-        "overtime-requests/",
-        views.OvertimeRequestListCreateView.as_view(),
-        name="overtimerequest-list",
-    ),
-    path(
-        "overtime-requests/<int:pk>/",
-        views.OvertimeRequestDetailView.as_view(),
-        name="overtimerequest-detail",
-    ),
-    path(
-        "overtime-requests/<int:pk>/approve/",
-        views.OvertimeRequestApproveView.as_view(),
-        name="overtimerequest-approve",
     ),
     # Payroll Settings (Admin only)
     path(

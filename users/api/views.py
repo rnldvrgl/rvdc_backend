@@ -53,7 +53,7 @@ class AdminUserDetailView(generics.RetrieveUpdateDestroyAPIView):
 class EmployeesListView(generics.ListCreateAPIView):
     serializer_class = EmployeesSerializer
     permission_classes = [permissions.IsAuthenticated]
-    queryset = CustomUser.objects.filter(is_deleted=False)
+    queryset = CustomUser.objects.exclude(role="admin").filter(is_deleted=False)
     filter_backends = [
         DjangoFilterBackend,
         filters.SearchFilter,

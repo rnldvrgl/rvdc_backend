@@ -14,6 +14,7 @@ from django.utils.dateparse import parse_date
 from expenses.models import Expense
 from inventory.models import Stock, StockRoomStock
 from payroll.models import Holiday
+from attendance.models import LeaveRequest
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from sales.models import SalesItem, SalesPayment, SalesTransaction
@@ -354,6 +355,7 @@ class CalendarEventsView(APIView):
         include_birthdays = not event_types or "birthday" in event_types
         include_holidays = not event_types or "holiday" in event_types
         include_schedules = not event_types or "schedule" in event_types
+        include_leaves = not event_types or "leave" in event_types
 
         # Additional filters
         technician_ids_param = request.query_params.get("technician_ids")
@@ -463,6 +465,56 @@ class CalendarEventsView(APIView):
                         'technician_display': tech_display,
                         'technician_count': len(technician_names),
                         'notes': schedule.notes,
+                    }
+                })
+
+        # Fetch approved leaves
+        if include_leaves:
+            leaves = LeaveRequest.objects.filter(
+                status='APPROVED',
+                date__gte=start_date,
+                date__lte=end_date
+            ).select_related('employee').values(
+                'id', 'employee__first_name', 'employee__last_name', 
+                'employee_id', 'leave_type', 'date', 'is_half_day', 
+                'shift_period', 'reason'
+            )
+
+            for leave in leaves:
+                # Get leave type display
+                leave_type_display = dict(LeaveRequest.LEAVE_TYPE_CHOICES).get(
+                    leave['leave_type'], leave['leave_type']
+                )
+                
+                # Get shift period display
+                shift_period_choices = {
+                    'AM': 'Morning',
+                    'PM': 'Afternoon',
+                    'FULL': 'Full Day'
+                }
+                shift_display = shift_period_choices.get(leave['shift_period'], 'Full Day')
+                
+                # Build title
+                duration = f"Half Day - {shift_display}" if leave['is_half_day'] else "Full Day"
+                title = f"{leave['employee__first_name']} {leave['employee__last_name']} - {leave_type_display} ({duration})"
+                
+                events.append({
+                    'id': f"leave-{leave['id']}",
+                    'title': title,
+                    'start': leave['date'].isoformat(),
+                    'end': leave['date'].isoformat(),
+                    'allDay': True,
+                    'extendedProps': {
+                        'type': 'leave',
+                        'leave_id': leave['id'],
+                        'employee_id': leave['employee_id'],
+                        'employee_name': f"{leave['employee__first_name']} {leave['employee__last_name']}",
+                        'leave_type': leave['leave_type'],
+                        'leave_type_display': leave_type_display,
+                        'is_half_day': leave['is_half_day'],
+                        'shift_period': leave['shift_period'],
+                        'shift_period_display': shift_display,
+                        'reason': leave['reason'],
                     }
                 })
 

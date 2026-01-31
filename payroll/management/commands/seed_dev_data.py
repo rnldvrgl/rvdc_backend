@@ -115,7 +115,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"✅ Generated {sales_count} sales, {expenses_count} expenses"))
 
         # 12) Final Recompute
-        payroll.compute_from_time_entries(include_unapproved=False)
+        payroll.compute_from_daily_attendance(include_unapproved=False)
         payroll.save()
 
         # Seed receivables and remittances
