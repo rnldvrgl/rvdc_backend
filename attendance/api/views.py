@@ -1,33 +1,40 @@
-from rest_framework import viewsets, status
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from django.shortcuts import get_object_or_404
-from django.db.models import Q
 from datetime import date
-from django.utils import timezone
 
-from attendance.models import DailyAttendance, LeaveBalance, LeaveRequest, Offense, OvertimeRequest
+from django.core.exceptions import ValidationError
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
 from attendance.api.serializers import (
-    DailyAttendanceSerializer,
+    ApproveAttendanceSerializer,
+    ApproveLeaveSerializer,
     ClockInSerializer,
     ClockOutSerializer,
-    ApproveAttendanceSerializer,
-    RejectAttendanceSerializer,
+    DailyAttendanceSerializer,
     LeaveBalanceSerializer,
     LeaveRequestSerializer,
-    ApproveLeaveSerializer,
-    RejectLeaveSerializer,
     OffenseSerializer,
     OffenseStatisticsSerializer,
-    OvertimeRequestSerializer,
     OvertimeRequestApproveSerializer,
+    OvertimeRequestSerializer,
+    RejectAttendanceSerializer,
+    RejectLeaveSerializer,
+)
+from attendance.models import (
+    DailyAttendance,
+    LeaveBalance,
+    LeaveRequest,
+    Offense,
+    OvertimeRequest,
 )
 
 
 class IsAdminOrManager(IsAuthenticated):
     """Permission class for admin and manager roles only."""
-    
+
     def has_permission(self, request, view):
         if not super().has_permission(request, view):
             return False
@@ -37,18 +44,18 @@ class IsAdminOrManager(IsAuthenticated):
 class DailyAttendanceViewSet(viewsets.ModelViewSet):
     """
     ViewSet for daily attendance management.
-    
+
     Permissions:
     - Admin/Manager: Full access (clock-in/out, approve, view all)
     - Clerk/Technician: Read-only access to their own attendance
     """
     serializer_class = DailyAttendanceSerializer
     permission_classes = [IsAuthenticated]
-    
+
     def get_queryset(self):
         user = self.request.user
         queryset = DailyAttendance.objects.filter(is_deleted=False)
-        
+
         # Admins and managers can see all attendance
         if user.role in ['admin', 'manager']:
             # Optional filters
@@ -56,7 +63,7 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
             status_filter = self.request.query_params.get('status')
             date_from = self.request.query_params.get('date_from')
             date_to = self.request.query_params.get('date_to')
-            
+
             if employee_id:
                 queryset = queryset.filter(employee_id=employee_id)
             if status_filter:
@@ -68,7 +75,7 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
         else:
             # Employees can only see their own attendance
             queryset = queryset.filter(employee=user)
-        
+
         return queryset.select_related('employee', 'approved_by').order_by('-date')
 
     def create(self, request, *args, **kwargs):
@@ -79,7 +86,7 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
         return super().create(request, *args, **kwargs)
-    
+
     def update(self, request, *args, **kwargs):
         """Only admin/manager can update attendance records."""
         if request.user.role not in ['admin', 'manager']:
@@ -88,7 +95,7 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
         return super().update(request, *args, **kwargs)
-    
+
     def destroy(self, request, *args, **kwargs):
         """Soft delete: Only admin/manager can delete."""
         if request.user.role not in ['admin', 'manager']:
@@ -96,17 +103,17 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
                 {'detail': 'Only admin and manager can delete attendance records.'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         instance = self.get_object()
         instance.is_deleted = True
         instance.save()
         return Response(status=status.HTTP_204_NO_CONTENT)
-    
+
     @action(detail=False, methods=["get"])
     def current_status(self, request):
         """Get current attendance status including suspension check"""
         from attendance.models import Offense
-        
+
         attendance = (
             DailyAttendance.objects
             .filter(
@@ -120,7 +127,7 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
         # Check if employee is currently suspended
         is_suspended = Offense.is_employee_suspended(request.user)
         suspension_info = None
-        
+
         if is_suspended:
             today = timezone.localdate()
             suspension = Offense.objects.filter(
@@ -129,7 +136,7 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
                 suspension_start_date__lte=today,
                 suspension_end_date__gte=today
             ).first()
-            
+
             if suspension:
                 suspension_info = {
                     'is_suspended': True,
@@ -153,12 +160,12 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
             'suspension_info': suspension_info
         }
         return Response(response_data, status=status.HTTP_200_OK)
-    
+
     @action(detail=False, methods=['post'])
     def clock_in(self, request):
         """
         Clock in an employee.
-        
+
         Required fields:
         - employee_id: ID of the employee
         - date: Date of attendance (YYYY-MM-DD)
@@ -166,16 +173,17 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
         """
         serializer = ClockInSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         employee_id = serializer.validated_data['employee_id']
         attendance_date = serializer.validated_data['date']
         clock_in_time = serializer.validated_data['clock_in']
         notes = serializer.validated_data.get('notes', '')
-        
+
         # Check if employee is currently suspended
-        from attendance.models import Offense
         from users.models import CustomUser
-        
+
+        from attendance.models import Offense
+
         try:
             employee = CustomUser.objects.get(id=employee_id)
             if Offense.is_employee_suspended(employee):
@@ -188,7 +196,7 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
                     suspension_start_date__lte=today,
                     suspension_end_date__gte=today
                 ).first()
-                
+
                 if suspension:
                     return Response(
                         {'detail': f'Employee is currently suspended until {suspension.suspension_end_date}. Cannot clock in.'},
@@ -196,20 +204,20 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
                     )
         except CustomUser.DoesNotExist:
             pass
-        
+
         # Check if attendance already exists for this employee on this date
         existing = DailyAttendance.objects.filter(
             employee_id=employee_id,
             date=attendance_date,
             is_deleted=False
         ).first()
-        
+
         if existing:
             return Response(
                 {'detail': f'Attendance already exists for this employee on {attendance_date}.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Create new attendance record
         attendance = DailyAttendance.objects.create(
             employee_id=employee_id,
@@ -218,70 +226,70 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
             notes=notes,
             status='PENDING',
         )
-        
+
         return Response(
             DailyAttendanceSerializer(attendance).data,
             status=status.HTTP_201_CREATED
         )
-    
+
     @action(detail=False, methods=['post'])
     def clock_out(self, request):
         """
         Clock out an employee.
-        
+
         Required fields:
         - attendance_id: ID of the attendance record
         - clock_out: Clock-out datetime
         """
         serializer = ClockOutSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         attendance_id = serializer.validated_data['attendance_id']
         clock_out_time = serializer.validated_data['clock_out']
         notes = serializer.validated_data.get('notes', '')
-        
+
         attendance = get_object_or_404(DailyAttendance, id=attendance_id, is_deleted=False)
-        
+
         if attendance.clock_out:
             return Response(
                 {'detail': 'Employee already clocked out for this attendance.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Update clock-out time (save() will auto-compute metrics)
         attendance.clock_out = clock_out_time
         if notes:
             attendance.notes = f"{attendance.notes}\n{notes}".strip()
         attendance.save()
-        
+
         return Response(
             DailyAttendanceSerializer(attendance).data,
             status=status.HTTP_200_OK
         )
-    
+
     @action(detail=False, methods=['post'], permission_classes=[IsAdminOrManager])
     def approve(self, request):
         """
         Approve one or more attendance records.
-        
+
         Required fields:
         - attendance_ids: List of attendance IDs to approve
         """
         serializer = ApproveAttendanceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         attendance_ids = serializer.validated_data['attendance_ids']
         attendances = DailyAttendance.objects.filter(
             id__in=attendance_ids,
             is_deleted=False,
             status='PENDING'
         )
-        
+
         approved_count = 0
         for attendance in attendances:
             attendance.approve(request.user)
             approved_count += 1
-        
+
         return Response(
             {
                 'detail': f'{approved_count} attendance record(s) approved.',
@@ -289,33 +297,33 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
-    
+
     @action(detail=False, methods=['post'], permission_classes=[IsAdminOrManager])
     def reject(self, request):
         """
         Reject one or more attendance records.
-        
+
         Required fields:
         - attendance_ids: List of attendance IDs to reject
         - reason: Optional rejection reason
         """
         serializer = RejectAttendanceSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         attendance_ids = serializer.validated_data['attendance_ids']
         reason = serializer.validated_data.get('reason', '')
-        
+
         attendances = DailyAttendance.objects.filter(
             id__in=attendance_ids,
             is_deleted=False,
             status='PENDING'
         )
-        
+
         rejected_count = 0
         for attendance in attendances:
             attendance.reject(request.user, reason=reason)
             rejected_count += 1
-        
+
         return Response(
             {
                 'detail': f'{rejected_count} attendance record(s) rejected.',
@@ -323,39 +331,39 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
-    
+
     @action(detail=True, methods=['patch'], permission_classes=[IsAdminOrManager])
     def update_uniform_penalties(self, request, pk=None):
         """
         Update uniform penalty flags for an attendance record.
-        
+
         Required fields (all boolean):
         - missing_uniform_shirt
         - missing_uniform_pants
         - missing_uniform_shoes
         """
         attendance = self.get_object()
-        
+
         # Only update uniform penalties for PENDING or APPROVED records
         if attendance.status not in ['PENDING', 'APPROVED']:
             return Response(
                 {'detail': 'Can only update uniform penalties for pending or approved attendance.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Update uniform flags
         attendance.missing_uniform_shirt = request.data.get('missing_uniform_shirt', False)
         attendance.missing_uniform_pants = request.data.get('missing_uniform_pants', False)
         attendance.missing_uniform_shoes = request.data.get('missing_uniform_shoes', False)
-        
+
         # Save will automatically recalculate uniform_penalty_amount
         attendance.save()
-        
+
         return Response(
             DailyAttendanceSerializer(attendance).data,
             status=status.HTTP_200_OK
         )
-    
+
     @action(detail=False, methods=["get"])
     def pending_approvals(self, request):
         """Get all pending attendance records (admin/manager only)."""
@@ -387,23 +395,23 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
 class LeaveBalanceViewSet(viewsets.ReadOnlyModelViewSet):
     """
     ViewSet for viewing leave balances.
-    
+
     Permissions:
     - Admin/Manager: View all leave balances
     - Clerk/Technician: View their own leave balance only
     """
     serializer_class = LeaveBalanceSerializer
     permission_classes = [IsAuthenticated]
-    
+
     def get_queryset(self):
         user = self.request.user
         queryset = LeaveBalance.objects.all()
-        
+
         # Admins and managers can see all balances
         if user.role in ['admin', 'manager']:
             employee_id = self.request.query_params.get('employee_id')
             year = self.request.query_params.get('year')
-            
+
             if employee_id:
                 queryset = queryset.filter(employee_id=employee_id)
             if year:
@@ -411,9 +419,9 @@ class LeaveBalanceViewSet(viewsets.ReadOnlyModelViewSet):
         else:
             # Employees can only see their own balance
             queryset = queryset.filter(employee=user)
-        
+
         return queryset.select_related('employee').order_by('-year')
-    
+
     @action(detail=False, methods=['get'])
     def my_balance(self, request):
         """Get current user's leave balance for current year."""
@@ -426,7 +434,7 @@ class LeaveBalanceViewSet(viewsets.ReadOnlyModelViewSet):
                 'emergency_leave_total': 5,
             }
         )
-        
+
         serializer = self.get_serializer(balance)
         return Response(serializer.data)
 
@@ -434,7 +442,7 @@ class LeaveBalanceViewSet(viewsets.ReadOnlyModelViewSet):
 class LeaveRequestViewSet(viewsets.ModelViewSet):
     """
     ViewSet for leave request management.
-    
+
     Permissions:
     - All authenticated users can create leave requests
     - Admin/Manager: Can approve/reject and view all requests
@@ -442,7 +450,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
     """
     serializer_class = LeaveRequestSerializer
     permission_classes = [IsAuthenticated]
-    
+
     def get_queryset(self):
         user = self.request.user
         params = self.request.query_params
@@ -482,7 +490,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         """Override create to handle validation and return proper Response objects."""
         from decimal import Decimal
-        
+
         serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():
             # Return validation errors in expected format
@@ -495,33 +503,33 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                 {'detail': str(first_error)},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Get validated data
         validated_data = serializer.validated_data
-        
+
         # Set employee for non-admin users
         if request.user.role not in ['admin']:
             validated_data['employee'] = request.user
-        
+
         employee = validated_data.get('employee')
         leave_type = validated_data.get('leave_type')
         date = validated_data.get('date')
         is_half_day = validated_data.get('is_half_day', False)
         days_count = Decimal('0.5') if is_half_day else Decimal('1.0')
-        
+
         # Check for duplicate leave requests
         existing = LeaveRequest.objects.filter(
             employee=employee,
             date=date,
             status__in=['PENDING', 'APPROVED']
         ).exists()
-        
+
         if existing:
             return Response(
                 {'detail': f'Leave request already exists for {date}.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Check if attendance already exists
         attendance_exists = DailyAttendance.objects.filter(
             employee=employee,
@@ -529,13 +537,13 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         ).exclude(
             clock_in__isnull=True
         ).exists()
-        
+
         if attendance_exists:
             return Response(
                 {'detail': f'Attendance already recorded for {date}, cannot request leave.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Check leave balance
         year = date.year
         leave_balance, _ = LeaveBalance.objects.get_or_create(
@@ -546,30 +554,30 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                 'emergency_leave_total': 5,
             }
         )
-        
+
         if not leave_balance.can_take_leave(leave_type, days_count):
             return Response(
                 {'detail': f'Insufficient {leave_type.lower()} leave balance.\n Remaining balance: {leave_balance.get_remaining_balance(leave_type)}' },
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Deduct balance
         if leave_type == 'SICK':
             leave_balance.sick_leave_used += days_count
         elif leave_type == 'EMERGENCY':
             leave_balance.emergency_leave_used += days_count
         leave_balance.save()
-        
+
         # Create the leave request
         leave_request = LeaveRequest.objects.create(**validated_data)
-        
+
         # Return success response
         response_serializer = self.get_serializer(leave_request)
         return Response(
             response_serializer.data,
             status=status.HTTP_201_CREATED
         )
-    
+
     def perform_create(self, serializer):
         """Set the employee to the current user if not specified."""
         if self.request.user.role in ['admin']:
@@ -578,29 +586,29 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         else:
             # Regular employees can only create for themselves
             serializer.save(employee=self.request.user)
-    
+
     @action(detail=False, methods=['post'], permission_classes=[IsAdminOrManager])
     def approve(self, request):
         """
         Approve one or more leave requests.
-        
+
         Required fields:
         - leave_request_ids: List of leave request IDs to approve
         """
         from django.core.exceptions import ValidationError
-        
+
         serializer = ApproveLeaveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         leave_request_ids = serializer.validated_data['leave_request_ids']
         leave_requests = LeaveRequest.objects.filter(
             id__in=leave_request_ids,
             status='PENDING'
         )
-        
+
         approved_count = 0
         errors = []
-        
+
         for leave_request in leave_requests:
             try:
                 leave_request.approve(request.user)
@@ -615,7 +623,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                     'leave_request_id': leave_request.id,
                     'error': str(e)
                 })
-        
+
         if errors:
             return Response(
                 {
@@ -625,7 +633,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_400_BAD_REQUEST if approved_count == 0 else status.HTTP_200_OK
             )
-        
+
         return Response(
             {
                 'detail': f'{approved_count} leave request(s) approved successfully.',
@@ -633,33 +641,33 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
-        
-    
+
+
     @action(detail=False, methods=['post'], permission_classes=[IsAdminOrManager])
     def reject(self, request):
         """
         Reject one or more leave requests.
-        
+
         Required fields:
         - leave_request_ids: List of leave request IDs to reject
         - reason: Optional rejection reason
         """
         from django.core.exceptions import ValidationError
-        
+
         serializer = RejectLeaveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         leave_request_ids = serializer.validated_data['leave_request_ids']
         reason = serializer.validated_data.get('reason', '')
-        
+
         leave_requests = LeaveRequest.objects.filter(
             id__in=leave_request_ids,
             status='PENDING'
         )
-        
+
         rejected_count = 0
         errors = []
-        
+
         for leave_request in leave_requests:
             try:
                 leave_request.reject(request.user, reason=reason)
@@ -674,7 +682,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                     'leave_request_id': leave_request.id,
                     'error': str(e)
                 })
-        
+
         if errors:
             return Response(
                 {
@@ -684,7 +692,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_400_BAD_REQUEST if rejected_count == 0 else status.HTTP_200_OK
             )
-        
+
         return Response(
             {
                 'detail': f'{rejected_count} leave request(s) rejected successfully.',
@@ -692,7 +700,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
-    
+
     @action(detail=False, methods=["get"])
     def pending_approvals(self, request):
         """Get all pending attendance records (admin only)."""
@@ -718,21 +726,21 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
 
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
         """Cancel a pending or approved leave request (restore balance)."""
         from django.core.exceptions import ValidationError
-        
+
         leave_request = self.get_object()
-        
+
         # Only the employee or admin can cancel
         if leave_request.employee != request.user and request.user.role not in ['admin']:
             return Response(
                 {'detail': 'You do not have permission to cancel this leave request.'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         try:
             leave_request.cancel()
             return Response(
@@ -754,11 +762,11 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 class OffenseViewSet(viewsets.ModelViewSet):
     """
     ViewSet for offense management.
-    
+
     Permissions:
     - Admin/Manager: Full access (create, update, delete, view all)
     - Clerk/Technician: Read-only access to their own offenses
-    
+
     Endpoints:
     - GET /api/offenses/ - List all offenses (admin) or user's offenses (employee)
     - POST /api/offenses/ - Create offense (admin/manager only)
@@ -770,11 +778,11 @@ class OffenseViewSet(viewsets.ModelViewSet):
     """
     serializer_class = OffenseSerializer
     permission_classes = [IsAuthenticated]
-    
+
     def get_queryset(self):
         user = self.request.user
         queryset = Offense.objects.select_related('employee', 'created_by')
-        
+
         # Admins and managers can see all offenses
         if user.role in ['admin', 'manager']:
             # Optional filters
@@ -783,7 +791,7 @@ class OffenseViewSet(viewsets.ModelViewSet):
             severity_level = self.request.query_params.get('severity_level')
             date_from = self.request.query_params.get('date_from')
             date_to = self.request.query_params.get('date_to')
-            
+
             if employee_id:
                 queryset = queryset.filter(employee_id=employee_id)
             if offense_type:
@@ -797,9 +805,9 @@ class OffenseViewSet(viewsets.ModelViewSet):
         else:
             # Employees can only see their own offenses
             queryset = queryset.filter(employee=user)
-        
+
         return queryset.order_by('-date', '-created_at')
-    
+
     def create(self, request, *args, **kwargs):
         """Only admin/manager can create offenses."""
         if request.user.role not in ['admin', 'manager']:
@@ -807,14 +815,14 @@ class OffenseViewSet(viewsets.ModelViewSet):
                 {'detail': 'Only admin and manager can create offenses.'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         # Set the created_by field to the current user
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save(created_by=request.user)
-        
+
         return Response(serializer.data, status=status.HTTP_201_CREATED)
-    
+
     def update(self, request, *args, **kwargs):
         """Only admin/manager can update offenses."""
         if request.user.role not in ['admin', 'manager']:
@@ -823,7 +831,7 @@ class OffenseViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
         return super().update(request, *args, **kwargs)
-    
+
     def destroy(self, request, *args, **kwargs):
         """Only admin/manager can delete offenses."""
         if request.user.role not in ['admin', 'manager']:
@@ -832,14 +840,14 @@ class OffenseViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
         return super().destroy(request, *args, **kwargs)
-    
+
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
     def my_offenses(self, request):
         """Get current user's offenses (for employee view)."""
         offenses = self.get_queryset().filter(employee=request.user)
         serializer = self.get_serializer(offenses, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=False, methods=['get'], permission_classes=[IsAdminOrManager])
     def statistics(self, request):
         """
@@ -848,40 +856,40 @@ class OffenseViewSet(viewsets.ModelViewSet):
         - employee_id: Filter by specific employee
         - at_limit: Filter employees at or above offense limit (default: 3)
         """
-        from django.db.models import Count, Max
+        from django.db.models import Count
         from users.models import Employee
-        
+
         # Get filter parameters
         employee_id = request.query_params.get('employee_id')
         at_limit = request.query_params.get('at_limit', 'false').lower() == 'true'
         limit_threshold = int(request.query_params.get('limit_threshold', 3))
-        
+
         # Build base query
         employees = Employee.objects.filter(is_deleted=False)
         if employee_id:
             employees = employees.filter(id=employee_id)
-        
+
         # Build statistics
         statistics = []
         for employee in employees:
             offense_counts = Offense.objects.filter(employee=employee).values('offense_type').annotate(count=Count('id'))
             severity_counts = Offense.objects.filter(employee=employee).values('severity_level').annotate(count=Count('id'))
-            
+
             # Convert to dictionaries for easy access
             offense_dict = {item['offense_type']: item['count'] for item in offense_counts}
             severity_dict = {item['severity_level']: item['count'] for item in severity_counts}
-            
+
             total_offenses = Offense.get_offense_count(employee)
             is_at_limit = Offense.is_at_limit(employee, limit_threshold)
-            
+
             # Get last offense date
             last_offense = Offense.objects.filter(employee=employee).order_by('-date').first()
             last_offense_date = last_offense.date if last_offense else None
-            
+
             # Filter by limit if requested
             if at_limit and not is_at_limit:
                 continue
-            
+
             statistics.append({
                 'employee_id': employee.id,
                 'employee_name': employee.get_full_name(),
@@ -897,10 +905,10 @@ class OffenseViewSet(viewsets.ModelViewSet):
                 'is_at_limit': is_at_limit,
                 'last_offense_date': last_offense_date,
             })
-        
+
         serializer = OffenseStatisticsSerializer(statistics, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['get'])
     def offense_history(self, request, pk=None):
         """Get offense history for a specific employee."""
@@ -913,32 +921,32 @@ class OffenseViewSet(viewsets.ModelViewSet):
 class OvertimeRequestViewSet(viewsets.ModelViewSet):
     """
     ViewSet for overtime request management.
-    
+
     Permissions:
     - Admin/Manager: Can view all, approve/reject requests
     - Employees: Can view and create their own requests
     """
     permission_classes = [IsAuthenticated]
-    
+
     def get_serializer_class(self):
         if self.action == 'approve':
             return OvertimeRequestApproveSerializer
         return OvertimeRequestSerializer
-    
+
     def get_queryset(self):
         user = self.request.user
         queryset = OvertimeRequest.objects.all().select_related("employee", "approved_by")
-        
+
         # Filter by employee for non-admin/manager users
         if user.role not in ['admin', 'manager']:
             queryset = queryset.filter(employee=user)
-        
+
         # Filter parameters
         employee_id = self.request.query_params.get('employee')
         approved = self.request.query_params.get('approved')
         date_from = self.request.query_params.get('date_from')
         date_to = self.request.query_params.get('date_to')
-        
+
         if employee_id:
             queryset = queryset.filter(employee_id=employee_id)
         if approved is not None:
@@ -947,9 +955,9 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(date__gte=date_from)
         if date_to:
             queryset = queryset.filter(date__lte=date_to)
-        
+
         return queryset.order_by('-date', '-created_at')
-    
+
     def perform_create(self, serializer):
         """Create overtime request for the current user if not specified"""
         user = self.request.user
@@ -958,22 +966,29 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
             serializer.save(employee=user)
         else:
             serializer.save()
-    
+
     @action(detail=True, methods=['patch'], permission_classes=[IsAuthenticated])
     def approve(self, request, pk=None):
         """Approve or reject an overtime request"""
         overtime_request = self.get_object()
-        
+
         # Only admin/manager can approve
         if request.user.role not in ['admin', 'manager']:
             return Response(
                 {"detail": "You don't have permission to approve overtime requests."},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         serializer = self.get_serializer(overtime_request, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save(approved_by=request.user)
-        
-        return Response(serializer.data)
 
+        try:
+            serializer.save(approved_by=request.user)
+        except ValidationError as e:
+            # Catch validation error from signal (non-draft payroll exists)
+            return Response(
+                {"detail": str(e.message) if hasattr(e, 'message') else str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        return Response(serializer.data)

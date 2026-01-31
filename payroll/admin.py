@@ -39,7 +39,7 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
         "employee",
         "week_start",
         "regular_hours",
-        "overtime_hours",
+        "approved_ot_hours",
         "total_hours_display",
         "hourly_rate",
         "holiday_pay_total",
@@ -65,8 +65,6 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
     readonly_fields = (
 
         "regular_hours",
-
-        "overtime_hours",
 
         "night_diff_hours",
         "approved_ot_hours",
@@ -116,8 +114,6 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
                                 "fields": (
 
                                     "regular_hours",
-
-                                    "overtime_hours",
 
                                     "night_diff_hours",
                                     "approved_ot_hours",
@@ -177,7 +173,7 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
     def total_hours_display(self, obj: WeeklyPayroll) -> str:
         try:
             total = (obj.regular_hours or Decimal("0")) + (
-                obj.overtime_hours or Decimal("0")
+                obj.approved_ot_hours or Decimal("0")
             )
             return f"{Decimal(total).quantize(Decimal('0.01'))}"
         except Exception:
@@ -187,7 +183,7 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
     def total_hours_readonly(self, obj: WeeklyPayroll) -> str:
         try:
             total = (obj.regular_hours or Decimal("0")) + (
-                obj.overtime_hours or Decimal("0")
+                obj.approved_ot_hours or Decimal("0")
             )
             return f"{Decimal(total).quantize(Decimal('0.0001'))}"
         except Exception:
@@ -195,20 +191,18 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
 
 
 
-    @admin.action(description="Recompute from time entries")
+    @admin.action(description="Recompute from daily attendance")
     def recompute_from_time_entries(self, request, queryset):
         updated = 0
         for payroll in queryset:
 
-            payroll.compute_from_time_entries()
+            payroll.compute_from_daily_attendance()
 
             payroll.save(
 
                 update_fields=[
 
                     "regular_hours",
-
-                    "overtime_hours",
 
                     "night_diff_hours",
                     "approved_ot_hours",
@@ -218,6 +212,7 @@ class WeeklyPayrollAdmin(admin.ModelAdmin):
                     "night_diff_pay",
                     "approved_ot_pay",
                     "deductions",
+                    "deduction_metadata",
                     "total_deductions",
 
                     "net_pay",
@@ -299,17 +294,17 @@ class ManualDeductionAdmin(admin.ModelAdmin):
         "applied_date",
         "is_deleted",
     )
-    
+
     list_filter = ("deduction_type", "is_active", "is_deleted", "effective_date")
-    
+
     search_fields = ("name", "description", "employee__first_name", "employee__last_name")
-    
+
     date_hierarchy = "effective_date"
-    
+
     ordering = ("-created_at",)
-    
+
     raw_id_fields = ("employee", "created_by")
-    
+
     fieldsets = (
         (
             None,
@@ -347,25 +342,25 @@ class ManualDeductionAdmin(admin.ModelAdmin):
             },
         ),
     )
-    
+
     readonly_fields = ("created_at", "updated_at")
-    
+
     @admin.action(description="Mark as active")
     def mark_active(self, request, queryset):
         queryset.update(is_active=True)
-    
+
     @admin.action(description="Mark as inactive")
     def mark_inactive(self, request, queryset):
         queryset.update(is_active=False)
-    
+
     @admin.action(description="Soft delete selected deductions")
     def soft_delete(self, request, queryset):
         queryset.update(is_deleted=True)
-    
+
     @admin.action(description="Restore selected deductions")
     def restore(self, request, queryset):
         queryset.update(is_deleted=False)
-    
+
     actions = ("mark_active", "mark_inactive", "soft_delete", "restore")
 
 

@@ -1,17 +1,22 @@
-from decimal import Decimal
 from typing import Any, Dict
 
 from django.utils import timezone
 from rest_framework import serializers
-from attendance.models import DailyAttendance, LeaveBalance, LeaveRequest, Offense, OvertimeRequest
-from users.api.serializers import UserSerializer
 from users.models import CustomUser as User
+
+from attendance.models import (
+    DailyAttendance,
+    LeaveBalance,
+    LeaveRequest,
+    Offense,
+    OvertimeRequest,
+)
 
 
 class MinimalUserSerializer(serializers.ModelSerializer):
     """Minimal user details for nested serialization"""
     full_name = serializers.CharField(source='get_full_name', read_only=True)
-    
+
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'full_name']
@@ -23,7 +28,7 @@ class DailyAttendanceSerializer(serializers.ModelSerializer):
     approved_by_name = serializers.CharField(source='approved_by.get_full_name', read_only=True)
     attendance_type_display = serializers.CharField(source='get_attendance_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
-    
+
     class Meta:
         model = DailyAttendance
         fields = [
@@ -114,7 +119,7 @@ class LeaveBalanceSerializer(serializers.ModelSerializer):
     employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
     sick_leave_remaining = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
     emergency_leave_remaining = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
-    
+
     class Meta:
         model = LeaveBalance
         fields = [
@@ -141,7 +146,7 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     shift_period_display = serializers.CharField(source='get_shift_period_display', read_only=True)
     days_count = serializers.DecimalField(max_digits=3, decimal_places=1, read_only=True)
-    
+
     class Meta:
         model = LeaveRequest
         fields = [
@@ -199,7 +204,7 @@ class OffenseSerializer(serializers.ModelSerializer):
     offense_type_display = serializers.CharField(source='get_offense_type_display', read_only=True)
     severity_level_display = serializers.CharField(source='get_severity_level_display', read_only=True)
     offense_count = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Offense
         fields = [
@@ -224,16 +229,16 @@ class OffenseSerializer(serializers.ModelSerializer):
             'offense_count',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'suspension_end_date', 'severity_level']
-    
+
     def get_offense_count(self, obj):
         """Get total offense count for this employee"""
         return Offense.get_offense_count(obj.employee)
-    
+
     def create(self, validated_data):
         """Auto-calculate severity level based on existing offense count"""
         employee = validated_data['employee']
         offense_count = Offense.get_offense_count(employee)
-        
+
         # Determine severity based on offense count
         if offense_count == 0:
             validated_data['severity_level'] = 'WARNING'
@@ -241,9 +246,9 @@ class OffenseSerializer(serializers.ModelSerializer):
             validated_data['severity_level'] = 'SUSPENSION'
         else:
             validated_data['severity_level'] = 'TERMINATION'
-        
+
         return super().create(validated_data)
-    
+
     def update(self, instance, validated_data):
         """Prevent changing severity_level and offense_type when editing"""
         # Remove severity_level if present in validated_data
@@ -302,8 +307,20 @@ class OvertimeRequestSerializer(serializers.ModelSerializer):
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         time_start = attrs.get("time_start", getattr(self.instance, "time_start", None))
         time_end = attrs.get("time_end", getattr(self.instance, "time_end", None))
+        date = attrs.get("date", getattr(self.instance, "date", None))
+
+        # Validate time_end is after time_start
         if time_start and time_end and time_end <= time_start:
             raise serializers.ValidationError({"time_end": "time_end must be after time_start."})
+
+        # Validate date field matches time_start date
+        if time_start and date:
+            time_start_date = time_start.date() if hasattr(time_start, 'date') else time_start
+            if date != time_start_date:
+                raise serializers.ValidationError({
+                    "date": f"Date field ({date}) must match the date of time_start ({time_start_date})."
+                })
+
         return attrs
 
 
@@ -330,4 +347,3 @@ class OvertimeRequestApproveSerializer(serializers.ModelSerializer):
             instance.approved_at = timezone.now()
         instance.save(update_fields=["approved", "approved_by", "approved_at", "updated_at"])
         return instance
-

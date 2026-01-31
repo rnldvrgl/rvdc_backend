@@ -195,8 +195,8 @@ class WeeklyPayrollGenerateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Calculate hourly rate from basic_salary (per week) / 40 hours
-        hourly_rate = Decimal(employee.basic_salary) / Decimal('40.00')
+        # Calculate hourly rate from basic_salary (daily rate) / 8 hours per day
+        hourly_rate = Decimal(employee.basic_salary) / Decimal('8.00')
 
         # Check if payroll already exists
         existing = WeeklyPayroll.objects.filter(
@@ -234,7 +234,6 @@ class WeeklyPayrollGenerateView(APIView):
                 payroll.save(
                     update_fields=[
                         'regular_hours',
-                        'overtime_hours',
                         'night_diff_hours',
                         'approved_ot_hours',
                         'allowances',
@@ -246,6 +245,7 @@ class WeeklyPayrollGenerateView(APIView):
                         'holiday_pay_special',
                         'holiday_pay_total',
                         'deductions',
+                        'deduction_metadata',
                         'total_deductions',
                         'net_pay',
                         'updated_at',
@@ -341,8 +341,8 @@ class WeeklyPayrollPreviewView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Calculate hourly rate
-        hourly_rate = Decimal(employee.basic_salary) / Decimal('40.00')
+        # Calculate hourly rate from daily rate / 8 hours per day
+        hourly_rate = Decimal(employee.basic_salary) / Decimal('8.00')
 
         # Get attendance records
         attendance_qs = DailyAttendance.objects.filter(
@@ -357,7 +357,7 @@ class WeeklyPayrollPreviewView(APIView):
 
         # Calculate hours and penalties
         regular_hours_total = Decimal('0.00')
-        overtime_hours_total = Decimal('0.00')
+        per_day_overtime_total = Decimal('0.00')
         late_penalties_total = Decimal('0.00')
         attendance_breakdown = []
 
@@ -373,7 +373,7 @@ class WeeklyPayrollPreviewView(APIView):
                 daily_overtime = Decimal('0.00')
 
             regular_hours_total += daily_regular
-            overtime_hours_total += daily_overtime
+            per_day_overtime_total += daily_overtime
 
             if attendance.late_penalty_amount:
                 late_penalties_total += Decimal(attendance.late_penalty_amount)
@@ -383,14 +383,14 @@ class WeeklyPayrollPreviewView(APIView):
                 'attendance_type': attendance.attendance_type,
                 'paid_hours': float(paid_hours),
                 'regular_hours': float(daily_regular),
-                'overtime_hours': float(daily_overtime),
+                'per_day_overtime': float(daily_overtime),
                 'late_penalty': float(attendance.late_penalty_amount or 0),
             })
 
         overtime_multiplier = Decimal(getattr(settings_obj, 'overtime_multiplier', Decimal('1.50')) or '1.50')
 
-        # Calculate pay
-        base_pay = (regular_hours_total * hourly_rate) + (overtime_hours_total * hourly_rate * overtime_multiplier)
+        # Calculate pay (legacy per-day overtime calculation for preview)
+        base_pay = (regular_hours_total * hourly_rate) + (per_day_overtime_total * hourly_rate * overtime_multiplier)
 
         # Get additional earnings
         add_qs = employee.additional_earnings.filter(
@@ -424,7 +424,7 @@ class WeeklyPayrollPreviewView(APIView):
             'week_end': week_end,
             'hourly_rate': float(hourly_rate),
             'regular_hours': float(regular_hours_total),
-            'overtime_hours': float(overtime_hours_total),
+            'per_day_overtime': float(per_day_overtime_total),
             'overtime_multiplier': float(overtime_multiplier),
             'base_pay': float(base_pay),
             'additional_earnings': float(additional_total),
@@ -492,7 +492,6 @@ class WeeklyPayrollListCreateView(generics.ListCreateAPIView):
         instance.save(
             update_fields=[
                 "regular_hours",
-                "overtime_hours",
                 "night_diff_hours",
                 "approved_ot_hours",
                 "allowances",
@@ -504,6 +503,7 @@ class WeeklyPayrollListCreateView(generics.ListCreateAPIView):
                 "holiday_pay_special",
                 "holiday_pay_total",
                 "deductions",
+                "deduction_metadata",
                 "total_deductions",
                 "net_pay",
                 "updated_at",
@@ -536,7 +536,6 @@ class WeeklyPayrollDetailView(generics.RetrieveUpdateDestroyAPIView):
         instance.save(
             update_fields=[
                 "regular_hours",
-                "overtime_hours",
                 "night_diff_hours",
                 "approved_ot_hours",
                 "allowances",
@@ -548,6 +547,7 @@ class WeeklyPayrollDetailView(generics.RetrieveUpdateDestroyAPIView):
                 "holiday_pay_special",
                 "holiday_pay_total",
                 "deductions",
+                "deduction_metadata",
                 "total_deductions",
                 "net_pay",
                 "updated_at",
@@ -633,7 +633,7 @@ class WeeklyPayrollFiltersView(APIView):
     ordering_config = [
         {"label": "Week Start", "value": "week_start"},
         {"label": "Regular Hours", "value": "regular_hours"},
-        {"label": "OT Hours", "value": "overtime_hours"},
+        {"label": "Approved OT Hours", "value": "approved_ot_hours"},
         {"label": "Net Pay", "value": "net_pay"},
     ]
 
@@ -647,13 +647,20 @@ class WeeklyPayrollFiltersView(APIView):
 class WeeklyPayrollRecomputeView(APIView):
 
     """
-    POST to recompute a WeeklyPayroll from its time entries.
+    POST to recompute a WeeklyPayroll from daily attendance records.
 
     Request body (all optional):
-    - include_unapproved: bool
+    - include_unapproved: bool (include unapproved attendance records)
     - allowances: number
     - extra_flat_deductions: { name: number, ... }
     - percent_deductions: { name: number, ... }  # number is a rate (e.g., 0.12 for 12%)
+
+    This endpoint recalculates:
+    - Regular and overtime hours from daily attendance
+    - Approved overtime requests (1.25× rate)
+    - Holiday premiums
+    - Night differential
+    - All deductions
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -669,6 +676,13 @@ class WeeklyPayrollRecomputeView(APIView):
 
     def post(self, request, pk: int, *args, **kwargs):
         payroll = self.get_object(pk)
+
+        # Prevent recomputing payrolls that have been paid or received
+        if payroll.status in ['paid', 'received']:
+            return Response(
+                {"detail": "Cannot recompute payroll that has been paid or received."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         include_unapproved = bool(request.data.get("include_unapproved") or False)
 
@@ -730,7 +744,7 @@ class WeeklyPayrollRecomputeView(APIView):
                 )
 
         # Compute and persist
-        payroll.compute_from_time_entries(
+        payroll.compute_from_daily_attendance(
             include_unapproved=include_unapproved,
             allowances=allowances_dec,
             extra_flat_deductions=extra_flat or None,
@@ -741,10 +755,10 @@ class WeeklyPayrollRecomputeView(APIView):
         payroll.save(
             update_fields=[
                 "regular_hours",
-                "overtime_hours",
                 "night_diff_hours",
                 "approved_ot_hours",
                 "allowances",
+                "additional_earnings_total",
                 "gross_pay",
                 "night_diff_pay",
                 "approved_ot_pay",
@@ -752,16 +766,15 @@ class WeeklyPayrollRecomputeView(APIView):
                 "holiday_pay_special",
                 "holiday_pay_total",
                 "deductions",
+                "deduction_metadata",
                 "total_deductions",
                 "net_pay",
                 "updated_at",
-
             ]
         )
 
-
-
         data = WeeklyPayrollSerializer(payroll).data
+        print(data)
 
         return Response(data, status=status.HTTP_200_OK)
 
@@ -844,7 +857,7 @@ class WeeklyPayrollBulkGenerateView(APIView):
                 continue
 
             try:
-                hourly_rate = Decimal(employee.basic_salary) / Decimal('40.00')
+                hourly_rate = Decimal(employee.basic_salary) / Decimal('8.00')
                 overtime_multiplier = Decimal(getattr(settings_obj, 'overtime_multiplier', Decimal('1.50')) or '1.50')
 
                 with transaction.atomic():
@@ -861,11 +874,11 @@ class WeeklyPayrollBulkGenerateView(APIView):
                     payroll.compute_from_daily_attendance(include_unapproved=include_unapproved)
 
                     payroll.save(update_fields=[
-                        'regular_hours', 'overtime_hours', 'night_diff_hours',
+                        'regular_hours', 'night_diff_hours',
                         'approved_ot_hours', 'allowances', 'additional_earnings_total',
                         'gross_pay', 'night_diff_pay', 'approved_ot_pay',
                         'holiday_pay_regular', 'holiday_pay_special', 'holiday_pay_total',
-                        'deductions', 'total_deductions', 'net_pay', 'updated_at'
+                        'deductions', 'deduction_metadata', 'total_deductions', 'net_pay', 'updated_at'
                     ])
 
                     created.append(WeeklyPayrollSerializer(payroll).data)
@@ -1306,6 +1319,11 @@ class TaxBracketViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = TaxBracket.objects.select_related("created_by").all()
 
+        # Filter by bracket type
+        bracket_type = self.request.query_params.get("bracket_type")
+        if bracket_type:
+            queryset = queryset.filter(bracket_type=bracket_type)
+
         # Filter by active status
         is_active = self.request.query_params.get("is_active")
         if is_active is not None:
@@ -1321,7 +1339,7 @@ class TaxBracketViewSet(viewsets.ModelViewSet):
                 Q(effective_end__isnull=True) | Q(effective_end__gte=as_of_date)
             )
 
-        return queryset.order_by("min_income")
+        return queryset.order_by("bracket_type", "min_income")
 
     def perform_create(self, serializer):
         """Set created_by to current user"""
@@ -1333,12 +1351,17 @@ class TaxBracketViewSet(viewsets.ModelViewSet):
         from django.utils import timezone
         today = timezone.now().date()
 
+        # Allow filtering by bracket_type in active endpoint
+        bracket_type = request.query_params.get("bracket_type")
         qs = self.get_queryset().filter(
             is_active=True,
             effective_start__lte=today,
         ).filter(
             models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=today)
         )
+
+        if bracket_type:
+            qs = qs.filter(bracket_type=bracket_type)
 
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)

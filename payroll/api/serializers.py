@@ -9,7 +9,6 @@ from payroll.models import (
     GovernmentBenefit,
     Holiday,
     ManualDeduction,
-    PayrollDeduction,
     PayrollSettings,
     PercentageDeduction,
     TaxBracket,
@@ -189,9 +188,6 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
     received_by_detail = MinimalUserSerializer(source="received_by", read_only=True)
     status_display = serializers.CharField(source="get_status_display", read_only=True)
 
-    # Import here to avoid circular import
-    deduction_items = serializers.SerializerMethodField(read_only=True)
-
     class Meta:
         model = WeeklyPayroll
         fields = [
@@ -205,7 +201,6 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "overtime_threshold",
             "overtime_multiplier",
             "regular_hours",
-            "overtime_hours",
             "night_diff_hours",
             "approved_ot_hours",
             "total_hours",
@@ -218,7 +213,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "holiday_pay_special",
             "holiday_pay_total",
             "deductions",
-            "deduction_items",
+            "deduction_metadata",
             "total_deductions",
             "net_pay",
             "status",
@@ -238,7 +233,6 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "regular_hours",
-            "overtime_hours",
             "night_diff_hours",
             "approved_ot_hours",
             "total_hours",
@@ -304,21 +298,13 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
 
     def get_total_hours(self, obj: WeeklyPayroll) -> float:
         try:
+            # Total hours = regular hours + approved OT hours
             total = (obj.regular_hours or Decimal("0")) + (
-                obj.overtime_hours or Decimal("0")
+                obj.approved_ot_hours or Decimal("0")
             )
             return float(total)
         except Exception:
             return 0.0
-
-    def get_deduction_items(self, obj: WeeklyPayroll) -> list:
-        """Return structured deduction breakdown."""
-        try:
-            from payroll.api.serializers_additions import PayrollDeductionSerializer
-            deduction_items = obj.deduction_items.all().order_by('category', 'name')
-            return PayrollDeductionSerializer(deduction_items, many=True).data
-        except Exception:
-            return []
 
 
 
@@ -427,6 +413,7 @@ class TaxBracketSerializer(serializers.ModelSerializer):
         model = TaxBracket
         fields = [
             "id",
+            "bracket_type",
             "min_income",
             "max_income",
             "base_tax",
@@ -510,6 +497,7 @@ class GovernmentBenefitSerializer(serializers.ModelSerializer):
             'benefit_type',
             'name',
             'calculation_method',
+            'period_type',
             'employee_share_amount',
             'employee_share_rate',
             'employer_share_amount',
@@ -571,38 +559,3 @@ class GovernmentBenefitSerializer(serializers.ModelSerializer):
             })
 
         return attrs
-
-
-class PayrollDeductionSerializer(serializers.ModelSerializer):
-    """
-    Read-only serializer for PayrollDeduction line items.
-    These are auto-generated and should not be created/updated directly.
-    """
-
-    total_amount = serializers.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        read_only=True,
-        help_text="employee_share + employer_share"
-    )
-
-    class Meta:
-        model = PayrollDeduction
-        fields = [
-            'id',
-            'payroll',
-            'category',
-            'name',
-            'description',
-            'employee_share',
-            'employer_share',
-            'total_amount',
-            'source_type',
-            'source_id',
-            'calculation_method',
-            'basis_amount',
-            'rate',
-            'applied_date',
-            'created_at',
-        ]
-        read_only_fields = fields  # All fields are read-only

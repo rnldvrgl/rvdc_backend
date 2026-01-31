@@ -4,19 +4,18 @@ from decimal import ROUND_HALF_UP, Decimal
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.utils import timezone
 from django.utils.timezone import get_current_timezone, make_aware
 
 
 class AdditionalEarning(models.Model):
     """
     Additional earnings for an employee within a given date.
-    Can represent manual overtime pay, installation percentages, or any custom payout.
+    Can represent installation percentages or any custom payout.
     These are included in weekly payroll computations if approved and within the week range.
+    Note: Overtime pay is calculated automatically from attendance records, not added here.
     """
 
     EARNING_TYPES = [
-        ("overtime", "Overtime"),
         ("installation_pct", "Installation Percentage"),
         ("custom", "Custom"),
     ]
@@ -153,9 +152,24 @@ class ManualDeduction(models.Model):
 class TaxBracket(models.Model):
     """
     Progressive tax brackets for withholding tax computation.
+    Supports different bracket types (BIR, SSS, PhilHealth, Pag-IBIG, etc.)
     Example: 0-20833 = 0%, 20834-33332 = 20%, etc.
     """
 
+    BRACKET_TYPES = [
+        ("bir", "BIR Withholding Tax"),
+        ("sss", "SSS Contribution"),
+        ("philhealth", "PhilHealth Contribution"),
+        ("pagibig", "Pag-IBIG Contribution"),
+        ("custom", "Custom Tax/Contribution"),
+    ]
+
+    bracket_type = models.CharField(
+        max_length=32,
+        choices=BRACKET_TYPES,
+        default="bir",
+        help_text="Type of tax bracket (BIR, SSS, PhilHealth, Pag-IBIG, etc.)"
+    )
     min_income = models.DecimalField(
         max_digits=12,
         decimal_places=2,
@@ -199,8 +213,9 @@ class TaxBracket(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['min_income']
+        ordering = ['bracket_type', 'min_income']
         indexes = [
+            models.Index(fields=['bracket_type', 'effective_start', 'is_active']),
             models.Index(fields=['effective_start', 'is_active']),
         ]
 
@@ -209,11 +224,13 @@ class TaxBracket(models.Model):
         return f"₱{self.min_income} - {max_display}: {self.rate*100}%"
 
     @staticmethod
-    def compute_tax(gross_income: Decimal, as_of_date: date) -> Decimal:
+    def compute_tax(gross_income: Decimal, as_of_date: date, bracket_type: str = "bir") -> Decimal:
         """
         Compute progressive withholding tax for given gross income.
+        Defaults to BIR withholding tax if bracket_type not specified.
         """
         brackets = TaxBracket.objects.filter(
+            bracket_type=bracket_type,
             is_active=True,
             effective_start__lte=as_of_date,
         ).filter(
@@ -305,9 +322,22 @@ class GovernmentBenefit(models.Model):
         ('progressive_tax', 'Progressive Tax Bracket'),
     ]
 
+    PERIOD_TYPES = [
+        ('weekly', 'Weekly (amount as-is)'),
+        ('monthly', 'Monthly (divide by 4 for weekly payroll)'),
+    ]
+
     benefit_type = models.CharField(max_length=20, choices=BENEFIT_TYPES)
     name = models.CharField(max_length=100, help_text="Display name (e.g., 'SSS Contribution')")
     calculation_method = models.CharField(max_length=20, choices=CALCULATION_METHODS)
+
+    # Period type for fixed amounts
+    period_type = models.CharField(
+        max_length=10,
+        choices=PERIOD_TYPES,
+        default='monthly',
+        help_text="Whether the fixed amount is monthly (divide by 4) or weekly (as-is)"
+    )
 
     # For fixed amount method
     employee_share_amount = models.DecimalField(
@@ -315,14 +345,14 @@ class GovernmentBenefit(models.Model):
         decimal_places=2,
         null=True,
         blank=True,
-        help_text="Fixed employee contribution amount (weekly)"
+        help_text="Fixed employee contribution amount (monthly or weekly based on period_type)"
     )
     employer_share_amount = models.DecimalField(
         max_digits=12,
         decimal_places=2,
         null=True,
         blank=True,
-        help_text="Fixed employer contribution amount (weekly)"
+        help_text="Fixed employer contribution amount (monthly or weekly based on period_type)"
     )
 
     # For percentage method
@@ -373,9 +403,16 @@ class GovernmentBenefit(models.Model):
         return f"{self.get_benefit_type_display()} - {self.name} ({self.effective_start})"
 
     def compute_employee_share(self, gross_pay: Decimal) -> Decimal:
-        """Compute employee's share of this benefit"""
+        """
+        Compute employee's share of this benefit.
+        For fixed amounts with period_type='monthly', divides by 4 for weekly payroll.
+        """
         if self.calculation_method == 'fixed':
-            return Decimal(self.employee_share_amount or 0)
+            amount = Decimal(self.employee_share_amount or 0)
+            # If monthly, divide by 4 for weekly payroll
+            if self.period_type == 'monthly':
+                amount = amount / Decimal('4.00')
+            return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         elif self.calculation_method == 'percentage':
             return (gross_pay * Decimal(self.employee_share_rate or 0)).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -386,9 +423,16 @@ class GovernmentBenefit(models.Model):
         return Decimal("0.00")
 
     def compute_employer_share(self, gross_pay: Decimal) -> Decimal:
-        """Compute employer's share of this benefit"""
+        """
+        Compute employer's share of this benefit.
+        For fixed amounts with period_type='monthly', divides by 4 for weekly payroll.
+        """
         if self.calculation_method == 'fixed':
-            return Decimal(self.employer_share_amount or 0)
+            amount = Decimal(self.employer_share_amount or 0)
+            # If monthly, divide by 4 for weekly payroll
+            if self.period_type == 'monthly':
+                amount = amount / Decimal('4.00')
+            return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         elif self.calculation_method == 'percentage':
             return (gross_pay * Decimal(self.employer_share_rate or 0)).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -400,15 +444,16 @@ class GovernmentBenefit(models.Model):
 class WeeklyPayroll(models.Model):
 
     """
-    A weekly payroll summary for an emploee.
+    A weekly payroll summary for an employee.
 
-    - week_start: The date representing the start of the payroll week (e.g., Monday).
+    - week_start: The date representing the start of the payroll week (e.g., Saturday).
     - Computation is weekly: regular up to overtime_threshold hours; remainder = overtime.
     - Deductions can include percent and flat components by name in the JSON field.
     - Night differential: 22:00–06:00 hours × hourly_rate × 0.10
     - Approved OT: approved overtime requests × hourly_rate × 1.25
 
-    Use compute_from_time_entries() to recompute based on approved TimeEntry rows.
+    Use compute_from_daily_attendance() to recompute based on approved DailyAttendance records.
+    Legacy method compute_from_time_entries() exists for backward compatibility.
     """
 
     STATUS_CHOICES = [
@@ -438,9 +483,6 @@ class WeeklyPayroll(models.Model):
 
     # Hours snapshot
     regular_hours = models.DecimalField(
-        max_digits=6, decimal_places=2, default=Decimal("0.00")
-    )
-    overtime_hours = models.DecimalField(
         max_digits=6, decimal_places=2, default=Decimal("0.00")
     )
     # Night differential fields (computed)
@@ -483,6 +525,10 @@ class WeeklyPayroll(models.Model):
     deductions = models.JSONField(
         default=dict,
         help_text='Map of deduction name -> amount. Example: {"Tax": 120.55, "Benefits": 35.00}',
+    )
+    deduction_metadata = models.JSONField(
+        default=dict,
+        help_text='Metadata for deductions including source info. Example: {"loan": {"source_type": "ManualDeduction", "source_id": 123, "category": "manual"}}',
     )
     total_deductions = models.DecimalField(
         max_digits=12, decimal_places=2, default=Decimal("0.00")
@@ -550,362 +596,6 @@ class WeeklyPayroll(models.Model):
         self.deductions = d
         self.total_deductions = self._q(sum(Decimal(x) for x in d.values()))
 
-    def compute_from_time_entries(
-        self,
-        *,
-        include_unapproved: bool = False,
-        allowances: Decimal | None = None,
-        extra_flat_deductions: dict[str, Decimal] | None = None,
-        percent_deductions: dict[str, Decimal] | None = None,
-    ):
-        """
-        Recompute hours and pay based on time entries within [week_start, week_end).
-
-        - include_unapproved: include unapproved time entries if True.
-        - allowances: override allowances for this computation (optional).
-        - extra_flat_deductions: dict of additional flat deductions.
-        - percent_deductions: dict of percentage rates to apply on gross (e.g., {'Tax': 0.12}).
-
-        Also computes:
-        - Night differential hours (22:00–06:00) and pay at 10% of hourly rate.
-        - Approved overtime request hours and pay at 1.25× hourly rate.
-        """
-        start_dt = self._week_start_as_datetime(self.week_start)
-        end_dt = self._week_start_as_datetime(self.week_end)
-
-        entries = self.employee.time_entries.filter(
-            is_deleted=False, clock_in__gte=start_dt, clock_in__lt=end_dt
-        )
-        if not include_unapproved:
-            entries = entries.filter(approved=True)
-
-        total_hours = sum((e.effective_hours for e in entries), Decimal("0"))
-        total_hours = self._q(total_hours, places=2)
-
-        reg_hours = min(total_hours, self.overtime_threshold or Decimal("40.00"))
-        ot_hours = max(total_hours - reg_hours, Decimal("0"))
-
-        self.regular_hours = self._q(reg_hours)
-        self.overtime_hours = self._q(ot_hours)
-
-        # Night differential hours: compute overlap with 22:00–06:00 per TimeEntry
-        def _overlap(a_start: datetime, a_end: datetime, b_start: datetime, b_end: datetime) -> timedelta:
-            start = max(a_start, b_start)
-            end = min(a_end, b_end)
-            return max(timedelta(0), end - start)
-
-        night_hours_total = Decimal("0")
-        for e in entries:
-            # Iterate per day spanned by the entry
-            cur_start = e.clock_in
-            cur_end = e.clock_out
-            # Normalize to aware datetimes
-            a_start = timezone.localtime(cur_start) if timezone.is_aware(cur_start) else cur_start
-            a_end = timezone.localtime(cur_end) if timezone.is_aware(cur_end) else cur_end
-            cur = a_start
-            while cur < a_end:
-                day = cur.date()
-                tz = timezone.get_current_timezone() if settings.USE_TZ else None
-                # 22:00–24:00 of day
-                night1_start = datetime.combine(day, time(22, 0))
-                night1_end = datetime.combine(day, time(23, 59, 59)) + timedelta(seconds=1)
-                # 00:00–06:00 of next day
-                next_day = day + timedelta(days=1)
-                night2_start = datetime.combine(next_day, time(0, 0))
-                night2_end = datetime.combine(next_day, time(6, 0))
-                # If using TZ, localize windows
-                if settings.USE_TZ and tz:
-                    night1_start = tz.localize(night1_start)
-                    night1_end = tz.localize(night1_end)
-                    night2_start = tz.localize(night2_start)
-                    night2_end = tz.localize(night2_end)
-                seg1 = _overlap(a_start, a_end, night1_start, night1_end)
-                seg2 = _overlap(a_start, a_end, night2_start, night2_end)
-                night_hours_total += Decimal(seg1.total_seconds() + seg2.total_seconds()) / Decimal(3600)
-                # advance to next_day 06:00 to avoid infinite loop
-                cur = night2_end
-
-        self.night_diff_hours = self._q(night_hours_total, places=2)
-
-        # Gross (regular + weekly overtime threshold)
-        hr = Decimal(self.hourly_rate or 0)
-        ot_mult = Decimal(self.overtime_multiplier or Decimal("1.50"))
-        base = (self.regular_hours * hr) + (self.overtime_hours * hr * ot_mult)
-
-        # Night diff pay: 10% of hourly rate per night hours
-        self.night_diff_pay = self._q(self.night_diff_hours * hr * Decimal("0.10"))
-
-        self.allowances = self._q(
-            Decimal(allowances)
-            if allowances is not None
-            else Decimal(self.allowances or 0)
-        )
-
-        # Include approved AdditionalEarning within the week range
-        add_qs = self.employee.additional_earnings.filter(
-            is_deleted=False,
-            earning_date__gte=self.week_start,
-            earning_date__lte=self.week_end,
-        )
-        if not include_unapproved:
-            add_qs = add_qs.filter(approved=True)
-
-        additional_total = sum((Decimal(e.amount) for e in add_qs), Decimal("0"))
-        self.additional_earnings_total = self._q(additional_total)
-
-        # Approved Overtime Requests in range: compute hours and pay (1.25x)
-        try:
-            from payroll.models import (
-                OvertimeRequest,  # local import to avoid circular issues during migrations
-            )
-            ot_req_qs = OvertimeRequest.objects.filter(
-                employee=self.employee,
-                approved=True,
-                time_start__gte=start_dt,
-                time_end__lt=end_dt,
-            )
-            approved_ot_hours_total = Decimal("0")
-            for req in ot_req_qs:
-                span = req.time_end - req.time_start
-                approved_ot_hours_total += Decimal(span.total_seconds()) / Decimal(3600)
-            self.approved_ot_hours = self._q(approved_ot_hours_total, places=2)
-            self.approved_ot_pay = self._q(self.approved_ot_hours * hr * Decimal("1.25"))
-        except Exception:
-            # If model not ready yet (during initial migration), default to zero
-            self.approved_ot_hours = self._q(Decimal("0"), places=2)
-            self.approved_ot_pay = self._q(Decimal("0"))
-
-        # Compute holiday premiums (regular and special non-working)
-        # Build worked-hours-per-date map for this week
-        from collections import defaultdict
-        worked_hours_by_date: dict[date, Decimal] = defaultdict(lambda: Decimal("0"))
-        for e in entries:
-            a_start = timezone.localtime(e.clock_in) if timezone.is_aware(e.clock_in) else e.clock_in
-            a_end = timezone.localtime(e.clock_out) if timezone.is_aware(e.clock_out) else e.clock_out
-            cur = a_start
-            while cur < a_end:
-                day = cur.date()
-                # Day window: [00:00, 24:00) local
-                day_start = datetime.combine(day, time(0, 0))
-                next_day = day + timedelta(days=1)
-                day_end = datetime.combine(next_day, time(0, 0))
-                if settings.USE_TZ:
-                    tz = timezone.get_current_timezone()
-                    day_start = tz.localize(day_start)
-                    day_end = tz.localize(day_end)
-                seg = _overlap(a_start, a_end, day_start, day_end)
-                worked_hours_by_date[day] += max(Decimal("0"), Decimal(seg.total_seconds()) / Decimal(3600))
-                cur = day_end
-
-        # Default settings
-        try:
-            settings_obj = PayrollSettings.objects.first()
-        except Exception:
-            settings_obj = None
-
-        day_hours = Decimal(getattr(settings_obj, "holiday_day_hours", Decimal("8.00")) or "8.00")
-        reg_pct = Decimal(getattr(settings_obj, "holiday_regular_pct", Decimal("1.00")) or "1.00")
-        spec_pct = Decimal(getattr(settings_obj, "holiday_special_pct", Decimal("0.30")) or "0.30")
-        reg_no_work = bool(getattr(settings_obj, "regular_holiday_no_work_pays", True))
-        spec_no_work = bool(getattr(settings_obj, "special_holiday_no_work_pays", False))
-
-        daily_rate = hr * (day_hours or Decimal("0"))
-
-        # Reset holiday fields
-        self.holiday_pay_regular = self._q(Decimal("0"))
-        self.holiday_pay_special = self._q(Decimal("0"))
-
-        # Fetch holidays in range
-        try:
-            from payroll.models import Holiday
-            holidays = Holiday.objects.filter(
-                is_deleted=False, date__gte=self.week_start, date__lte=self.week_end
-            )
-        except Exception:
-            holidays = []
-
-        for h in holidays:
-            d = h.date
-            worked = worked_hours_by_date.get(d, Decimal("0"))
-            fraction = Decimal("0")
-            if day_hours and day_hours > 0:
-                fraction = (worked / day_hours)
-                if fraction > Decimal("1"):
-                    fraction = Decimal("1")
-
-            if h.kind == "regular":
-                if worked > 0:
-                    add = daily_rate * reg_pct * fraction
-                else:
-                    add = (daily_rate * reg_pct) if reg_no_work else Decimal("0")
-                self.holiday_pay_regular = self._q(self.holiday_pay_regular + add)
-            elif h.kind == "special_non_working":
-                if worked > 0:
-                    add = daily_rate * spec_pct * fraction
-                else:
-                    add = (daily_rate * spec_pct) if spec_no_work else Decimal("0")
-                self.holiday_pay_special = self._q(self.holiday_pay_special + add)
-
-        self.holiday_pay_total = self._q(self.holiday_pay_regular + self.holiday_pay_special)
-
-        # Final gross = base + allowances + additional earnings + night diff + approved OT + holiday premiums
-        self.gross_pay = self._q(
-            base + self.allowances + self.additional_earnings_total + self.night_diff_pay + self.approved_ot_pay + self.holiday_pay_total
-        )
-
-
-        # Deductions
-
-        deductions_map: dict[str, Decimal] = {
-
-            k: Decimal(v) for k, v in (self.deductions or {}).items()
-
-        }
-
-        # Apply manual deductions
-        try:
-            from payroll.models import ManualDeduction
-
-            # Get per_employee deductions for this employee
-            per_employee_deductions = ManualDeduction.objects.filter(
-                is_deleted=False,
-                is_active=True,
-                deduction_type='per_employee',
-                employee=self.employee,
-            )
-
-            for deduction in per_employee_deductions:
-                # Determine if this is one-time or recurring:
-                # One-time: has effective_date but NO end_date (applied once)
-                # Recurring: has effective_date AND end_date (applied multiple times)
-
-                if deduction.end_date is None:
-                    # One-time deduction: apply once if not yet applied
-                    should_apply = False
-
-                    if deduction.effective_date is None:
-                        # No effective_date: apply to next payroll if not yet applied
-                        if deduction.applied_date is None:
-                            should_apply = True
-                    else:
-                        # Has effective_date: apply if effective_date <= week_end and not yet applied
-                        if deduction.effective_date <= self.week_end and deduction.applied_date is None:
-                            should_apply = True
-
-                    if should_apply:
-                        key = self._generate_deduction_key(deduction.name, deductions_map)
-                        deductions_map[key] = self._q(Decimal(deduction.amount))
-                        # Note: Don't mark as applied here - only mark when payroll is approved
-                else:
-                    # Recurring deduction: apply if within effective date range
-                    if deduction.effective_date and deduction.effective_date <= self.week_end:
-                        # Check if still within end_date range
-                        if deduction.end_date >= self.week_start:
-                            key = self._generate_deduction_key(deduction.name, deductions_map)
-                            deductions_map[key] = self._q(Decimal(deduction.amount))
-
-            # Get recurring_all deductions that apply to all employees
-            recurring_all = ManualDeduction.objects.filter(
-                is_deleted=False,
-                is_active=True,
-                deduction_type='recurring_all',
-                effective_date__isnull=False,
-                effective_date__lte=self.week_end,
-            ).filter(
-                models.Q(end_date__isnull=True) | models.Q(end_date__gte=self.week_start)
-            )
-
-            for deduction in recurring_all:
-                key = self._generate_deduction_key(deduction.name, deductions_map)
-                deductions_map[key] = self._q(Decimal(deduction.amount))
-
-            # Get onetime_all deductions that haven't been applied yet
-            # For onetime_all, if no effective_date, apply once in next payroll
-            # If effective_date is set, apply in that specific week
-            onetime_all = ManualDeduction.objects.filter(
-                is_deleted=False,
-                is_active=True,
-                deduction_type='onetime_all',
-            )
-
-            for deduction in onetime_all:
-                should_apply = False
-
-                # If no effective_date, apply once if not yet applied
-                if deduction.effective_date is None:
-                    if deduction.applied_date is None:
-                        should_apply = True
-                else:
-                    # If effective_date is set, apply only in the week containing that date
-                    if (deduction.effective_date >= self.week_start and
-                        deduction.effective_date < self.week_end):
-                        if deduction.applied_date is None or deduction.applied_date == self.week_start:
-                            should_apply = True
-
-                if should_apply:
-                    key = self._generate_deduction_key(deduction.name, deductions_map)
-                    deductions_map[key] = self._q(Decimal(deduction.amount))
-                    # Note: Don't mark as applied here - only mark when payroll is approved
-
-        except Exception as e:
-            # Log error but don't fail payroll computation
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Error applying manual deductions: {e}")
-
-        # Apply percentage-based deductions (HDMF savings, etc.)
-        try:
-            from payroll.models import PercentageDeduction
-
-            percentage_deductions = PercentageDeduction.objects.filter(
-                is_active=True,
-                effective_start__lte=self.week_start,
-            ).filter(
-                models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
-            )
-
-            for pct_deduction in percentage_deductions:
-                key = pct_deduction.name.lower().replace(' ', '_')
-                if key not in deductions_map:
-                    deductions_map[key] = self._q(self.gross_pay * Decimal(pct_deduction.rate))
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Error applying percentage deductions: {e}")
-
-        # Apply statutory weekly deductions based on DeductionRate effective for this week_start
-        try:
-            # Find active rates whose effective window covers this payroll week_start
-            statutory_qs = DeductionRate.objects.filter(
-                name__in=["sss", "philhealth", "pagibig"],
-                effective_start__lte=self.week_start,
-            ).filter(models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start))
-            for rate in statutory_qs:
-                # Do not overwrite if a manual value was already set for this name
-                if rate.name not in deductions_map:
-                    deductions_map[rate.name] = self._q(Decimal(rate.amount or 0))
-        except Exception:
-            # If anything fails, keep existing deductions_map intact
-            pass
-
-        if percent_deductions:
-            for name, rate in percent_deductions.items():
-                deductions_map[name] = self._q(self.gross_pay * Decimal(rate or 0))
-
-        if extra_flat_deductions:
-
-            for name, amt in extra_flat_deductions.items():
-
-                deductions_map[name] = self._q(Decimal(amt or 0))
-
-
-
-        self.deductions = {k: float(self._q(v)) for k, v in deductions_map.items()}
-
-        self.total_deductions = self._q(sum(self.deductions.values()))
-
-        self.net_pay = self._q(self.gross_pay - self.total_deductions)
-
     def compute_from_daily_attendance(
         self,
         *,
@@ -933,8 +623,6 @@ class WeeklyPayroll(models.Model):
 
         from attendance.models import DailyAttendance
 
-        start_dt = self._week_start_as_datetime(self.week_start)
-        end_dt = self._week_start_as_datetime(self.week_end)
 
         # Get daily attendance records for this week
         attendance_qs = DailyAttendance.objects.filter(
@@ -949,39 +637,47 @@ class WeeklyPayroll(models.Model):
 
         # Track hours and penalties per day
         regular_hours_total = Decimal('0.00')
-        overtime_hours_total = Decimal('0.00')
         late_penalties_total = Decimal('0.00')
 
         for attendance in attendance_qs:
             paid_hours = Decimal(attendance.paid_hours or 0)
 
-            # Per-day overtime: >8 paid hours = overtime at 1.5×
-            if paid_hours > Decimal('8.00'):
-                daily_regular = Decimal('8.00')
-                daily_overtime = paid_hours - Decimal('8.00')
-            else:
-                daily_regular = paid_hours
-                daily_overtime = Decimal('0.00')
-
-            regular_hours_total += daily_regular
-            overtime_hours_total += daily_overtime
+            # All hours count as regular hours - overtime must be approved via OvertimeRequest
+            regular_hours_total += paid_hours
 
             # Accumulate late penalties
             if attendance.late_penalty_amount:
                 late_penalties_total += Decimal(attendance.late_penalty_amount)
 
         self.regular_hours = self._q(regular_hours_total)
-        self.overtime_hours = self._q(overtime_hours_total)
 
-        # Compute base pay
+        # Compute base pay (regular hours only)
         hr = Decimal(self.hourly_rate or 0)
-        ot_mult = Decimal(self.overtime_multiplier or Decimal('1.50'))
-        base_pay = (self.regular_hours * hr) + (self.overtime_hours * hr * ot_mult)
+        base_pay = self.regular_hours * hr
 
-        # Night differential (still computed from TimeEntry if needed for compatibility)
-        # Or set to zero if you want to rely only on DailyAttendance
-        self.night_diff_hours = Decimal('0.00')
-        self.night_diff_pay = Decimal('0.00')
+        # Night differential - Calculate from DailyAttendance clock times
+        night_diff_hours_total = Decimal('0.00')
+        night_diff_rate = Decimal('0.10')  # 10% additional pay for night hours (22:00-06:00)
+
+        try:
+            from payroll.models import PayrollSettings
+            settings = PayrollSettings.objects.first()
+            if settings and settings.night_diff_multiplier:
+                night_diff_rate = Decimal(settings.night_diff_multiplier)
+        except Exception:
+            pass
+
+        for attendance in attendance_qs:
+            if attendance.clock_in and attendance.clock_out:
+                # Calculate night differential hours (22:00 - 06:00)
+                night_hours = self._calculate_night_diff_hours(
+                    attendance.clock_in,
+                    attendance.clock_out
+                )
+                night_diff_hours_total += night_hours
+
+        # Note: night_diff_hours_total is updated both from DailyAttendance and OvertimeRequest
+        # We'll set the final values after processing both sources
 
         # Allowances
         self.allowances = self._q(
@@ -1002,22 +698,42 @@ class WeeklyPayroll(models.Model):
 
         # Approved overtime requests (from OvertimeRequest model)
         try:
-            from payroll.models import OvertimeRequest
+            from attendance.models import OvertimeRequest
+            from django.db.models import Q
+
+            # Create start and end datetime for the week
+            start_dt = self._week_start_as_datetime(self.week_start)
+            end_dt = self._week_start_as_datetime(self.week_end)
+            # Add one day to end_dt to make it inclusive
+            end_dt = end_dt + timedelta(days=1)
+
+            # Query by date field OR by time_start date (fallback for inconsistent data)
             ot_req_qs = OvertimeRequest.objects.filter(
                 employee=self.employee,
                 approved=True,
-                time_start__gte=start_dt,
-                time_end__lt=end_dt,
+            ).filter(
+                Q(date__gte=self.week_start, date__lte=self.week_end) |
+                Q(time_start__gte=start_dt, time_start__lt=end_dt)
             )
+
             approved_ot_hours_total = Decimal('0')
             for req in ot_req_qs:
                 span = req.time_end - req.time_start
                 approved_ot_hours_total += Decimal(span.total_seconds()) / Decimal(3600)
+
+                # Also calculate night differential hours for this overtime request
+                ot_night_hours = self._calculate_night_diff_hours(req.time_start, req.time_end)
+                night_diff_hours_total += ot_night_hours
+
             self.approved_ot_hours = self._q(approved_ot_hours_total, places=2)
             self.approved_ot_pay = self._q(self.approved_ot_hours * hr * Decimal('1.25'))
         except Exception:
             self.approved_ot_hours = Decimal('0.00')
             self.approved_ot_pay = Decimal('0.00')
+
+        # Set final night differential values (after processing both attendance and OT)
+        self.night_diff_hours = self._q(night_diff_hours_total)
+        self.night_diff_pay = self._q(self.night_diff_hours * hr * night_diff_rate)
 
         # Holiday premiums (compute based on worked days from DailyAttendance)
         try:
@@ -1082,14 +798,17 @@ class WeeklyPayroll(models.Model):
             self.night_diff_pay + self.approved_ot_pay + self.holiday_pay_total
         )
 
-        # Deductions
-        deductions_map: dict[str, Decimal] = {
-            k: Decimal(v) for k, v in (self.deductions or {}).items()
-        }
+        # Deductions - Start fresh on recompute (don't use existing deductions)
+        deductions_map: dict[str, Decimal] = {}
+        deduction_metadata_map: dict[str, dict] = {}
 
         # Add late penalties as a deduction
         if late_penalties_total > 0:
             deductions_map['late_penalty'] = self._q(late_penalties_total)
+            deduction_metadata_map['late_penalty'] = {
+                'source_type': 'DailyAttendance',
+                'category': 'late_penalty',
+            }
 
         # Apply manual deductions
         try:
@@ -1117,13 +836,21 @@ class WeeklyPayroll(models.Model):
                         if deduction.applied_date is None:
                             should_apply = True
                     else:
-                        # Has effective_date: apply if effective_date <= week_end and not yet applied
-                        if deduction.effective_date <= self.week_end and deduction.applied_date is None:
+                        # Has effective_date: apply if effective_date falls within this payroll period
+                        # and not yet applied
+                        if (deduction.effective_date >= self.week_start and
+                            deduction.effective_date <= self.week_end and
+                            deduction.applied_date is None):
                             should_apply = True
 
                     if should_apply:
                         key = self._generate_deduction_key(deduction.name, deductions_map)
                         deductions_map[key] = self._q(Decimal(deduction.amount))
+                        deduction_metadata_map[key] = {
+                            'source_type': 'ManualDeduction',
+                            'source_id': deduction.id,
+                            'category': 'manual',
+                        }
                         # Note: Don't mark as applied here - only mark when payroll is approved
                 else:
                     # Recurring deduction: apply if within effective date range
@@ -1132,6 +859,11 @@ class WeeklyPayroll(models.Model):
                         if deduction.end_date >= self.week_start:
                             key = self._generate_deduction_key(deduction.name, deductions_map)
                             deductions_map[key] = self._q(Decimal(deduction.amount))
+                            deduction_metadata_map[key] = {
+                                'source_type': 'ManualDeduction',
+                                'source_id': deduction.id,
+                                'category': 'manual',
+                            }
 
             # Get recurring_all deductions that apply to all employees
             recurring_all = ManualDeduction.objects.filter(
@@ -1147,6 +879,11 @@ class WeeklyPayroll(models.Model):
             for deduction in recurring_all:
                 key = self._generate_deduction_key(deduction.name, deductions_map)
                 deductions_map[key] = self._q(Decimal(deduction.amount))
+                deduction_metadata_map[key] = {
+                    'source_type': 'ManualDeduction',
+                    'source_id': deduction.id,
+                    'category': 'manual',
+                }
 
             # Get onetime_all deductions that haven't been applied yet
             # For onetime_all, if no effective_date, apply once in next payroll
@@ -1174,6 +911,11 @@ class WeeklyPayroll(models.Model):
                 if should_apply:
                     key = self._generate_deduction_key(deduction.name, deductions_map)
                     deductions_map[key] = self._q(Decimal(deduction.amount))
+                    deduction_metadata_map[key] = {
+                        'source_type': 'ManualDeduction',
+                        'source_id': deduction.id,
+                        'category': 'manual',
+                    }
                     # Note: Don't mark as applied here - only mark when payroll is approved
 
         except Exception as e:
@@ -1182,7 +924,36 @@ class WeeklyPayroll(models.Model):
             logger = logging.getLogger(__name__)
             logger.error(f"Error applying manual deductions: {e}")
 
-        # Apply percentage-based deductions (HDMF savings, etc.)
+        # Apply government benefits (SSS, PhilHealth, Pag-IBIG, BIR Tax)
+        try:
+            from payroll.models import GovernmentBenefit
+
+            gov_benefits = GovernmentBenefit.objects.filter(
+                is_active=True,
+                effective_start__lte=self.week_start,
+            ).filter(
+                models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
+            )
+
+            for benefit in gov_benefits:
+                employee_share = benefit.compute_employee_share(self.gross_pay)
+
+                if employee_share > 0:
+                    key = benefit.benefit_type
+                    deductions_map[key] = self._q(employee_share)
+
+                    category = 'tax' if benefit.benefit_type == 'bir_tax' else 'government'
+                    deduction_metadata_map[key] = {
+                        'source_type': 'GovernmentBenefit',
+                        'source_id': benefit.id,
+                        'category': category,
+                    }
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error applying government benefits: {e}")
+
+        # Apply percentage-based deductions (HDMF savings, etc.) - Legacy
         try:
             from payroll.models import PercentageDeduction
 
@@ -1197,12 +968,17 @@ class WeeklyPayroll(models.Model):
                 key = pct_deduction.name.lower().replace(' ', '_')
                 if key not in deductions_map:
                     deductions_map[key] = self._q(self.gross_pay * Decimal(pct_deduction.rate))
+                    deduction_metadata_map[key] = {
+                        'source_type': 'PercentageDeduction',
+                        'source_id': pct_deduction.id,
+                        'category': 'deduction',
+                    }
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
             logger.error(f"Error applying percentage deductions: {e}")
 
-        # Apply statutory deductions (fixed amounts)
+        # Apply statutory deductions (fixed amounts) - Legacy fallback
         try:
             statutory_qs = DeductionRate.objects.filter(
                 name__in=['sss', 'philhealth', 'pagibig'],
@@ -1211,6 +987,10 @@ class WeeklyPayroll(models.Model):
             for rate in statutory_qs:
                 if rate.name not in deductions_map:
                     deductions_map[rate.name] = self._q(Decimal(rate.amount or 0))
+                    deduction_metadata_map[rate.name] = {
+                        'source_type': 'DeductionRate',
+                        'category': 'government',
+                    }
         except Exception:
             pass
 
@@ -1223,10 +1003,19 @@ class WeeklyPayroll(models.Model):
                 deductions_map[name] = self._q(Decimal(amt or 0))
 
         self.deductions = {k: float(self._q(v)) for k, v in deductions_map.items()}
+        self.deduction_metadata = deduction_metadata_map
         self.total_deductions = self._q(sum(self.deductions.values()))
         self.net_pay = self._q(self.gross_pay - self.total_deductions)
 
     def create_deduction_records(self):
+        """
+        DEPRECATED: No longer creates PayrollDeduction records.
+        Metadata is now stored in deduction_metadata JSON field.
+        This method is kept for backward compatibility but does nothing.
+        """
+        pass
+
+    def create_deduction_records_legacy(self):
         """
         Create structured PayrollDeduction records for this payroll.
         Should be called after save() to ensure payroll has an ID.
@@ -1320,6 +1109,73 @@ class WeeklyPayroll(models.Model):
             return make_aware(dt, timezone=get_current_timezone())
         return dt
 
+    def _calculate_night_diff_hours(self, clock_in: datetime, clock_out: datetime) -> Decimal:
+        """
+        Calculate night differential hours (22:00 - 06:00) from clock in/out times.
+
+        Args:
+            clock_in: Clock in datetime
+            clock_out: Clock out datetime
+
+        Returns:
+            Decimal hours worked during night shift (22:00 - 06:00)
+        """
+        if not clock_in or not clock_out:
+            return Decimal('0.00')
+
+        # Define night shift hours (10 PM to 6 AM)
+        night_start_hour = 22  # 10:00 PM
+        night_end_hour = 6     # 6:00 AM
+
+        total_night_hours = Decimal('0.00')
+
+        # Ensure both times are timezone-aware
+        if clock_in.tzinfo is None:
+            clock_in = make_aware(clock_in, timezone=get_current_timezone())
+        if clock_out.tzinfo is None:
+            clock_out = make_aware(clock_out, timezone=get_current_timezone())
+
+        # Convert to local timezone for hour comparison
+        clock_in_local = clock_in.astimezone(get_current_timezone())
+        clock_out_local = clock_out.astimezone(get_current_timezone())
+
+        # Handle shifts that span multiple days
+        current_time = clock_in_local
+
+        while current_time < clock_out_local:
+            # Get the end of the current day or clock_out, whichever is earlier
+            day_end = current_time.replace(hour=23, minute=59, second=59, microsecond=999999)
+            segment_end = min(day_end, clock_out_local)
+
+            # Calculate night hours for this day segment
+            current_hour = current_time.hour + current_time.minute / 60.0 + current_time.second / 3600.0
+            end_hour = segment_end.hour + segment_end.minute / 60.0 + segment_end.second / 3600.0
+
+            # Check if any part of this segment falls in night hours
+            # Night hours: 22:00-24:00 (same day) or 00:00-06:00 (next day)
+
+            # Case 1: Work from 22:00 to midnight
+            if current_hour < 24 and end_hour <= 24:
+                # Within same day
+                night_segment_start = max(current_hour, night_start_hour)
+                night_segment_end = min(end_hour, 24)
+                if night_segment_start < night_segment_end:
+                    total_night_hours += Decimal(str(night_segment_end - night_segment_start))
+
+            # Case 2: Work from midnight to 06:00
+            if current_hour < night_end_hour or end_hour <= night_end_hour:
+                night_segment_start = max(0, current_hour)
+                night_segment_end = min(end_hour, night_end_hour)
+                if night_segment_start < night_segment_end:
+                    total_night_hours += Decimal(str(night_segment_end - night_segment_start))
+
+            # Move to next day
+            current_time = segment_end + timedelta(seconds=1)
+            if current_time.date() > segment_end.date():
+                current_time = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        return self._q(total_night_hours)
+
     @staticmethod
     def _q(value: Decimal, places=2) -> Decimal:
         exp = Decimal(10) ** -places
@@ -1357,11 +1213,10 @@ class WeeklyPayroll(models.Model):
         This method computes deductions from all sources and creates structured records.
 
         Sources:
-        1. Manual deductions (per_employee, recurring_all, onetime_all)
-        2. Government benefits (SSS, PhilHealth, Pag-IBIG, BIR Tax)
-        3. Legacy percentage deductions
-        4. Late penalties (from attendance)
-        5. Extra deductions passed via parameters
+        1. Existing deductions from compute_from_daily_attendance (late penalties, statutory)
+        2. Manual deductions (per_employee, recurring_all, onetime_all)
+        3. Government benefits (SSS, PhilHealth, Pag-IBIG, BIR Tax)
+        4. Legacy percentage deductions
 
         Args:
             mark_as_applied: If True, marks one-time deductions as applied immediately.
@@ -1375,8 +1230,53 @@ class WeeklyPayroll(models.Model):
             PercentageDeduction,
         )
 
-        deductions_map: dict[str, Decimal] = {}
+        # Start with existing deductions computed by compute_from_daily_attendance
+        # This includes late penalties and statutory deductions (SSS, PhilHealth, Pag-IBIG from DeductionRate)
+        existing_deductions = self.deductions or {}
+        deductions_map: dict[str, Decimal] = {
+            k: self._q(Decimal(v)) for k, v in existing_deductions.items()
+        }
         deduction_records = []
+
+        # Create PayrollDeduction records for existing deductions (late penalties, statutory)
+        # These were already computed in compute_from_daily_attendance
+        for key, amount in existing_deductions.items():
+            amount_decimal = self._q(Decimal(amount))
+
+            # Determine category and name
+            if key == 'late_penalty':
+                category = 'late_penalty'
+                name = 'Late Penalty'
+                description = 'Automatic late penalty from attendance'
+                source_type = 'DailyAttendance'
+            elif key in ['sss', 'philhealth', 'pagibig']:
+                category = 'government'
+                name = key.upper() if key != 'philhealth' else 'PhilHealth'
+                if key == 'pagibig':
+                    name = 'Pag-IBIG'
+                description = f'Statutory {name} contribution'
+                source_type = 'DeductionRate'
+            else:
+                # Other deductions (custom percentage, extra flat, etc.)
+                category = 'other'
+                name = key.replace('_', ' ').title()
+                description = ''
+                source_type = 'Other'
+
+            deduction_records.append(PayrollDeduction(
+                payroll=self,
+                category=category,
+                name=name,
+                description=description,
+                employee_share=amount_decimal,
+                employer_share=Decimal("0.00"),
+                source_type=source_type,
+                source_id=None,
+                calculation_method='fixed',
+            ))
+
+        # Now overlay manual deductions and government benefits
+        # These will override any duplicate keys from existing deductions
 
         # 1. Apply Manual Deductions (per_employee)
         try:
@@ -1406,6 +1306,9 @@ class WeeklyPayroll(models.Model):
                         amount = self._q(Decimal(deduction.amount))
                         deductions_map[key] = amount
 
+                        # Remove any existing record with this key (we'll replace it)
+                        deduction_records = [r for r in deduction_records if r.name != key]
+
                         # Create structured record
                         deduction_records.append(PayrollDeduction(
                             payroll=self,
@@ -1430,6 +1333,9 @@ class WeeklyPayroll(models.Model):
                             key = self._generate_deduction_key(deduction.name, deductions_map)
                             amount = self._q(Decimal(deduction.amount))
                             deductions_map[key] = amount
+
+                            # Remove any existing record with this key
+                            deduction_records = [r for r in deduction_records if r.name != key]
 
                             deduction_records.append(PayrollDeduction(
                                 payroll=self,
@@ -1464,6 +1370,9 @@ class WeeklyPayroll(models.Model):
                 key = self._generate_deduction_key(deduction.name, deductions_map)
                 amount = self._q(Decimal(deduction.amount))
                 deductions_map[key] = amount
+
+                # Remove any existing record with this key
+                deduction_records = [r for r in deduction_records if r.name != key]
 
                 deduction_records.append(PayrollDeduction(
                     payroll=self,
@@ -1500,6 +1409,9 @@ class WeeklyPayroll(models.Model):
                     key = self._generate_deduction_key(deduction.name, deductions_map)
                     amount = self._q(Decimal(deduction.amount))
                     deductions_map[key] = amount
+
+                    # Remove any existing record with this key
+                    deduction_records = [r for r in deduction_records if r.name != key]
 
                     deduction_records.append(PayrollDeduction(
                         payroll=self,
@@ -1541,6 +1453,9 @@ class WeeklyPayroll(models.Model):
 
                     category = 'tax' if benefit.benefit_type == 'bir_tax' else 'government'
 
+                    # Remove any existing record with this key (replace statutory with computed)
+                    deduction_records = [r for r in deduction_records if r.name != benefit.name and not (r.category == category and r.source_type == 'DeductionRate')]
+
                     deduction_records.append(PayrollDeduction(
                         payroll=self,
                         category=category,
@@ -1574,6 +1489,9 @@ class WeeklyPayroll(models.Model):
                     amount = self._q(self.gross_pay * Decimal(pct_deduction.rate))
                     deductions_map[key] = amount
 
+                    # Remove any existing record with this key
+                    deduction_records = [r for r in deduction_records if r.name != pct_deduction.name]
+
                     deduction_records.append(PayrollDeduction(
                         payroll=self,
                         category='other',
@@ -1595,97 +1513,6 @@ class WeeklyPayroll(models.Model):
         return deductions_map, deduction_records
 
 
-class PayrollDeduction(models.Model):
-    """
-    Individual deduction line item for a payroll period.
-    Provides structured breakdown of all deductions with proper categorization.
-
-    This model stores the COMPUTED deduction amounts for historical record keeping,
-    but deductions are DERIVED from source models (ManualDeduction, GovernmentBenefit, etc.)
-    during payroll generation.
-    """
-
-    DEDUCTION_CATEGORIES = [
-        ('manual', 'Manual Deduction'),
-        ('government', 'Government Benefit'),
-        ('tax', 'Withholding Tax'),
-        ('late_penalty', 'Late Penalty'),
-        ('other', 'Other'),
-    ]
-
-    payroll = models.ForeignKey(
-        WeeklyPayroll,
-        on_delete=models.CASCADE,
-        related_name='deduction_items'
-    )
-
-    category = models.CharField(max_length=20, choices=DEDUCTION_CATEGORIES)
-    name = models.CharField(max_length=100, help_text="Deduction name (e.g., 'SSS', 'Loan Repayment')")
-    description = models.TextField(blank=True)
-
-    # Amount breakdown
-    employee_share = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
-        help_text="Amount deducted from employee's pay"
-    )
-    employer_share = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
-        help_text="Amount paid by employer (for reporting, not deducted from employee)"
-    )
-
-    # Source tracking
-    source_type = models.CharField(
-        max_length=50,
-        blank=True,
-        help_text="Source model name (e.g., 'ManualDeduction', 'GovernmentBenefit')"
-    )
-    source_id = models.IntegerField(
-        null=True,
-        blank=True,
-        help_text="ID of the source record"
-    )
-
-    # Calculation metadata
-    calculation_method = models.CharField(
-        max_length=20,
-        blank=True,
-        help_text="How this was calculated (fixed, percentage, progressive_tax)"
-    )
-    basis_amount = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        help_text="Base amount used for calculation (e.g., gross pay for percentage deductions)"
-    )
-    rate = models.DecimalField(
-        max_digits=5,
-        decimal_places=4,
-        null=True,
-        blank=True,
-        help_text="Rate used for percentage calculations"
-    )
-
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ['category', 'name']
-        indexes = [
-            models.Index(fields=['payroll', 'category']),
-            models.Index(fields=['source_type', 'source_id']),
-        ]
-
-    def __str__(self):
-        return f"{self.payroll} - {self.name}: ₱{self.employee_share}"
-
-    @property
-    def total_amount(self) -> Decimal:
-        """Total deduction (employee + employer share)"""
-        return self.employee_share + self.employer_share
 
 
 class PayrollSettings(models.Model):
