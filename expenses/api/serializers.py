@@ -3,10 +3,8 @@ API serializers for enhanced expense management system.
 
 Handles serialization for:
 - Expense categories
-- Expense budgets
-- Expenses with approval workflow
+- Expenses with payment tracking
 - Expense items
-- Expense attachments
 """
 
 from decimal import Decimal
@@ -14,8 +12,6 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from expenses.models import (
     Expense,
-    ExpenseAttachment,
-    ExpenseBudget,
     ExpenseCategory,
     ExpenseItem,
 )
@@ -77,30 +73,6 @@ class ExpenseCategorySerializer(serializers.ModelSerializer):
     def get_total_budget(self, obj):
         return float(obj.get_total_budget())
 
-    def validate(self, attrs):
-        # Prevent circular parent references
-        if 'parent' in attrs and attrs['parent']:
-            parent = attrs['parent']
-            if self.instance and parent.id == self.instance.id:
-                raise serializers.ValidationError({
-                    'parent': 'Category cannot be its own parent'
-                })
-            # Check if parent is a descendant
-            if self.instance and self._is_descendant(self.instance, parent):
-                raise serializers.ValidationError({
-                    'parent': 'Cannot set a descendant as parent (circular reference)'
-                })
-        return attrs
-
-    def _is_descendant(self, category, potential_parent):
-        """Check if potential_parent is a descendant of category"""
-        current = potential_parent
-        while current.parent:
-            if current.parent.id == category.id:
-                return True
-            current = current.parent
-        return False
-
 
 class ExpenseCategoryListSerializer(serializers.ModelSerializer):
     """Simplified serializer for category lists"""
@@ -109,69 +81,6 @@ class ExpenseCategoryListSerializer(serializers.ModelSerializer):
     class Meta:
         model = ExpenseCategory
         fields = ['id', 'name', 'parent', 'parent_name', 'is_active']
-
-
-# ================================
-# Expense Budget Serializers
-# ================================
-class ExpenseBudgetSerializer(serializers.ModelSerializer):
-    """Serializer for expense budgets"""
-    stall_name = serializers.CharField(source='stall.name', read_only=True)
-    category_name = serializers.CharField(source='category.name', read_only=True)
-    actual_expenses = serializers.SerializerMethodField()
-    variance = serializers.SerializerMethodField()
-    utilization_percentage = serializers.SerializerMethodField()
-    status = serializers.SerializerMethodField()
-
-    class Meta:
-        model = ExpenseBudget
-        fields = [
-            'id',
-            'stall',
-            'stall_name',
-            'category',
-            'category_name',
-            'month',
-            'year',
-            'budgeted_amount',
-            'actual_expenses',
-            'variance',
-            'utilization_percentage',
-            'status',
-            'notes',
-            'created_at',
-            'updated_at',
-        ]
-        read_only_fields = ['created_at', 'updated_at']
-
-    def get_actual_expenses(self, obj):
-        return float(obj.actual_expenses)
-
-    def get_variance(self, obj):
-        return float(obj.variance)
-
-    def get_utilization_percentage(self, obj):
-        return float(obj.utilization_percentage)
-
-    def get_status(self, obj):
-        if obj.variance < 0:
-            return 'over_budget'
-        elif obj.utilization_percentage >= 90:
-            return 'approaching_limit'
-        else:
-            return 'within_budget'
-
-    def validate(self, attrs):
-        month = attrs.get('month')
-        year = attrs.get('year')
-
-        if month and (month < 1 or month > 12):
-            raise serializers.ValidationError({'month': 'Month must be between 1 and 12'})
-
-        if year and year < 2000:
-            raise serializers.ValidationError({'year': 'Year must be 2000 or later'})
-
-        return attrs
 
 
 # ================================
@@ -214,59 +123,21 @@ class ExpenseItemSerializer(serializers.ModelSerializer):
 
 
 # ================================
-# Expense Attachment Serializers
-# ================================
-class ExpenseAttachmentSerializer(serializers.ModelSerializer):
-    """Serializer for expense attachments"""
-    uploaded_by_name = serializers.CharField(source='uploaded_by.get_full_name', read_only=True)
-    file_url = serializers.SerializerMethodField()
-
-    class Meta:
-        model = ExpenseAttachment
-        fields = [
-            'id',
-            'file',
-            'file_url',
-            'filename',
-            'file_type',
-            'file_size',
-            'description',
-            'uploaded_by',
-            'uploaded_by_name',
-            'uploaded_at',
-        ]
-        read_only_fields = ['filename', 'file_type', 'file_size', 'uploaded_by', 'uploaded_at']
-
-    def get_file_url(self, obj):
-        if obj.file:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.file.url)
-        return None
-
-
-# ================================
 # Main Expense Serializers
 # ================================
 class ExpenseSerializer(serializers.ModelSerializer):
     """Comprehensive serializer for expenses"""
     stall_name = serializers.CharField(source='stall.name', read_only=True)
     category_name = serializers.CharField(source='category.name', read_only=True)
-    submitted_by_detail = UserMinimalSerializer(source='submitted_by', read_only=True)
-    approved_by_detail = UserMinimalSerializer(source='approved_by', read_only=True)
+    created_by_detail = UserMinimalSerializer(source='created_by', read_only=True)
     items = ExpenseItemSerializer(many=True, read_only=True)
-    attachments = ExpenseAttachmentSerializer(many=True, read_only=True)
 
     # Computed fields
     balance_due = serializers.SerializerMethodField()
     is_overdue = serializers.SerializerMethodField()
-    is_pending_approval = serializers.SerializerMethodField()
-    is_approved = serializers.SerializerMethodField()
 
     # Display fields
-    approval_status_display = serializers.CharField(source='get_approval_status_display', read_only=True)
     payment_status_display = serializers.CharField(source='get_payment_status_display', read_only=True)
-    priority_display = serializers.CharField(source='get_priority_display', read_only=True)
 
     class Meta:
         model = Expense
@@ -283,36 +154,23 @@ class ExpenseSerializer(serializers.ModelSerializer):
             'total_price',
             'paid_amount',
             'balance_due',
-            'approval_status',
-            'approval_status_display',
             'payment_status',
             'payment_status_display',
-            'priority',
-            'priority_display',
             'paid_at',
             'payment_method',
-            'submitted_by',
-            'submitted_by_detail',
-            'approved_by',
-            'approved_by_detail',
-            'approved_at',
-            'rejection_reason',
+            'created_by',
+            'created_by_detail',
             'source',
             'recurring',
             'recurring_frequency',
             'items',
-            'attachments',
             'is_overdue',
-            'is_pending_approval',
-            'is_approved',
             'is_deleted',
             'created_at',
             'updated_at',
         ]
         read_only_fields = [
-            'submitted_by',
-            'approved_by',
-            'approved_at',
+            'created_by',
             'payment_status',
             'is_deleted',
             'created_at',
@@ -324,12 +182,6 @@ class ExpenseSerializer(serializers.ModelSerializer):
 
     def get_is_overdue(self, obj):
         return obj.is_overdue
-
-    def get_is_pending_approval(self, obj):
-        return obj.is_pending_approval
-
-    def get_is_approved(self, obj):
-        return obj.is_approved
 
     def validate(self, attrs):
         # Validate paid_amount doesn't exceed total_price
@@ -353,10 +205,9 @@ class ExpenseSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
-        # Set submitted_by from request user
+        # Set created_by from request user
         request = self.context.get('request')
         if request and hasattr(request, 'user'):
-            validated_data['submitted_by'] = request.user
             validated_data['created_by'] = request.user
 
         return super().create(validated_data)
@@ -366,9 +217,8 @@ class ExpenseListSerializer(serializers.ModelSerializer):
     """Simplified serializer for expense lists"""
     stall_name = serializers.CharField(source='stall.name', read_only=True)
     category_name = serializers.CharField(source='category.name', read_only=True)
-    submitted_by_name = serializers.CharField(source='submitted_by.get_full_name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
     balance_due = serializers.SerializerMethodField()
-    approval_status_display = serializers.CharField(source='get_approval_status_display', read_only=True)
     payment_status_display = serializers.CharField(source='get_payment_status_display', read_only=True)
 
     class Meta:
@@ -386,12 +236,9 @@ class ExpenseListSerializer(serializers.ModelSerializer):
             'total_price',
             'paid_amount',
             'balance_due',
-            'approval_status',
-            'approval_status_display',
             'payment_status',
             'payment_status_display',
-            'priority',
-            'submitted_by_name',
+            'created_by_name',
             'created_at',
         ]
 
@@ -400,23 +247,8 @@ class ExpenseListSerializer(serializers.ModelSerializer):
 
 
 # ================================
-# Action Serializers
+# Payment Serializers
 # ================================
-class ExpenseApprovalSerializer(serializers.Serializer):
-    """Serializer for approving expenses"""
-    notes = serializers.CharField(required=False, allow_blank=True)
-
-
-class ExpenseRejectionSerializer(serializers.Serializer):
-    """Serializer for rejecting expenses"""
-    reason = serializers.CharField(required=True)
-
-    def validate_reason(self, value):
-        if not value or not value.strip():
-            raise serializers.ValidationError("Rejection reason cannot be empty")
-        return value
-
-
 class ExpensePaymentSerializer(serializers.Serializer):
     """Serializer for recording expense payments"""
     amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01'))
@@ -428,24 +260,3 @@ class ExpensePaymentSerializer(serializers.Serializer):
         if value <= 0:
             raise serializers.ValidationError("Payment amount must be positive")
         return value
-
-
-class BulkApprovalSerializer(serializers.Serializer):
-    """Serializer for bulk expense approval"""
-    expense_ids = serializers.ListField(
-        child=serializers.IntegerField(min_value=1),
-        allow_empty=False
-    )
-    notes = serializers.CharField(required=False, allow_blank=True)
-
-
-# ================================
-# Summary/Report Serializers
-# ================================
-class ExpenseSummarySerializer(serializers.Serializer):
-    """Serializer for expense summary data"""
-    period = serializers.DictField()
-    summary = serializers.DictField()
-    category_breakdown = serializers.ListField()
-    approval_breakdown = serializers.ListField()
-    payment_breakdown = serializers.ListField()

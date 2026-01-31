@@ -1,4 +1,4 @@
-# Generated migration for enhanced expense system
+# Generated migration for simplified expense system
 
 from decimal import Decimal
 
@@ -38,49 +38,6 @@ class Migration(migrations.Migration):
             },
         ),
 
-        # Create ExpenseBudget model
-        migrations.CreateModel(
-            name='ExpenseBudget',
-            fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('month', models.PositiveSmallIntegerField(help_text='Month (1-12)')),
-                ('year', models.PositiveIntegerField(help_text='Year')),
-                ('budgeted_amount', models.DecimalField(decimal_places=2, help_text='Budgeted amount for this period', max_digits=12)),
-                ('notes', models.TextField(blank=True)),
-                ('is_deleted', models.BooleanField(default=False)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('category', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='budgets', to='expenses.expensecategory')),
-                ('stall', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='expense_budgets', to='inventory.stall')),
-            ],
-            options={
-                'verbose_name': 'Expense Budget',
-                'verbose_name_plural': 'Expense Budgets',
-                'ordering': ['-year', '-month', 'category__name'],
-            },
-        ),
-
-        # Create ExpenseAttachment model
-        migrations.CreateModel(
-            name='ExpenseAttachment',
-            fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('file', models.FileField(help_text='Upload receipt, invoice, or supporting document', upload_to='expenses/attachments/%Y/%m/')),
-                ('filename', models.CharField(max_length=255)),
-                ('file_type', models.CharField(blank=True, max_length=50)),
-                ('file_size', models.PositiveIntegerField(blank=True, help_text='File size in bytes', null=True)),
-                ('description', models.CharField(blank=True, max_length=255)),
-                ('uploaded_at', models.DateTimeField(auto_now_add=True)),
-                ('expense', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='attachments', to='expenses.expense')),
-                ('uploaded_by', models.ForeignKey(null=True, on_delete=django.db.models.deletion.SET_NULL, to=settings.AUTH_USER_MODEL)),
-            ],
-            options={
-                'verbose_name': 'Expense Attachment',
-                'verbose_name_plural': 'Expense Attachments',
-                'ordering': ['-uploaded_at'],
-            },
-        ),
-
         # Add new fields to Expense model
         migrations.AddField(
             model_name='expense',
@@ -104,43 +61,13 @@ class Migration(migrations.Migration):
         ),
         migrations.AddField(
             model_name='expense',
-            name='approval_status',
-            field=models.CharField(choices=[('pending', 'Pending Approval'), ('approved', 'Approved'), ('rejected', 'Rejected'), ('cancelled', 'Cancelled')], default='pending', max_length=20),
-        ),
-        migrations.AddField(
-            model_name='expense',
             name='payment_status',
             field=models.CharField(choices=[('unpaid', 'Unpaid'), ('partial', 'Partially Paid'), ('paid', 'Fully Paid')], default='unpaid', max_length=20),
         ),
         migrations.AddField(
             model_name='expense',
-            name='priority',
-            field=models.CharField(choices=[('low', 'Low'), ('medium', 'Medium'), ('high', 'High'), ('urgent', 'Urgent')], default='medium', max_length=20),
-        ),
-        migrations.AddField(
-            model_name='expense',
             name='payment_method',
             field=models.CharField(blank=True, help_text='Cash, Bank Transfer, Cheque, etc.', max_length=50),
-        ),
-        migrations.AddField(
-            model_name='expense',
-            name='submitted_by',
-            field=models.ForeignKey(help_text='User who submitted the expense', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='submitted_expenses', to=settings.AUTH_USER_MODEL),
-        ),
-        migrations.AddField(
-            model_name='expense',
-            name='approved_by',
-            field=models.ForeignKey(blank=True, help_text='User who approved the expense', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='approved_expenses', to=settings.AUTH_USER_MODEL),
-        ),
-        migrations.AddField(
-            model_name='expense',
-            name='approved_at',
-            field=models.DateTimeField(blank=True, null=True),
-        ),
-        migrations.AddField(
-            model_name='expense',
-            name='rejection_reason',
-            field=models.TextField(blank=True, help_text='Reason for rejection if applicable'),
         ),
         migrations.AddField(
             model_name='expense',
@@ -210,22 +137,6 @@ class Migration(migrations.Migration):
             index=models.Index(fields=['is_active', 'is_deleted'], name='expenses_ex_is_acti_8b5c3f_idx'),
         ),
 
-        # Add indexes for ExpenseBudget
-        migrations.AddIndex(
-            model_name='expensebudget',
-            index=models.Index(fields=['stall', 'year', 'month'], name='expenses_ex_stall_i_c4e72a_idx'),
-        ),
-        migrations.AddIndex(
-            model_name='expensebudget',
-            index=models.Index(fields=['category', 'year', 'month'], name='expenses_ex_categor_5f3d1b_idx'),
-        ),
-
-        # Add unique constraint for ExpenseBudget
-        migrations.AddConstraint(
-            model_name='expensebudget',
-            constraint=models.UniqueConstraint(fields=('stall', 'category', 'month', 'year'), name='unique_stall_category_period'),
-        ),
-
         # Add indexes for Expense
         migrations.AddIndex(
             model_name='expense',
@@ -234,10 +145,6 @@ class Migration(migrations.Migration):
         migrations.AddIndex(
             model_name='expense',
             index=models.Index(fields=['category', 'expense_date'], name='expenses_ex_categor_d4e5f6_idx'),
-        ),
-        migrations.AddIndex(
-            model_name='expense',
-            index=models.Index(fields=['approval_status', 'expense_date'], name='expenses_ex_approva_g7h8i9_idx'),
         ),
         migrations.AddIndex(
             model_name='expense',

@@ -3,27 +3,22 @@ Business logic for expense management system.
 
 Handles:
 - Expense creation and validation
-- Approval workflow
 - Category management
-- Budget tracking
 - Payment recording
 - Expense analytics and reporting
 """
 
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Avg, Count, Q, Sum
 from django.utils import timezone
-from inventory.models import Stall
-from users.models import CustomUser
 
 from expenses.models import (
     Expense,
-    ExpenseBudget,
     ExpenseCategory,
     ExpenseItem,
 )
@@ -48,8 +43,7 @@ class ExpenseManager:
         description='',
         vendor='',
         reference_number='',
-        priority='medium',
-        submitted_by,
+        created_by,
         source='manual',
         items: List[Dict] = None,
         recurring=False,
@@ -66,8 +60,7 @@ class ExpenseManager:
             description: Expense description
             vendor: Vendor/supplier name
             reference_number: Invoice/receipt number
-            priority: Priority level (low, medium, high, urgent)
-            submitted_by: User creating the expense
+            created_by: User creating the expense
             source: 'manual' or 'service'
             items: Optional list of expense items
             recurring: Is this a recurring expense
@@ -92,13 +85,10 @@ class ExpenseManager:
             description=description,
             vendor=vendor,
             reference_number=reference_number,
-            priority=priority,
-            submitted_by=submitted_by,
-            created_by=submitted_by,
+            created_by=created_by,
             source=source,
             recurring=recurring,
             recurring_frequency=recurring_frequency,
-            approval_status=Expense.ApprovalStatus.PENDING,
             payment_status=Expense.PaymentStatus.UNPAID,
         )
 
@@ -131,17 +121,14 @@ class ExpenseManager:
         Returns:
             Updated Expense instance
         """
-        # Prevent updates to paid or approved expenses
+        # Prevent updates to paid expenses
         if expense.payment_status == Expense.PaymentStatus.PAID:
             raise ValidationError("Cannot update a fully paid expense")
-
-        if expense.approval_status == Expense.ApprovalStatus.APPROVED and 'approval_status' not in kwargs:
-            raise ValidationError("Cannot update an approved expense without changing approval status")
 
         # Update allowed fields
         allowed_fields = [
             'category', 'expense_date', 'total_price', 'description',
-            'vendor', 'reference_number', 'priority', 'recurring',
+            'vendor', 'reference_number', 'recurring',
             'recurring_frequency'
         ]
 
@@ -162,9 +149,6 @@ class ExpenseManager:
         """
         if expense.payment_status == Expense.PaymentStatus.PAID:
             raise ValidationError("Cannot delete a paid expense")
-
-        if expense.approval_status == Expense.ApprovalStatus.APPROVED:
-            raise ValidationError("Cannot delete an approved expense. Cancel it first.")
 
         expense.soft_delete()
 
@@ -190,153 +174,12 @@ class ExpenseManager:
             'total_price': float(expense.total_price),
             'paid_amount': float(expense.paid_amount),
             'balance_due': float(expense.balance_due),
-            'approval_status': expense.approval_status,
             'payment_status': expense.payment_status,
-            'priority': expense.priority,
             'is_overdue': expense.is_overdue,
-            'submitted_by': expense.submitted_by.get_full_name() if expense.submitted_by else None,
-            'approved_by': expense.approved_by.get_full_name() if expense.approved_by else None,
-            'approved_at': expense.approved_at,
+            'created_by': expense.created_by.get_full_name() if expense.created_by else None,
             'items_count': expense.items.count(),
-            'attachments_count': expense.attachments.count(),
             'created_at': expense.created_at,
         }
-
-
-# ================================
-# Expense Approval Workflow
-# ================================
-class ExpenseApprovalWorkflow:
-    """
-    Handles expense approval, rejection, and cancellation workflow
-    """
-
-    @staticmethod
-    @transaction.atomic
-    def approve_expense(
-        expense: Expense,
-        approved_by: CustomUser,
-        notes: str = ''
-    ) -> Expense:
-        """
-        Approve an expense.
-
-        Args:
-            expense: Expense to approve
-            approved_by: User approving the expense
-            notes: Optional approval notes
-
-        Returns:
-            Approved expense
-        """
-        if expense.approval_status == Expense.ApprovalStatus.APPROVED:
-            raise ValidationError("Expense is already approved")
-
-        if expense.approval_status == Expense.ApprovalStatus.CANCELLED:
-            raise ValidationError("Cannot approve a cancelled expense")
-
-        expense.approve(approved_by)
-
-        # Add notes to description if provided
-        if notes:
-            expense.description = f"{expense.description}\n\nApproval Notes: {notes}"
-            expense.save()
-
-        return expense
-
-    @staticmethod
-    @transaction.atomic
-    def reject_expense(
-        expense: Expense,
-        rejected_by: CustomUser,
-        reason: str
-    ) -> Expense:
-        """
-        Reject an expense.
-
-        Args:
-            expense: Expense to reject
-            rejected_by: User rejecting the expense
-            reason: Reason for rejection
-
-        Returns:
-            Rejected expense
-        """
-        if not reason:
-            raise ValidationError("Rejection reason is required")
-
-        if expense.approval_status == Expense.ApprovalStatus.APPROVED:
-            raise ValidationError("Cannot reject an already approved expense")
-
-        expense.reject(rejected_by, reason)
-        return expense
-
-    @staticmethod
-    def cancel_expense(expense: Expense) -> Expense:
-        """
-        Cancel an expense.
-
-        Args:
-            expense: Expense to cancel
-
-        Returns:
-            Cancelled expense
-        """
-        expense.cancel()
-        return expense
-
-    @staticmethod
-    def get_pending_approvals(stall=None) -> List[Expense]:
-        """
-        Get all expenses pending approval.
-
-        Args:
-            stall: Optional stall filter
-
-        Returns:
-            QuerySet of pending expenses
-        """
-        queryset = Expense.objects.filter(
-            approval_status=Expense.ApprovalStatus.PENDING,
-            is_deleted=False
-        ).select_related(
-            'stall', 'category', 'submitted_by'
-        ).order_by('priority', '-expense_date')
-
-        if stall:
-            queryset = queryset.filter(stall=stall)
-
-        return queryset
-
-    @staticmethod
-    def bulk_approve(
-        expense_ids: List[int],
-        approved_by: CustomUser
-    ) -> Tuple[int, List[str]]:
-        """
-        Bulk approve multiple expenses.
-
-        Args:
-            expense_ids: List of expense IDs to approve
-            approved_by: User approving the expenses
-
-        Returns:
-            Tuple of (approved_count, error_messages)
-        """
-        approved_count = 0
-        errors = []
-
-        for expense_id in expense_ids:
-            try:
-                expense = Expense.objects.get(id=expense_id, is_deleted=False)
-                ExpenseApprovalWorkflow.approve_expense(expense, approved_by)
-                approved_count += 1
-            except Expense.DoesNotExist:
-                errors.append(f"Expense {expense_id} not found")
-            except ValidationError as e:
-                errors.append(f"Expense {expense_id}: {str(e)}")
-
-        return approved_count, errors
 
 
 # ================================
@@ -369,9 +212,6 @@ class ExpensePaymentHandler:
         Returns:
             Updated expense
         """
-        if expense.approval_status != Expense.ApprovalStatus.APPROVED:
-            raise ValidationError("Cannot pay an unapproved expense")
-
         if amount <= 0:
             raise ValidationError("Payment amount must be positive")
 
@@ -404,8 +244,7 @@ class ExpensePaymentHandler:
         queryset = Expense.objects.filter(
             Q(payment_status=Expense.PaymentStatus.UNPAID) |
             Q(payment_status=Expense.PaymentStatus.PARTIAL),
-            is_deleted=False,
-            approval_status=Expense.ApprovalStatus.APPROVED
+            is_deleted=False
         ).select_related('stall', 'category').order_by('expense_date')
 
         if stall:
@@ -597,137 +436,6 @@ class ExpenseCategoryManager:
 
 
 # ================================
-# Expense Budget Tracker
-# ================================
-class ExpenseBudgetTracker:
-    """
-    Tracks and manages expense budgets
-    """
-
-    @staticmethod
-    @transaction.atomic
-    def set_budget(
-        stall: Stall,
-        category: ExpenseCategory,
-        month: int,
-        year: int,
-        budgeted_amount: Decimal,
-        notes: str = ''
-    ) -> ExpenseBudget:
-        """
-        Set budget for a category/period.
-
-        Args:
-            stall: Stall
-            category: Expense category
-            month: Month (1-12)
-            year: Year
-            budgeted_amount: Budget amount
-            notes: Optional notes
-
-        Returns:
-            Created or updated ExpenseBudget
-        """
-        if month < 1 or month > 12:
-            raise ValidationError("Month must be between 1 and 12")
-
-        if budgeted_amount < 0:
-            raise ValidationError("Budget amount cannot be negative")
-
-        budget, created = ExpenseBudget.objects.update_or_create(
-            stall=stall,
-            category=category,
-            month=month,
-            year=year,
-            defaults={
-                'budgeted_amount': budgeted_amount,
-                'notes': notes,
-                'is_deleted': False
-            }
-        )
-
-        return budget
-
-    @staticmethod
-    def get_budget_status(
-        stall: Stall,
-        month: int,
-        year: int
-    ) -> List[Dict]:
-        """
-        Get budget status for all categories in a period.
-
-        Args:
-            stall: Stall
-            month: Month
-            year: Year
-
-        Returns:
-            List of budget status dictionaries
-        """
-        budgets = ExpenseBudget.objects.filter(
-            stall=stall,
-            month=month,
-            year=year,
-            is_deleted=False
-        ).select_related('category')
-
-        results = []
-        for budget in budgets:
-            results.append({
-                'category': budget.category.name,
-                'budgeted_amount': float(budget.budgeted_amount),
-                'actual_expenses': float(budget.actual_expenses),
-                'variance': float(budget.variance),
-                'utilization_percentage': float(budget.utilization_percentage),
-                'status': 'over_budget' if budget.variance < 0 else 'within_budget'
-            })
-
-        return results
-
-    @staticmethod
-    def get_budget_alerts(stall=None, threshold_percentage: float = 90.0) -> List[Dict]:
-        """
-        Get budget alerts for categories approaching or exceeding budget.
-
-        Args:
-            stall: Optional stall filter
-            threshold_percentage: Alert when utilization exceeds this percentage
-
-        Returns:
-            List of budget alerts
-        """
-        now = timezone.now()
-        current_month = now.month
-        current_year = now.year
-
-        budgets_query = ExpenseBudget.objects.filter(
-            month=current_month,
-            year=current_year,
-            is_deleted=False
-        ).select_related('category', 'stall')
-
-        if stall:
-            budgets_query = budgets_query.filter(stall=stall)
-
-        alerts = []
-        for budget in budgets_query:
-            utilization = budget.utilization_percentage
-            if utilization >= threshold_percentage:
-                alerts.append({
-                    'stall': budget.stall.name,
-                    'category': budget.category.name,
-                    'budgeted_amount': float(budget.budgeted_amount),
-                    'actual_expenses': float(budget.actual_expenses),
-                    'utilization_percentage': float(utilization),
-                    'variance': float(budget.variance),
-                    'alert_level': 'critical' if utilization > 100 else 'warning'
-                })
-
-        return sorted(alerts, key=lambda x: x['utilization_percentage'], reverse=True)
-
-
-# ================================
 # Expense Analytics
 # ================================
 class ExpenseAnalytics:
@@ -782,14 +490,6 @@ class ExpenseAnalytics:
             count=Count('id')
         ).order_by('-total')
 
-        # Breakdown by approval status
-        approval_breakdown = queryset.values(
-            'approval_status'
-        ).annotate(
-            count=Count('id'),
-            total=Sum('total_price')
-        )
-
         # Breakdown by payment status
         payment_breakdown = queryset.values(
             'payment_status'
@@ -821,14 +521,6 @@ class ExpenseAnalytics:
                     'percentage': float(item['total'] / total_expenses * 100) if total_expenses > 0 else 0
                 }
                 for item in category_breakdown
-            ],
-            'approval_breakdown': [
-                {
-                    'status': item['approval_status'],
-                    'count': item['count'],
-                    'total': float(item['total'] or 0)
-                }
-                for item in approval_breakdown
             ],
             'payment_breakdown': [
                 {

@@ -69,123 +69,19 @@ class ExpenseCategory(models.Model):
         self.save()
 
 
-class ExpenseBudget(models.Model):
-    """
-    Monthly or periodic budget tracking for expense categories per stall
-    """
-    stall = models.ForeignKey(
-        "inventory.Stall",
-        on_delete=models.CASCADE,
-        related_name="expense_budgets"
-    )
-    category = models.ForeignKey(
-        ExpenseCategory,
-        on_delete=models.CASCADE,
-        related_name="budgets"
-    )
 
-    # Budget period
-    month = models.PositiveSmallIntegerField(
-        help_text="Month (1-12)"
-    )
-    year = models.PositiveIntegerField(
-        help_text="Year"
-    )
-
-    # Budget amounts
-    budgeted_amount = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        help_text="Budgeted amount for this period"
-    )
-
-    # Tracking
-    notes = models.TextField(blank=True)
-    is_deleted = models.BooleanField(default=False)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        verbose_name = "Expense Budget"
-        verbose_name_plural = "Expense Budgets"
-        unique_together = ('stall', 'category', 'month', 'year')
-        ordering = ['-year', '-month', 'category__name']
-        indexes = [
-            models.Index(fields=['stall', 'year', 'month']),
-            models.Index(fields=['category', 'year', 'month']),
-        ]
-
-    def __str__(self):
-        return f"{self.category.name} - {self.year}/{self.month:02d} - {self.stall.name}"
-
-    def clean(self):
-        if self.month < 1 or self.month > 12:
-            raise ValidationError({'month': 'Month must be between 1 and 12'})
-
-        if self.year < 2000:
-            raise ValidationError({'year': 'Year must be 2000 or later'})
-
-    @property
-    def actual_expenses(self):
-        """Calculate actual expenses for this budget period"""
-        from django.db.models import Sum
-
-        start_date = timezone.datetime(self.year, self.month, 1).date()
-
-        # Calculate end date (last day of month)
-        if self.month == 12:
-            end_date = timezone.datetime(self.year, 12, 31).date()
-        else:
-            end_date = (timezone.datetime(self.year, self.month + 1, 1) - timezone.timedelta(days=1)).date()
-
-        total = Expense.objects.filter(
-            stall=self.stall,
-            category=self.category,
-            is_deleted=False,
-            expense_date__gte=start_date,
-            expense_date__lte=end_date
-        ).aggregate(total=Sum('total_price'))['total'] or Decimal('0.00')
-
-        return total
-
-    @property
-    def variance(self):
-        """Budget variance (positive = under budget, negative = over budget)"""
-        return self.budgeted_amount - self.actual_expenses
-
-    @property
-    def utilization_percentage(self):
-        """Budget utilization as percentage"""
-        if self.budgeted_amount == 0:
-            return Decimal('0.00')
-        return (self.actual_expenses / self.budgeted_amount) * 100
 
 
 class Expense(models.Model):
     """
-    Enhanced expense tracking with categories, approval workflow, and attachments
+    Enhanced expense tracking with categories and payment tracking
     """
-
-    # Approval status choices
-    class ApprovalStatus(models.TextChoices):
-        PENDING = 'pending', _('Pending Approval')
-        APPROVED = 'approved', _('Approved')
-        REJECTED = 'rejected', _('Rejected')
-        CANCELLED = 'cancelled', _('Cancelled')
 
     # Payment status choices
     class PaymentStatus(models.TextChoices):
         UNPAID = 'unpaid', _('Unpaid')
         PARTIAL = 'partial', _('Partially Paid')
         PAID = 'paid', _('Fully Paid')
-
-    # Priority choices
-    class Priority(models.TextChoices):
-        LOW = 'low', _('Low')
-        MEDIUM = 'medium', _('Medium')
-        HIGH = 'high', _('High')
-        URGENT = 'urgent', _('Urgent')
 
     # Basic information
     stall = models.ForeignKey(
@@ -226,20 +122,10 @@ class Expense(models.Model):
     paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
     # Status tracking
-    approval_status = models.CharField(
-        max_length=20,
-        choices=ApprovalStatus.choices,
-        default=ApprovalStatus.PENDING
-    )
     payment_status = models.CharField(
         max_length=20,
         choices=PaymentStatus.choices,
         default=PaymentStatus.UNPAID
-    )
-    priority = models.CharField(
-        max_length=20,
-        choices=Priority.choices,
-        default=Priority.MEDIUM
     )
 
     # Payment tracking
@@ -250,27 +136,7 @@ class Expense(models.Model):
         help_text="Cash, Bank Transfer, Cheque, etc."
     )
 
-    # Approval workflow
-    submitted_by = models.ForeignKey(
-        "users.CustomUser",
-        on_delete=models.SET_NULL,
-        null=True,
-        related_name="submitted_expenses",
-        help_text="User who submitted the expense"
-    )
-    approved_by = models.ForeignKey(
-        "users.CustomUser",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="approved_expenses",
-        help_text="User who approved the expense"
-    )
-    approved_at = models.DateTimeField(null=True, blank=True)
-    rejection_reason = models.TextField(
-        blank=True,
-        help_text="Reason for rejection if applicable"
-    )
+
 
     # Additional tracking
     source = models.CharField(
@@ -295,12 +161,12 @@ class Expense(models.Model):
         null=True
     )
 
-    # Legacy field compatibility
+    # User tracking
     created_by = models.ForeignKey(
         "users.CustomUser",
         on_delete=models.SET_NULL,
         null=True,
-        related_name="created_expenses_legacy"
+        related_name="created_expenses"
     )
     is_paid = models.BooleanField(default=False)
 
@@ -319,7 +185,6 @@ class Expense(models.Model):
         indexes = [
             models.Index(fields=['stall', 'expense_date']),
             models.Index(fields=['category', 'expense_date']),
-            models.Index(fields=['approval_status', 'expense_date']),
             models.Index(fields=['payment_status', 'expense_date']),
             models.Index(fields=['is_deleted']),
         ]
@@ -342,11 +207,6 @@ class Expense(models.Model):
                 'recurring_frequency': 'Frequency is required for recurring expenses'
             })
 
-        if self.approval_status == self.ApprovalStatus.REJECTED and not self.rejection_reason:
-            raise ValidationError({
-                'rejection_reason': 'Rejection reason is required when rejecting an expense'
-            })
-
     def save(self, *args, **kwargs):
         # Auto-update payment status based on paid amount
         if self.paid_amount == 0:
@@ -360,10 +220,6 @@ class Expense(models.Model):
         else:
             self.payment_status = self.PaymentStatus.PARTIAL
             self.is_paid = False
-
-        # Set submitted_by if not set
-        if not self.submitted_by and self.created_by:
-            self.submitted_by = self.created_by
 
         super().save(*args, **kwargs)
 
@@ -379,49 +235,6 @@ class Expense(models.Model):
             return False
         # Consider expense overdue if not paid within 30 days
         return (timezone.now().date() - self.expense_date).days > 30
-
-    @property
-    def is_pending_approval(self):
-        """Check if expense is pending approval"""
-        return self.approval_status == self.ApprovalStatus.PENDING
-
-    @property
-    def is_approved(self):
-        """Check if expense is approved"""
-        return self.approval_status == self.ApprovalStatus.APPROVED
-
-    def approve(self, approved_by_user):
-        """Approve the expense"""
-        if self.approval_status == self.ApprovalStatus.APPROVED:
-            raise ValidationError("Expense is already approved")
-
-        self.approval_status = self.ApprovalStatus.APPROVED
-        self.approved_by = approved_by_user
-        self.approved_at = timezone.now()
-        self.rejection_reason = ""
-        self.save()
-
-    def reject(self, rejected_by_user, reason):
-        """Reject the expense"""
-        if self.approval_status == self.ApprovalStatus.REJECTED:
-            raise ValidationError("Expense is already rejected")
-
-        if not reason:
-            raise ValidationError("Rejection reason is required")
-
-        self.approval_status = self.ApprovalStatus.REJECTED
-        self.approved_by = rejected_by_user
-        self.approved_at = timezone.now()
-        self.rejection_reason = reason
-        self.save()
-
-    def cancel(self):
-        """Cancel the expense"""
-        if self.payment_status == self.PaymentStatus.PAID:
-            raise ValidationError("Cannot cancel a paid expense")
-
-        self.approval_status = self.ApprovalStatus.CANCELLED
-        self.save()
 
     def record_payment(self, amount, payment_method='', payment_date=None):
         """Record a payment for this expense"""
@@ -503,48 +316,4 @@ class ExpenseItem(models.Model):
         if not self.total_price:
             self.total_price = self.quantity * self.unit_price
 
-        super().save(*args, **kwargs)
-
-
-class ExpenseAttachment(models.Model):
-    """
-    Attachments for expenses (receipts, invoices, etc.)
-    """
-    expense = models.ForeignKey(
-        Expense,
-        on_delete=models.CASCADE,
-        related_name="attachments"
-    )
-    file = models.FileField(
-        upload_to='expenses/attachments/%Y/%m/',
-        help_text="Upload receipt, invoice, or supporting document"
-    )
-    filename = models.CharField(max_length=255)
-    file_type = models.CharField(max_length=50, blank=True)
-    file_size = models.PositiveIntegerField(
-        help_text="File size in bytes",
-        null=True,
-        blank=True
-    )
-    description = models.CharField(max_length=255, blank=True)
-
-    uploaded_by = models.ForeignKey(
-        "users.CustomUser",
-        on_delete=models.SET_NULL,
-        null=True
-    )
-    uploaded_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        verbose_name = "Expense Attachment"
-        verbose_name_plural = "Expense Attachments"
-        ordering = ['-uploaded_at']
-
-    def __str__(self):
-        return f"{self.filename} - {self.expense}"
-
-    def save(self, *args, **kwargs):
-        if self.file:
-            self.filename = self.file.name
-            self.file_size = self.file.size
         super().save(*args, **kwargs)
