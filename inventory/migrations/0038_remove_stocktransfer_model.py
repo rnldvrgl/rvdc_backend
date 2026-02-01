@@ -7,7 +7,7 @@ from django.db import migrations
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('inventory', '0037_seed_main_sub_stalls'),
+        ('inventory', '0035_remove_seed_stalls'),
         ('expenses', '0007_remove_expense_transfer'),  # Must remove FK first
     ]
 

@@ -180,7 +180,7 @@ class Migration(migrations.Migration):
             ),
         ),
 
-        # Update existing fields
+        # Update existing fields (keep technicians as ManyToMany)
         migrations.AlterField(
             model_name='schedule',
             name='client',
@@ -192,12 +192,10 @@ class Migration(migrations.Migration):
         ),
         migrations.AlterField(
             model_name='schedule',
-            name='technician',
-            field=models.ForeignKey(
+            name='technicians',
+            field=models.ManyToManyField(
                 blank=True,
-                limit_choices_to={'role': 'technician'},
-                null=True,
-                on_delete=django.db.models.deletion.SET_NULL,
+                limit_choices_to={'role': 'technician', 'is_deleted': False},
                 related_name='schedules',
                 to=settings.AUTH_USER_MODEL,
             ),
@@ -255,7 +253,7 @@ class Migration(migrations.Migration):
         # Add indexes
         migrations.AddIndex(
             model_name='schedule',
-            index=models.Index(fields=['scheduled_date', 'technician'], name='schedules_s_schedul_idx'),
+            index=models.Index(fields=['scheduled_date'], name='schedules_s_schedul_idx'),
         ),
         migrations.AddIndex(
             model_name='schedule',

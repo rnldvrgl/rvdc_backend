@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('installations', '0001_initial'),
+        ('installations', '0005_add_warranty_claim_model'),
         ('inventory', '0039_add_stall_identification'),
     ]
 
