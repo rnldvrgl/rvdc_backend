@@ -10,8 +10,10 @@ Features:
 
 from decimal import Decimal
 
+from clients.models import Client
 from django.db import transaction
-from inventory.models import Stock
+from installations.models import AirconUnit
+from inventory.models import Stall, Stock
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 from services.business_logic import (
@@ -29,6 +31,7 @@ from services.models import (
     ServicePayment,
     TechnicianAssignment,
 )
+from users.models import CustomUser
 
 
 class ApplianceItemUsedSerializer(serializers.ModelSerializer):
@@ -218,9 +221,39 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
         return instance
 
 
-class TechnicianAssignmentSerializer(serializers.ModelSerializer):
-    """Serializer for technician assignments."""
+class TechnicianAssignmentPayloadSerializer(serializers.ModelSerializer):
+    """Serializer for creating/updating technician assignments (write operations)."""
 
+    technician = serializers.PrimaryKeyRelatedField(
+        queryset=CustomUser.objects.filter(role__in=['technician', 'admin', 'manager']),
+        required=True
+    )
+    appliance = serializers.PrimaryKeyRelatedField(
+        queryset=AirconUnit.objects.all(),
+        required=False,
+        allow_null=True
+    )
+
+    class Meta:
+        model = TechnicianAssignment
+        fields = [
+            "id",
+            "service",
+            "appliance",
+            "technician",
+            "assignment_type",
+            "note",
+        ]
+        extra_kwargs = {
+            "service": {"required": False},  # Set by parent serializer during nested creation
+            "id": {"read_only": True},
+        }
+
+
+class TechnicianAssignmentSerializer(serializers.ModelSerializer):
+    """Serializer for reading technician assignments."""
+
+    technician = serializers.PrimaryKeyRelatedField(read_only=True)
     technician_name = serializers.CharField(source="technician.get_full_name", read_only=True)
 
     class Meta:
@@ -353,6 +386,20 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         return instance
 
 
+class NestedClientSerializer(serializers.ModelSerializer):
+    """Nested client serializer for read operations."""
+    class Meta:
+        model = Client
+        fields = ['id', 'full_name', 'contact_number', 'address']
+
+
+class NestedStallSerializer(serializers.ModelSerializer):
+    """Nested stall serializer for read operations."""
+    class Meta:
+        model = Stall
+        fields = ['id', 'name']
+
+
 class ServiceSerializer(serializers.ModelSerializer):
     """
     Service serializer with two-stall architecture support.
@@ -364,7 +411,6 @@ class ServiceSerializer(serializers.ModelSerializer):
     """
 
     appliances = ServiceApplianceSerializer(many=True, required=False)
-    technician_assignments = TechnicianAssignmentSerializer(many=True, required=False, read_only=True)
 
     # Read-only fields
     client_name = serializers.CharField(source="client.name", read_only=True)
@@ -384,6 +430,7 @@ class ServiceSerializer(serializers.ModelSerializer):
         decimal_places=2,
         read_only=True
     )
+    payment_status = serializers.SerializerMethodField()
 
     class Meta:
         model = Service
@@ -400,11 +447,9 @@ class ServiceSerializer(serializers.ModelSerializer):
             "override_address",
             "override_contact_person",
             "override_contact_number",
-            "scheduled_date",
-            "scheduled_time",
-            "estimated_duration",
             "pickup_date",
             "delivery_date",
+            "received_at",
             "status",
             "remarks",
             "notes",
@@ -413,6 +458,7 @@ class ServiceSerializer(serializers.ModelSerializer):
             "main_stall_revenue",
             "sub_stall_revenue",
             "total_revenue",
+            "payment_status",
             "appliances",
             "technician_assignments",
         ]
@@ -420,27 +466,70 @@ class ServiceSerializer(serializers.ModelSerializer):
             "main_stall_revenue",
             "sub_stall_revenue",
             "total_revenue",
+            "payment_status",
             "created_at",
             "updated_at",
         ]
 
+    def get_fields(self):
+        """Dynamically select technician_assignments serializer based on request method."""
+        fields = super().get_fields()
+
+        # Use payload serializer for write operations, regular serializer for reads
+        request = self.context.get('request')
+        if request and request.method in ['POST', 'PUT', 'PATCH']:
+            # Write operations - use IDs
+            fields['technician_assignments'] = TechnicianAssignmentPayloadSerializer(
+                many=True,
+                required=False
+            )
+        else:
+            # Read operations - use nested objects
+            fields['client'] = NestedClientSerializer(read_only=True)
+            fields['stall'] = NestedStallSerializer(read_only=True)
+            fields['technician_assignments'] = TechnicianAssignmentSerializer(
+                many=True,
+                required=False
+            )
+
+        return fields
+
+    def get_payment_status(self, obj):
+        """Calculate payment status based on total_paid and total_cost."""
+        try:
+            total_cost = float(obj.total_revenue or 0)
+            total_paid = float(obj.total_paid or 0)
+
+            if total_cost == 0:
+                return "paid"
+
+            if total_paid >= total_cost:
+                return "paid"
+            elif total_paid > 0:
+                return "partial"
+            else:
+                return "unpaid"
+        except (ValueError, TypeError):
+            return "unpaid"
+
     def validate(self, data):
         """Validate service data."""
-        # Auto-assign Main stall if not provided
-        if "stall" not in data or data.get("stall") is None:
-            main_stall = get_main_stall()
-            if not main_stall:
-                raise ValidationError("Main stall not configured in system.")
-            data["stall"] = main_stall
+        # Auto-assign Main stall - services always go to Main stall
+        main_stall = get_main_stall()
+        if not main_stall:
+            raise ValidationError("Main stall not configured in system.")
+        data["stall"] = main_stall
 
         return data
 
     def create(self, validated_data):
         """
-        Create service with appliances and reserve stock.
+        Create service with appliances, technician assignments, and reserve stock.
         Revenue is calculated but transactions are created on completion.
+        Auto-creates Schedule records for field work (home_service, pull_out).
         """
         appliances_data = validated_data.pop("appliances", [])
+        technician_assignments_data = validated_data.pop("technician_assignments", [])
 
         with transaction.atomic():
             service = Service.objects.create(**validated_data)
@@ -455,14 +544,61 @@ class ServiceSerializer(serializers.ModelSerializer):
                 serializer.is_valid(raise_exception=True)
                 serializer.save()
 
+            # Create technician assignments
+            technician_ids = []
+            for assignment_data in technician_assignments_data:
+                # Extract technician (may already be an object from validation)
+                technician = assignment_data.get('technician')
+
+                # Handle both cases: technician might be CustomUser object or integer ID
+                if isinstance(technician, CustomUser):
+                    # Already a CustomUser object from validation
+                    pass
+                elif isinstance(technician, int):
+                    # Integer ID - fetch the object
+                    try:
+                        technician = CustomUser.objects.get(pk=technician)
+                    except CustomUser.DoesNotExist:
+                        raise ValidationError(f"Technician with ID {technician} does not exist.")
+                else:
+                    raise ValidationError(f"Invalid technician value: {technician}")
+
+                # Extract appliance (may also be an object from validation)
+                appliance = assignment_data.get('appliance')
+                if appliance and not isinstance(appliance, AirconUnit):
+                    try:
+                        appliance = AirconUnit.objects.get(pk=appliance)
+                    except AirconUnit.DoesNotExist:
+                        raise ValidationError(f"Appliance with ID {appliance} does not exist.")
+
+                # Create assignment directly
+                assignment = TechnicianAssignment.objects.create(
+                    service=service,
+                    technician=technician,
+                    appliance=appliance,
+                    assignment_type=assignment_data.get('assignment_type', 'repair'),
+                    note=assignment_data.get('note', '')
+                )
+                technician_ids.append(technician.id)
+
+            # Auto-create Schedule(s) based on service_mode
+            self._create_schedules_for_service(service, list(set(technician_ids)))
+
             # Calculate initial revenue (no transactions yet)
             RevenueCalculator.calculate_service_revenue(service, save=True)
+
+        # Fetch service with related objects for proper serialization
+        service = Service.objects.select_related('client', 'stall').prefetch_related(
+            'technician_assignments__technician',
+            'appliances'
+        ).get(pk=service.pk)
 
         return service
 
     def update(self, instance, validated_data):
-        """Update service and appliances."""
+        """Update service, appliances, and technician assignments."""
         appliances_data = validated_data.pop("appliances", None)
+        technician_assignments_data = validated_data.pop("technician_assignments", None)
 
         with transaction.atomic():
             instance = super().update(instance, validated_data)
@@ -495,10 +631,133 @@ class ServiceSerializer(serializers.ModelSerializer):
                         serializer.is_valid(raise_exception=True)
                         serializer.save()
 
+            # Handle technician assignments update if provided
+            if technician_assignments_data is not None:
+                # Clear existing assignments and create new ones
+                instance.technician_assignments.all().delete()
+                technician_ids = []
+                for assignment_data in technician_assignments_data:
+                    # Extract technician (may already be an object from validation)
+                    technician = assignment_data.get('technician')
+
+                    # Handle both cases: technician might be CustomUser object or integer ID
+                    if isinstance(technician, CustomUser):
+                        # Already a CustomUser object from validation
+                        pass
+                    elif isinstance(technician, int):
+                        # Integer ID - fetch the object
+                        try:
+                            technician = CustomUser.objects.get(pk=technician)
+                        except CustomUser.DoesNotExist:
+                            raise ValidationError(f"Technician with ID {technician} does not exist.")
+                    else:
+                        raise ValidationError(f"Invalid technician value: {technician}")
+
+                    # Extract appliance (may also be an object from validation)
+                    appliance = assignment_data.get('appliance')
+                    if appliance and not isinstance(appliance, AirconUnit):
+                        try:
+                            appliance = AirconUnit.objects.get(pk=appliance)
+                        except AirconUnit.DoesNotExist:
+                            raise ValidationError(f"Appliance with ID {appliance} does not exist.")
+
+                    # Create assignment directly
+                    assignment = TechnicianAssignment.objects.create(
+                        service=instance,
+                        technician=technician,
+                        appliance=appliance,
+                        assignment_type=assignment_data.get('assignment_type', 'repair'),
+                        note=assignment_data.get('note', '')
+                    )
+                    technician_ids.append(technician.id)
+
+                # Update schedules if technicians changed
+                if technician_ids:
+                    self._update_schedule_technicians(instance, list(set(technician_ids)))
+
             # Recalculate revenue
             RevenueCalculator.calculate_service_revenue(instance, save=True)
 
+        # Fetch service with related objects for proper serialization
+        instance = Service.objects.select_related('client', 'stall').prefetch_related(
+            'technician_assignments__technician',
+            'appliances'
+        ).get(pk=instance.pk)
+
         return instance
+
+    def _create_schedules_for_service(self, service, technician_ids):
+        """
+        Auto-create Schedule records based on service_mode.
+
+        - CARRY_IN: No schedule (customer brings to shop)
+        - HOME_SERVICE: 1 schedule for field appointment
+        - PULL_OUT: 1 schedule for pickup (delivery scheduled later)
+        """
+        from datetime import time
+
+        from django.utils import timezone
+        from schedules.models import Schedule
+        from utils.enums import ServiceMode
+
+        # CARRY_IN: No schedule needed
+        if service.service_mode == ServiceMode.CARRY_IN:
+            return
+
+        # Get request user for created_by
+        request = self.context.get('request')
+        created_by = request.user if request and hasattr(request, 'user') else None
+
+        # HOME_SERVICE: Create 1 schedule for the appointment
+        if service.service_mode == ServiceMode.HOME_SERVICE:
+            # Use today's date and current time as defaults
+            # Frontend should provide actual scheduling data in future
+            schedule = Schedule.objects.create(
+                client=service.client,
+                service=service,
+                schedule_type='home_service',
+                scheduled_date=timezone.now().date(),
+                scheduled_time=timezone.now().time(),
+                estimated_duration=60,
+                status='pending',
+                address=service.override_address or (service.client.address if service.client else ''),
+                contact_person=service.override_contact_person or (service.client.full_name if service.client else ''),
+                contact_number=service.override_contact_number or (service.client.contact_number if service.client else ''),
+                notes=service.description,
+                created_by=created_by
+            )
+            if technician_ids:
+                schedule.technicians.set(technician_ids)
+
+        # PULL_OUT: Create 1 schedule for pickup (delivery created later)
+        elif service.service_mode == ServiceMode.PULL_OUT:
+            if service.pickup_date:
+                schedule = Schedule.objects.create(
+                    client=service.client,
+                    service=service,
+                    schedule_type='pull_out',
+                    scheduled_date=service.pickup_date,
+                    scheduled_time=time(9, 0),  # Default 9 AM
+                    estimated_duration=60,
+                    status='pending',
+                    address=service.override_address or (service.client.address if service.client else ''),
+                    contact_person=service.override_contact_person or (service.client.full_name if service.client else ''),
+                    contact_number=service.override_contact_number or (service.client.contact_number if service.client else ''),
+                    notes=f"Pick up for {service.description}",
+                    created_by=created_by
+                )
+                if technician_ids:
+                    schedule.technicians.set(technician_ids)
+
+    def _update_schedule_technicians(self, service, technician_ids):
+        """Update technicians assigned to existing schedules for this service."""
+        from schedules.models import Schedule
+
+        schedules = Schedule.objects.filter(service=service, status__in=['pending', 'confirmed'])
+
+        for schedule in schedules:
+            if technician_ids:
+                schedule.technicians.set(technician_ids)
 
 
 class ServiceCompletionSerializer(serializers.Serializer):

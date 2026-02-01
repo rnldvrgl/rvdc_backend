@@ -15,7 +15,7 @@ class ServiceType(models.TextChoices):
     REPAIR = "repair", _("Repair")
     INSTALLATION = "installation", _("Installation")
     MOTOR_REWIND = "motor_rewind", _("Motor Rewind")
-    CHECK_UP = "check_up", _("Check-up")
+    INSPECTION = "inspection", _("Inspection")
     CLEANING = "cleaning", _("Cleaning")
 
 
@@ -38,9 +38,9 @@ class ApplianceStatus(models.TextChoices):
 
 
 class ServiceMode(models.TextChoices):
-    IN_SHOP = "in_shop", _("In-Shop")
+    CARRY_IN = "carry_in", _("Carry-In")
     HOME_SERVICE = "home_service", _("Home Service")
-    PULL_OUT_RETURN = "pull_out_return", _("Pull-Out & Return")
+    PULL_OUT = "pull_out", _("Pull-Out")
 
 
 class BankChoices(models.TextChoices):

@@ -1,6 +1,5 @@
-from datetime import datetime, timedelta
-
 from clients.models import Client
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -82,11 +81,26 @@ class Service(models.Model):
     override_address = models.TextField(blank=True, null=True)
     override_contact_person = models.CharField(max_length=100, blank=True, null=True)
     override_contact_number = models.CharField(max_length=20, blank=True, null=True)
-    scheduled_date = models.DateField(blank=True, null=True)
-    scheduled_time = models.TimeField(blank=True, null=True)
-    estimated_duration = models.PositiveIntegerField(default=60)  # minutes
-    pickup_date = models.DateField(blank=True, null=True)
-    delivery_date = models.DateField(blank=True, null=True)
+
+    # Pull-out service fields (scheduling is handled by Schedule model)
+    pickup_date = models.DateField(
+        blank=True,
+        null=True,
+        help_text="Pickup date for pull-out services (set at service creation)"
+    )
+    delivery_date = models.DateField(
+        blank=True,
+        null=True,
+        help_text="Delivery date for pull-out services (set when scheduling delivery after repair)"
+    )
+
+    # For carry-in services: track when unit was received
+    received_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="When customer dropped off unit (carry-in services)"
+    )
+
     status = models.CharField(
         max_length=30, choices=ServiceStatus.choices, default=ServiceStatus.IN_PROGRESS
     )
@@ -126,6 +140,31 @@ class Service(models.Model):
     class Meta:
         ordering = ["-created_at"]
 
+    def clean(self):
+        """Validate service data"""
+        super().clean()
+
+        # Motor Rewind services must use carry-in mode
+        if self.service_type == ServiceType.MOTOR_REWIND:
+            if self.service_mode != ServiceMode.CARRY_IN:
+                raise ValidationError({
+                    'service_mode': 'Motor Rewind services must use Carry-In mode.'
+                })
+
+        # Pull-out services must have pickup_date
+        if self.service_mode == ServiceMode.PULL_OUT:
+            if not self.pickup_date:
+                raise ValidationError({
+                    'pickup_date': 'Pull-out services must have a pickup date.'
+                })
+
+    def save(self, *args, **kwargs):
+        """Override save to run validation"""
+        if kwargs.pop('skip_validation', False):
+            super().save(*args, **kwargs)
+        else:
+            self.full_clean()
+            super().save(*args, **kwargs)
 
     def __str__(self):
 
@@ -146,14 +185,6 @@ class Service(models.Model):
             if iu.item and iu.item.price
         )
         return appliance_costs + parts_costs
-
-    @property
-    def scheduled_end_time(self):
-        """Calculate end time using start + estimated_duration (if available)."""
-        if self.scheduled_date and self.scheduled_time:
-            dt = datetime.combine(self.scheduled_date, self.scheduled_time)
-            return (dt + timedelta(minutes=self.estimated_duration)).time()
-        return None
 
     @property
     def total_paid(self):

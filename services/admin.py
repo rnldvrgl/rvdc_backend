@@ -20,8 +20,8 @@ class ServiceAdmin(admin.ModelAdmin):
         "stall",
         "service_type",
         "service_mode",
-        "scheduled_date",
-        "scheduled_time",
+        "pickup_date",
+        "delivery_date",
         "status",
         "payment_status",
         "total_revenue",
@@ -35,7 +35,7 @@ class ServiceAdmin(admin.ModelAdmin):
         "status",
         "payment_status",
         "stall",
-        "scheduled_date",
+        "pickup_date",
         "created_at",
     )
     search_fields = (

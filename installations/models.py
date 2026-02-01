@@ -403,9 +403,9 @@ class WarrantyClaim(models.Model):
 
         # Service must be warranty service if linked
         if self.service:
-            if self.service.service_type not in [ServiceType.REPAIR, ServiceType.CHECK_UP]:
+            if self.service.service_type not in [ServiceType.REPAIR, ServiceType.INSPECTION]:
                 raise ValidationError(
-                    {"service": "Warranty claim service must be a repair or check-up service."}
+                    {"service": "Warranty claim service must be a repair or inspection service."}
                 )
 
     def save(self, *args, **kwargs):

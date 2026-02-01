@@ -1,10 +1,11 @@
-from typing import List, Dict, Optional
-from inventory.models import Item, Stall, ProductCategory
-from django.db.models.functions import Concat
+from typing import Dict, List, Optional
+
 from django.db.models import F, Value
+from django.db.models.functions import Concat
 from installations.models import AirconBrand, AirconModel
+from inventory.models import Item, ProductCategory, Stall
 from users.models import CustomUser
-from utils.enums import AirconType, BankChoices, ServiceStatus, ServiceType
+from utils.enums import AirconType, BankChoices, ServiceMode, ServiceStatus, ServiceType
 
 
 def get_status_options() -> List[Dict[str, str]]:
@@ -82,6 +83,10 @@ def get_service_status_options():
 
 def get_service_type_options():
     return [{"label": label, "value": value} for value, label in ServiceType.choices]
+
+
+def get_service_mode_options():
+    return [{"label": label, "value": value} for value, label in ServiceMode.choices]
 
 
 def get_aircon_type_options():

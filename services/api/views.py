@@ -30,7 +30,7 @@ from services.models import (
     TechnicianAssignment,
 )
 from utils.filters.options import (
-    get_client_options,
+    get_service_mode_options,
     get_service_status_options,
     get_service_type_options,
     get_user_options,
@@ -77,6 +77,24 @@ class ServiceViewSet(viewsets.ModelViewSet):
                 "technician_assignments__technician",
             )
         )
+
+        # Apply filters from query params
+        status = self.request.query_params.get("status")
+        if status:
+            qs = qs.filter(status=status)
+
+        service_type = self.request.query_params.get("service_type")
+        if service_type:
+            qs = qs.filter(service_type=service_type)
+
+        service_mode = self.request.query_params.get("service_mode")
+        if service_mode:
+            qs = qs.filter(service_mode=service_mode)
+
+        technician = self.request.query_params.get("technician")
+        if technician:
+            qs = qs.filter(technician_assignments__technician_id=technician).distinct()
+
         return filter_by_date_range(self.request, qs)
 
     @action(detail=True, methods=["post"], url_path="complete")
@@ -235,18 +253,19 @@ class ServiceViewSet(viewsets.ModelViewSet):
     def get_filters(self, request):
         """Get filter options for service list."""
         filters_config = {
-            "client": {"options": get_client_options(include_number=True)},
             "technician": {
                 "options": lambda: get_user_options(include_roles=["technician"])
             },
             "status": {"options": get_service_status_options},
             "service_type": {"options": get_service_type_options},
+            "service_mode": {"options": get_service_mode_options},
         }
 
         ordering_config = [
-            {"label": "Created At", "value": "created_at"},
-            {"label": "Scheduled Date", "value": "scheduled_date"},
-            {"label": "Total Revenue", "value": "total_revenue"},
+            {"label": "Created At (Newest)", "value": "-created_at"},
+            {"label": "Created At (Oldest)", "value": "created_at"},
+            {"label": "Total Revenue (High to Low)", "value": "-total_revenue"},
+            {"label": "Total Revenue (Low to High)", "value": "total_revenue"},
             {"label": "Status", "value": "status"},
         ]
 
@@ -332,6 +351,107 @@ class ServiceViewSet(viewsets.ModelViewSet):
         service = self.get_object()
         summary = ServicePaymentManager.get_payment_summary(service)
         return Response(summary, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="schedule-delivery")
+    def schedule_delivery(self, request, pk=None):
+        """
+        Schedule delivery for a pull-out service.
+
+        Creates a delivery Schedule when the appliance is ready.
+
+        Request body:
+        {
+            "delivery_date": "2024-02-01",  // Required: date for delivery
+            "delivery_time": "14:00:00",     // Optional: time for delivery (default 14:00)
+            "notes": "Ready for delivery"    // Optional: additional notes
+        }
+
+        Response:
+        {
+            "service_id": 123,
+            "delivery_date": "2024-02-01",
+            "schedule_id": 456,
+            "message": "Delivery scheduled successfully"
+        }
+        """
+        from datetime import datetime
+        from datetime import time as dt_time
+
+        from schedules.models import Schedule
+        from utils.enums import ServiceMode
+
+        service = self.get_object()
+
+        # Validate service is pull-out
+        if service.service_mode != ServiceMode.PULL_OUT:
+            return Response(
+                {"error": "Only pull-out services can schedule delivery"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get delivery date from request
+        delivery_date_str = request.data.get('delivery_date')
+        if not delivery_date_str:
+            return Response(
+                {"error": "delivery_date is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            delivery_date = datetime.strptime(delivery_date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response(
+                {"error": "Invalid date format. Use YYYY-MM-DD"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get delivery time (default to 2 PM)
+        delivery_time_str = request.data.get('delivery_time', '14:00:00')
+        try:
+            delivery_time = datetime.strptime(delivery_time_str, '%H:%M:%S').time()
+        except ValueError:
+            delivery_time = dt_time(14, 0)
+
+        # Update service delivery_date
+        service.delivery_date = delivery_date
+        service.save(update_fields=['delivery_date'])
+
+        # Get technicians from service
+        technician_ids = service.technician_assignments.filter(
+            assignment_type='repair'
+        ).values_list('technician_id', flat=True)
+
+        # Create delivery schedule
+        schedule = Schedule.objects.create(
+            client=service.client,
+            service=service,
+            schedule_type='return',
+            scheduled_date=delivery_date,
+            scheduled_time=delivery_time,
+            estimated_duration=60,
+            status='pending',
+            address=service.override_address or service.client.address,
+            contact_person=service.override_contact_person or service.client.full_name,
+            contact_number=service.override_contact_number or service.client.contact_number,
+            notes=request.data.get('notes', f"Delivery for {service.description}"),
+            created_by=request.user if hasattr(request, 'user') else None
+        )
+
+        # Assign technicians to delivery schedule
+        if technician_ids:
+            from users.models import CustomUser
+            technicians = CustomUser.objects.filter(id__in=technician_ids)
+            schedule.technicians.set(technicians)
+
+        return Response(
+            {
+                "service_id": service.id,
+                "delivery_date": str(delivery_date),
+                "schedule_id": schedule.id,
+                "message": "Delivery scheduled successfully"
+            },
+            status=status.HTTP_200_OK
+        )
 
     @action(detail=False, methods=["get"], url_path="outstanding")
     def outstanding(self, request):
