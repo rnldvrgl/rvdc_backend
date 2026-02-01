@@ -128,7 +128,9 @@ class ExpenseItemSerializer(serializers.ModelSerializer):
 class ExpenseSerializer(serializers.ModelSerializer):
     """Comprehensive serializer for expenses"""
     stall_name = serializers.CharField(source='stall.name', read_only=True)
-    category_name = serializers.CharField(source='category.name', read_only=True)
+    stall_data = serializers.SerializerMethodField()
+    category_name = serializers.CharField(source='category.name', read_only=True, allow_null=True)
+    category_data = ExpenseCategoryListSerializer(source='category', read_only=True)
     created_by_detail = UserMinimalSerializer(source='created_by', read_only=True)
     items = ExpenseItemSerializer(many=True, read_only=True)
 
@@ -145,8 +147,10 @@ class ExpenseSerializer(serializers.ModelSerializer):
             'id',
             'stall',
             'stall_name',
+            'stall_data',
             'category',
             'category_name',
+            'category_data',
             'expense_date',
             'reference_number',
             'vendor',
@@ -161,8 +165,6 @@ class ExpenseSerializer(serializers.ModelSerializer):
             'created_by',
             'created_by_detail',
             'source',
-            'recurring',
-            'recurring_frequency',
             'items',
             'is_overdue',
             'is_deleted',
@@ -176,6 +178,16 @@ class ExpenseSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
+
+    def get_stall_data(self, obj):
+        """Return stall data with id and name"""
+        if obj.stall:
+            return {
+                'id': obj.stall.id,
+                'name': obj.stall.name,
+                'location': obj.stall.location,
+            }
+        return None
 
     def get_balance_due(self, obj):
         return float(obj.balance_due)
@@ -193,15 +205,6 @@ class ExpenseSerializer(serializers.ModelSerializer):
                 'paid_amount': 'Paid amount cannot exceed total price'
             })
 
-        # Validate recurring frequency
-        recurring = attrs.get('recurring', self.instance.recurring if self.instance else False)
-        recurring_frequency = attrs.get('recurring_frequency', self.instance.recurring_frequency if self.instance else None)
-
-        if recurring and not recurring_frequency:
-            raise serializers.ValidationError({
-                'recurring_frequency': 'Frequency is required for recurring expenses'
-            })
-
         return attrs
 
     def create(self, validated_data):
@@ -216,7 +219,9 @@ class ExpenseSerializer(serializers.ModelSerializer):
 class ExpenseListSerializer(serializers.ModelSerializer):
     """Simplified serializer for expense lists"""
     stall_name = serializers.CharField(source='stall.name', read_only=True)
-    category_name = serializers.CharField(source='category.name', read_only=True)
+    stall_data = serializers.SerializerMethodField()
+    category_name = serializers.CharField(source='category.name', read_only=True, allow_null=True)
+    category_data = ExpenseCategoryListSerializer(source='category', read_only=True)
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
     balance_due = serializers.SerializerMethodField()
     payment_status_display = serializers.CharField(source='get_payment_status_display', read_only=True)
@@ -227,10 +232,11 @@ class ExpenseListSerializer(serializers.ModelSerializer):
             'id',
             'stall',
             'stall_name',
+            'stall_data',
             'category',
             'category_name',
+            'category_data',
             'expense_date',
-            'reference_number',
             'vendor',
             'description',
             'total_price',
@@ -238,9 +244,22 @@ class ExpenseListSerializer(serializers.ModelSerializer):
             'balance_due',
             'payment_status',
             'payment_status_display',
+            'payment_method',
             'created_by_name',
+            'source',
+            'is_deleted',
             'created_at',
         ]
+
+    def get_stall_data(self, obj):
+        """Return stall data with id and name"""
+        if obj.stall:
+            return {
+                'id': obj.stall.id,
+                'name': obj.stall.name,
+                'location': obj.stall.location,
+            }
+        return None
 
     def get_balance_due(self, obj):
         return float(obj.balance_due)

@@ -132,6 +132,7 @@ class Expense(models.Model):
     paid_at = models.DateTimeField(null=True, blank=True)
     payment_method = models.CharField(
         max_length=50,
+        default='cash',
         blank=True,
         help_text="Cash, Bank Transfer, Cheque, etc."
     )
@@ -143,22 +144,6 @@ class Expense(models.Model):
         max_length=20,
         choices=[("manual", "Manual"), ("service", "Service")],
         default="manual",
-    )
-    recurring = models.BooleanField(
-        default=False,
-        help_text="Is this a recurring expense?"
-    )
-    recurring_frequency = models.CharField(
-        max_length=20,
-        choices=[
-            ('daily', 'Daily'),
-            ('weekly', 'Weekly'),
-            ('monthly', 'Monthly'),
-            ('quarterly', 'Quarterly'),
-            ('yearly', 'Yearly'),
-        ],
-        blank=True,
-        null=True
     )
 
     # User tracking
@@ -200,11 +185,6 @@ class Expense(models.Model):
         if self.paid_amount > self.total_price:
             raise ValidationError({
                 'paid_amount': 'Paid amount cannot exceed total price'
-            })
-
-        if self.recurring and not self.recurring_frequency:
-            raise ValidationError({
-                'recurring_frequency': 'Frequency is required for recurring expenses'
             })
 
     def save(self, *args, **kwargs):

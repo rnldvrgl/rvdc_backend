@@ -3,7 +3,7 @@ URL routing for expense management API.
 
 Provides routes for:
 - Expense categories (CRUD, stats)
-- Expenses (CRUD, payments, filtering)
+- Expenses (CRUD, payments, filtering) - Stall expenses
 - Expense analytics (summaries, trends, reports)
 """
 

@@ -7,7 +7,6 @@ Provides filtering for:
 - Date ranges
 - Vendors
 - Stalls
-- Recurring expenses
 """
 
 from django_filters import rest_framework as filters
@@ -53,18 +52,6 @@ class ExpenseFilter(filters.FilterSet):
     # Source filtering
     source = filters.ChoiceFilter(choices=[('manual', 'Manual'), ('service', 'Service')])
 
-    # Recurring expenses
-    recurring = filters.BooleanFilter()
-    recurring_frequency = filters.ChoiceFilter(
-        choices=[
-            ('daily', 'Daily'),
-            ('weekly', 'Weekly'),
-            ('monthly', 'Monthly'),
-            ('quarterly', 'Quarterly'),
-            ('yearly', 'Yearly'),
-        ]
-    )
-
     # Overdue filter
     is_overdue = filters.BooleanFilter(method='filter_is_overdue')
 
@@ -75,7 +62,6 @@ class ExpenseFilter(filters.FilterSet):
             'category',
             'payment_status',
             'source',
-            'recurring',
             'expense_date',
         ]
 

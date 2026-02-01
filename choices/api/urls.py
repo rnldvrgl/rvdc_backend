@@ -1,15 +1,16 @@
-from django.urls import path
 from choices.api.views import (
-    ItemChoicesAPIView,
-    StallChoicesAPIView,
-    ProductCategoryChoicesAPIView,
+    AirconBrandsChoicesAPIView,
+    AirconTypesChoicesAPIView,
+    BanksChoicesAPIView,
     ClientChoicesAPIView,
     EmployeesChoicesAPIView,
+    ExpenseCategoriesChoicesAPIView,
+    ItemChoicesAPIView,
+    ProductCategoryChoicesAPIView,
+    StallChoicesAPIView,
     TechniciansChoicesAPIView,
-    BanksChoicesAPIView,
-    AirconTypesChoicesAPIView,
-    AirconBrandsChoicesAPIView,
 )
+from django.urls import path
 
 urlpatterns = [
     path(
@@ -32,5 +33,10 @@ urlpatterns = [
         "aircon-brands/",
         AirconBrandsChoicesAPIView.as_view(),
         name="aircon_brands_choices",
+    ),
+    path(
+        "expense-categories/",
+        ExpenseCategoriesChoicesAPIView.as_view(),
+        name="expense_categories_choices",
     ),
 ]
