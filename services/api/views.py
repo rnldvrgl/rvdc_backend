@@ -527,6 +527,34 @@ class ServiceApplianceViewSet(viewsets.ModelViewSet):
             )
         )
 
+    def perform_create(self, serializer):
+        """Create appliance and recalculate service revenue."""
+        appliance = serializer.save()
+        # Recalculate revenue after creating appliance
+        from services.business_logic import RevenueCalculator, ServicePaymentManager
+        RevenueCalculator.calculate_service_revenue(appliance.service, save=True)
+        # Sync sales items if transaction exists
+        ServicePaymentManager.sync_sales_items(appliance.service)
+
+    def perform_update(self, serializer):
+        """Update appliance and recalculate service revenue."""
+        appliance = serializer.save()
+        # Recalculate revenue after updating appliance
+        from services.business_logic import RevenueCalculator, ServicePaymentManager
+        RevenueCalculator.calculate_service_revenue(appliance.service, save=True)
+        # Sync sales items if transaction exists
+        ServicePaymentManager.sync_sales_items(appliance.service)
+
+    def perform_destroy(self, instance):
+        """Delete appliance and recalculate service revenue."""
+        service = instance.service
+        instance.delete()
+        # Recalculate revenue after deleting appliance
+        from services.business_logic import RevenueCalculator, ServicePaymentManager
+        RevenueCalculator.calculate_service_revenue(service, save=True)
+        # Sync sales items if transaction exists
+        ServicePaymentManager.sync_sales_items(service)
+
 
 # --------------------------
 # Appliance Items Used ViewSet
@@ -547,7 +575,7 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return (
+        queryset = (
             ApplianceItemUsed.objects.all()
             .select_related(
                 "appliance__service",
@@ -557,6 +585,33 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
                 "expense",
             )
         )
+        
+        # Filter by appliance if provided
+        appliance_id = self.request.query_params.get('appliance')
+        if appliance_id:
+            queryset = queryset.filter(appliance_id=appliance_id)
+        
+        return queryset
+
+    def perform_create(self, serializer):
+        """Create item usage and recalculate service revenue."""
+        item_used = serializer.save()
+        # Recalculate revenue after adding parts
+        from services.business_logic import RevenueCalculator, ServicePaymentManager
+        service = item_used.appliance.service
+        RevenueCalculator.calculate_service_revenue(service, save=True)
+        # Sync sales items if transaction exists
+        ServicePaymentManager.sync_sales_items(service)
+
+    def perform_update(self, serializer):
+        """Update item usage and recalculate service revenue."""
+        item_used = serializer.save()
+        # Recalculate revenue after updating parts
+        from services.business_logic import RevenueCalculator, ServicePaymentManager
+        service = item_used.appliance.service
+        RevenueCalculator.calculate_service_revenue(service, save=True)
+        # Sync sales items if transaction exists
+        ServicePaymentManager.sync_sales_items(service)
 
     def destroy(self, request, *args, **kwargs):
         """
@@ -584,7 +639,17 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
                 stall_stock=instance.stall_stock
             )
 
-        return super().destroy(request, *args, **kwargs)
+        # Store service reference before deletion
+        service = instance.appliance.service
+        
+        result = super().destroy(request, *args, **kwargs)
+        
+        # Recalculate revenue and sync sales items after deletion
+        from services.business_logic import RevenueCalculator, ServicePaymentManager
+        RevenueCalculator.calculate_service_revenue(service, save=True)
+        ServicePaymentManager.sync_sales_items(service)
+        
+        return result
 
 
 # --------------------------

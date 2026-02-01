@@ -53,6 +53,7 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
     )
 
     item_name = serializers.CharField(source="item.name", read_only=True)
+    item_sku = serializers.CharField(source="item.sku", read_only=True)
     item_price = serializers.DecimalField(
         source="item.retail_price", read_only=True, max_digits=10, decimal_places=2
     )
@@ -78,6 +79,7 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
             "appliance",
             "item",
             "item_name",
+            "item_sku",
             "item_price",
             "quantity",
             "stall_stock_id",
@@ -411,9 +413,10 @@ class ServiceSerializer(serializers.ModelSerializer):
     """
 
     appliances = ServiceApplianceSerializer(many=True, required=False)
+    payments = serializers.SerializerMethodField()
 
     # Read-only fields
-    client_name = serializers.CharField(source="client.name", read_only=True)
+    client_name = serializers.CharField(source="client.full_name", read_only=True)
     stall_name = serializers.CharField(source="stall.name", read_only=True)
     main_stall_revenue = serializers.DecimalField(
         max_digits=10,
@@ -426,6 +429,16 @@ class ServiceSerializer(serializers.ModelSerializer):
         read_only=True
     )
     total_revenue = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        read_only=True
+    )
+    total_paid = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        read_only=True
+    )
+    balance_due = serializers.DecimalField(
         max_digits=10,
         decimal_places=2,
         read_only=True
@@ -458,14 +471,19 @@ class ServiceSerializer(serializers.ModelSerializer):
             "main_stall_revenue",
             "sub_stall_revenue",
             "total_revenue",
+            "total_paid",
+            "balance_due",
             "payment_status",
             "appliances",
             "technician_assignments",
+            "payments",
         ]
         read_only_fields = [
             "main_stall_revenue",
             "sub_stall_revenue",
             "total_revenue",
+            "total_paid",
+            "balance_due",
             "payment_status",
             "created_at",
             "updated_at",
@@ -512,6 +530,11 @@ class ServiceSerializer(serializers.ModelSerializer):
                 return "unpaid"
         except (ValueError, TypeError):
             return "unpaid"
+
+    def get_payments(self, obj):
+        """Get all payments for this service."""
+        payments = obj.payments.all()
+        return ServicePaymentSerializer(payments, many=True).data
 
     def validate(self, data):
         """Validate service data."""

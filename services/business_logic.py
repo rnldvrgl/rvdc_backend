@@ -223,7 +223,7 @@ class RevenueCalculator:
                 # Calculate charged quantity (total - free_quantity)
                 charged_qty = item_used.quantity - item_used.free_quantity
 
-                if charged_qty > 0 and item_used.item:
+                if charged_qty > 0 and item_used.item:  # Already has check
                     item_revenue = item_used.item.retail_price * charged_qty
                     sub_revenue += item_revenue
 
@@ -394,7 +394,7 @@ class ServiceCompletionHandler:
                     continue
 
                 charged_qty = item_used.quantity - item_used.free_quantity
-                if charged_qty > 0:
+                if charged_qty > 0 and item_used.item:  # Check if item exists
                     SalesItem.objects.create(
                         transaction=receipt,
                         item=item_used.item,
@@ -504,6 +504,130 @@ class ServicePaymentManager:
     """
 
     @staticmethod
+    def sync_sales_items(service):
+        """
+        Sync sales transaction items with current service appliances' labor fees.
+        Updates line items when labor fees change.
+        
+        Note: Parts are NOT synced here - they have separate sub stall transactions.
+        
+        Args:
+            service: Service instance with related_transaction
+        """
+        from sales.models import SalesItem
+        
+        if not service.related_transaction:
+            return
+            
+        sales_transaction = service.related_transaction
+        
+        # Clear existing items and recreate (LABOR FEES ONLY)
+        sales_transaction.items.all().delete()
+        
+        # Add labor fees for each appliance
+        for appliance in service.appliances.all():
+            if appliance.labor_fee > 0 and not appliance.labor_is_free:
+                appliance_name = appliance.appliance_type.name if appliance.appliance_type else "Appliance"
+                brand_info = f" ({appliance.brand})" if appliance.brand else ""
+                SalesItem.objects.create(
+                    transaction=sales_transaction,
+                    item=None,
+                    description=f"Labor Fee - {appliance_name}{brand_info}",
+                    quantity=1,
+                    final_price_per_unit=appliance.labor_fee,
+                )
+
+    @staticmethod
+    def recreate_sales_transaction(service):
+        """
+        Recreate sales transaction from existing service payments.
+        Use this when a sales transaction is deleted but service payments exist.
+        
+        Args:
+            service: Service instance
+            
+        Returns:
+            Created SalesTransaction or None
+        """
+        from sales.models import SalesItem, SalesPayment, SalesTransaction
+        
+        # Check if service has payments but no transaction
+        service_payments = service.payments.all()
+        if not service_payments.exists():
+            return None
+        
+        with transaction.atomic():
+            # Get system stalls
+            main_stall = get_main_stall()
+            sub_stall = get_sub_stall()
+            
+            # Create new main stall sales transaction for labor fees
+            sales_transaction = SalesTransaction.objects.create(
+                stall=service.stall or main_stall,
+                client=service.client,
+                sales_clerk=service_payments.first().received_by if service_payments.first().received_by else None,
+            )
+            service.related_transaction = sales_transaction
+            service.save(update_fields=["related_transaction"])
+            
+            # Create sales items for labor fees ONLY (main stall)
+            for appliance in service.appliances.all():
+                if appliance.labor_fee > 0 and not appliance.labor_is_free:
+                    appliance_name = appliance.appliance_type.name if appliance.appliance_type else "Appliance"
+                    brand_info = f" ({appliance.brand})" if appliance.brand else ""
+                    SalesItem.objects.create(
+                        transaction=sales_transaction,
+                        item=None,
+                        description=f"Labor Fee - {appliance_name}{brand_info}",
+                        quantity=1,
+                        final_price_per_unit=appliance.labor_fee,
+                    )
+            
+            # Collect all parts from all appliances
+            parts_to_add = []
+            for appliance in service.appliances.all():
+                for item_used in appliance.items_used.all():
+                    # Skip free items
+                    if item_used.is_free:
+                        continue
+                        
+                    charged_qty = item_used.quantity - item_used.free_quantity
+                    if charged_qty > 0 and item_used.item:
+                        parts_to_add.append({
+                            'item': item_used.item,
+                            'quantity': charged_qty,
+                        })
+            
+            # Create ONE sub stall transaction for ALL parts (if any)
+            if parts_to_add:
+                sub_sales_transaction = SalesTransaction.objects.create(
+                    stall=sub_stall,
+                    client=service.client,
+                    sales_clerk=service_payments.first().received_by if service_payments.first().received_by else None,
+                )
+                
+                # Add all parts to the single sub stall transaction
+                for part in parts_to_add:
+                    SalesItem.objects.create(
+                        transaction=sub_sales_transaction,
+                        item=part['item'],
+                        description=part['item'].name,
+                        quantity=part['quantity'],
+                        final_price_per_unit=part['item'].retail_price,
+                    )
+            
+            # Recreate all sales payments from service payments (MAIN STALL ONLY)
+            for service_payment in service_payments:
+                SalesPayment.objects.create(
+                    transaction=sales_transaction,
+                    payment_type=service_payment.payment_type,
+                    amount=service_payment.amount,
+                    payment_date=service_payment.payment_date,
+                )
+        
+        return sales_transaction
+
+    @staticmethod
     def create_payment(service, payment_type, amount, received_by=None, notes=""):
         """
         Create a payment for a service.
@@ -521,6 +645,7 @@ class ServicePaymentManager:
         Raises:
             ValidationError: If payment would cause overpayment or invalid amount
         """
+        from sales.models import SalesItem, SalesPayment, SalesTransaction
         from services.models import ServicePayment
 
         # Validate amount
@@ -548,6 +673,148 @@ class ServicePaymentManager:
                 notes=notes,
             )
             # Payment status is automatically updated by the model's save() method
+
+            # Create or update sales transactions
+            # Check if related_transaction exists and is valid (not deleted)
+            sales_transaction = None
+            if service.related_transaction:
+                try:
+                    # Try to access the transaction to see if it still exists
+                    sales_transaction = service.related_transaction
+                    sales_transaction.id  # This will raise DoesNotExist if deleted
+                except SalesTransaction.DoesNotExist:
+                    # Transaction was deleted, clear the reference
+                    service.related_transaction = None
+                    sales_transaction = None
+            
+            # Get system stalls
+            main_stall = get_main_stall()
+            sub_stall = get_sub_stall()
+            
+            if not sales_transaction:
+                # Create main stall sales transaction for labor fees
+                sales_transaction = SalesTransaction.objects.create(
+                    stall=service.stall or main_stall,
+                    client=service.client,
+                    sales_clerk=received_by,
+                )
+                service.related_transaction = sales_transaction
+                service.save(update_fields=["related_transaction"])
+                
+                # Create sales items for all appliances' labor fees (MAIN STALL)
+                for appliance in service.appliances.all():
+                    if appliance.labor_fee > 0 and not appliance.labor_is_free:
+                        appliance_name = appliance.appliance_type.name if appliance.appliance_type else "Appliance"
+                        brand_info = f" ({appliance.brand})" if appliance.brand else ""
+                        SalesItem.objects.create(
+                            transaction=sales_transaction,
+                            item=None,
+                            description=f"Labor Fee - {appliance_name}{brand_info}",
+                            quantity=1,
+                            final_price_per_unit=appliance.labor_fee,
+                        )
+                
+                # Collect all parts from all appliances
+                parts_to_add = []
+                for appliance in service.appliances.all():
+                    for item_used in appliance.items_used.all():
+                        # Skip free items
+                        if item_used.is_free:
+                            continue
+                            
+                        charged_qty = item_used.quantity - item_used.free_quantity
+                        if charged_qty > 0 and item_used.item:
+                            parts_to_add.append({
+                                'item': item_used.item,
+                                'quantity': charged_qty,
+                            })
+                
+                # Create ONE sub stall transaction for ALL parts (if any)
+                sub_sales_transaction = None
+                if parts_to_add:
+                    sub_sales_transaction = SalesTransaction.objects.create(
+                        stall=sub_stall,
+                        client=service.client,
+                        sales_clerk=received_by,
+                    )
+                    
+                    # Add all parts to the single sub stall transaction
+                    for part in parts_to_add:
+                        SalesItem.objects.create(
+                            transaction=sub_sales_transaction,
+                            item=part['item'],
+                            description=part['item'].name,
+                            quantity=part['quantity'],
+                            final_price_per_unit=part['item'].retail_price,
+                        )
+                
+                # Recreate existing service payments with proper allocation
+                # Get all previous payments (excluding the current one we just created)
+                previous_payments = service.payments.exclude(id=payment.id).order_by('payment_date')
+                
+                for service_payment in previous_payments:
+                    # Allocate each previous payment: prioritize sub stall first
+                    remaining = service_payment.amount
+                    
+                    # 1. Allocate to sub stall first (if it exists and has balance)
+                    if sub_sales_transaction:
+                        sub_total = sub_sales_transaction.computed_total
+                        sub_paid = sub_sales_transaction.total_paid
+                        sub_balance = sub_total - sub_paid
+                        
+                        if sub_balance > 0:
+                            sub_payment_amt = min(remaining, sub_balance)
+                            SalesPayment.objects.create(
+                                transaction=sub_sales_transaction,
+                                payment_type=service_payment.payment_type,
+                                amount=sub_payment_amt,
+                                payment_date=service_payment.payment_date,
+                            )
+                            remaining -= sub_payment_amt
+                    
+                    # 2. Allocate remaining to main stall
+                    if remaining > 0:
+                        SalesPayment.objects.create(
+                            transaction=sales_transaction,
+                            payment_type=service_payment.payment_type,
+                            amount=remaining,
+                            payment_date=service_payment.payment_date,
+                        )
+            else:
+                # Find sub stall transaction (if it exists)
+                # It will have the same client and be from sub stall, created around the same time as main transaction
+                sub_sales_transaction = SalesTransaction.objects.filter(
+                    stall=sub_stall,
+                    client=service.client,
+                    created_at__gte=sales_transaction.created_at,
+                ).order_by('created_at').first()
+            
+            # Allocate payment: prioritize sub stall (parts) first, then main stall (labor)
+            remaining_amount = amount
+            
+            # 1. Allocate to sub stall first (if it exists and has balance)
+            if sub_sales_transaction:
+                sub_total = sub_sales_transaction.computed_total
+                sub_paid = sub_sales_transaction.total_paid
+                sub_balance = sub_total - sub_paid
+                
+                if sub_balance > 0:
+                    # Allocate to sub stall
+                    sub_payment_amount = min(remaining_amount, sub_balance)
+                    SalesPayment.objects.create(
+                        transaction=sub_sales_transaction,
+                        payment_type=payment_type,
+                        amount=sub_payment_amount,
+                    )
+                    remaining_amount -= sub_payment_amount
+            
+            # 2. Allocate remaining amount to main stall
+            if remaining_amount > 0:
+                SalesPayment.objects.create(
+                    transaction=sales_transaction,
+                    payment_type=payment_type,
+                    amount=remaining_amount,
+                )
 
         return payment
 

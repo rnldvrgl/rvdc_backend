@@ -388,7 +388,7 @@ class WarrantyClaimSerializer(serializers.ModelSerializer):
 
     unit_serial_number = serializers.CharField(source='unit.serial_number', read_only=True)
     unit_model_name = serializers.CharField(source='unit.model.name', read_only=True)
-    client_name = serializers.CharField(source='unit.sale.client.name', read_only=True)
+    client_name = serializers.CharField(source='unit.sale.client.full_name', read_only=True)
     reviewed_by_name = serializers.CharField(source='reviewed_by.get_full_name', read_only=True)
     service_id = serializers.IntegerField(source='service.id', read_only=True)
 
