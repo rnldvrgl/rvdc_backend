@@ -10,12 +10,19 @@ from inventory.api.serializers import (
     StallSerializer,
 )
 from inventory.models import Item, ProductCategory, Stall
-from rest_framework import generics, permissions
+from rest_framework import generics, permissions, serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from services.models import ApplianceType
 from users.api.serializers import EmployeesSerializer, UserSerializer
 from users.models import CustomUser
 from utils.enums import AirconType, BankChoices
+
+
+class ApplianceTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ApplianceType
+        fields = ["id", "name"]
 
 
 class ChoicesAPIView(APIView):
@@ -75,6 +82,11 @@ class TechniciansChoicesAPIView(BaseChoicesAPIView):
     serializer_class = UserSerializer
 
 
+class UsersChoicesAPIView(BaseChoicesAPIView):
+    queryset = CustomUser.objects.filter(is_deleted=False)
+    serializer_class = UserSerializer
+
+
 class BanksChoicesAPIView(ChoicesAPIView):
     choices_class = BankChoices
 
@@ -91,3 +103,8 @@ class AirconBrandsChoicesAPIView(BaseChoicesAPIView):
 class ExpenseCategoriesChoicesAPIView(BaseChoicesAPIView):
     queryset = ExpenseCategory.objects.filter(is_deleted=False, is_active=True)
     serializer_class = ExpenseCategoryListSerializer
+
+
+class ApplianceTypesChoicesAPIView(BaseChoicesAPIView):
+    queryset = ApplianceType.objects.all()
+    serializer_class = ApplianceTypeSerializer

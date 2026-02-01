@@ -500,8 +500,9 @@ class ServiceSerializer(serializers.ModelSerializer):
             total_cost = float(obj.total_revenue or 0)
             total_paid = float(obj.total_paid or 0)
 
+            # If no cost calculated yet (no items/labor added), status is pending
             if total_cost == 0:
-                return "paid"
+                return "pending"
 
             if total_paid >= total_cost:
                 return "paid"

@@ -1,6 +1,7 @@
 from choices.api.views import (
     AirconBrandsChoicesAPIView,
     AirconTypesChoicesAPIView,
+    ApplianceTypesChoicesAPIView,
     BanksChoicesAPIView,
     ClientChoicesAPIView,
     EmployeesChoicesAPIView,
@@ -9,6 +10,7 @@ from choices.api.views import (
     ProductCategoryChoicesAPIView,
     StallChoicesAPIView,
     TechniciansChoicesAPIView,
+    UsersChoicesAPIView,
 )
 from django.urls import path
 
@@ -39,4 +41,10 @@ urlpatterns = [
         ExpenseCategoriesChoicesAPIView.as_view(),
         name="expense_categories_choices",
     ),
+    path(
+        "appliance-types/",
+        ApplianceTypesChoicesAPIView.as_view(),
+        name="appliance_types_choices",
+    ),
+    path("users/", UsersChoicesAPIView.as_view(), name="users_choices"),
 ]

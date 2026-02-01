@@ -258,7 +258,7 @@ class ServiceCompletionHandler:
         Args:
             service: Service instance to complete
             user: User completing the service (for audit trail)
-            create_receipt: If True, create a unified sales receipt
+            create_receipt: If True, create a unified sales receipt (only if appliances exist)
 
         Returns:
             dict with completion details
@@ -274,67 +274,71 @@ class ServiceCompletionHandler:
             if service.status == ServiceStatusEnum.COMPLETED:
                 raise ValidationError("Service is already completed.")
 
-            main_stall = get_main_stall()
-            sub_stall = get_sub_stall()
+            # Check if service has appliances to process
+            has_appliances = service.appliances.exists()
 
-            if not main_stall or not sub_stall:
-                raise ValidationError("System stalls not properly configured.")
+            if has_appliances:
+                main_stall = get_main_stall()
+                sub_stall = get_sub_stall()
 
-            # Process each appliance item used
-            for appliance in service.appliances.all():
-                for item_used in appliance.items_used.all():
-                    if not item_used.stall_stock:
-                        continue
+                if not main_stall or not sub_stall:
+                    raise ValidationError("System stalls not properly configured.")
 
-                    # Consume reservation (convert reserved -> consumed)
-                    StockReservationManager.consume_reservation(
-                        item=item_used.item,
-                        quantity=item_used.quantity,
-                        stall_stock=item_used.stall_stock
-                    )
+                # Process each appliance item used
+                for appliance in service.appliances.all():
+                    for item_used in appliance.items_used.all():
+                        if not item_used.stall_stock:
+                            continue
 
-                    # Calculate charged quantity (excluding free items/quantities)
-                    charged_qty = item_used.quantity - item_used.free_quantity
+                        # Consume reservation (convert reserved -> consumed)
+                        StockReservationManager.consume_reservation(
+                            item=item_used.item,
+                            quantity=item_used.quantity,
+                            stall_stock=item_used.stall_stock
+                        )
 
-                    if charged_qty > 0 and not item_used.is_free:
-                        unit_price = item_used.item.retail_price
-                        total_price = unit_price * charged_qty
+                        # Calculate charged quantity (excluding free items/quantities)
+                        charged_qty = item_used.quantity - item_used.free_quantity
 
-                        # Create SalesTransaction for Sub stall (if not exists)
-                        if not item_used.expense:
-                            # Sub stall sells the part
-                            sub_sales = SalesTransaction.objects.create(
-                                stall=sub_stall,
-                                client=service.client,
-                                sales_clerk=user
-                            )
+                        if charged_qty > 0 and not item_used.is_free:
+                            unit_price = item_used.item.retail_price
+                            total_price = unit_price * charged_qty
 
-                            SalesItem.objects.create(
-                                transaction=sub_sales,
-                                item=item_used.item,
-                                quantity=charged_qty,
-                                final_price_per_unit=unit_price,
-                            )
+                            # Create SalesTransaction for Sub stall (if not exists)
+                            if not item_used.expense:
+                                # Sub stall sells the part
+                                sub_sales = SalesTransaction.objects.create(
+                                    stall=sub_stall,
+                                    client=service.client,
+                                    sales_clerk=user
+                                )
 
-                            # Main stall incurs expense for the part
-                            expense = Expense.objects.create(
-                                stall=main_stall,
-                                total_price=total_price,
-                                description=f"Parts for Service #{service.id} - {item_used.item.name}",
-                                created_by=user,
-                                source="service",
-                            )
+                                SalesItem.objects.create(
+                                    transaction=sub_sales,
+                                    item=item_used.item,
+                                    quantity=charged_qty,
+                                    final_price_per_unit=unit_price,
+                                )
 
-                            ExpenseItem.objects.create(
-                                expense=expense,
-                                item=item_used.item,
-                                quantity=charged_qty,
-                                total_price=total_price,
-                            )
+                                # Main stall incurs expense for the part
+                                expense = Expense.objects.create(
+                                    stall=main_stall,
+                                    total_price=total_price,
+                                    description=f"Parts for Service #{service.id} - {item_used.item.name}",
+                                    created_by=user,
+                                    source="service",
+                                )
 
-                            # Link expense to item_used
-                            item_used.expense = expense
-                            item_used.save(update_fields=['expense'])
+                                ExpenseItem.objects.create(
+                                    expense=expense,
+                                    item=item_used.item,
+                                    quantity=charged_qty,
+                                    total_price=total_price,
+                                )
+
+                                # Link expense to item_used
+                                item_used.expense = expense
+                                item_used.save(update_fields=['expense'])
 
             # Calculate and save revenue attribution
             revenue_data = RevenueCalculator.calculate_service_revenue(service, save=True)
@@ -343,9 +347,9 @@ class ServiceCompletionHandler:
             service.status = ServiceStatusEnum.COMPLETED
             service.save(update_fields=['status', 'updated_at'])
 
-            # Optionally create a unified receipt for the customer
+            # Optionally create a unified receipt for the customer (only if has appliances/items)
             unified_receipt = None
-            if create_receipt and service.client:
+            if create_receipt and service.client and has_appliances:
                 unified_receipt = ServiceCompletionHandler._create_unified_receipt(
                     service, user, revenue_data
                 )
@@ -355,6 +359,7 @@ class ServiceCompletionHandler:
                 'status': 'completed',
                 'revenue': revenue_data,
                 'receipt': unified_receipt.id if unified_receipt else None,
+                'message': 'Service completed without items/appliances. Add items and create invoice separately.' if not has_appliances else 'Service completed successfully.',
             }
 
     @staticmethod
