@@ -312,26 +312,27 @@ class ServiceCompletionHandler:
                                     final_price_per_unit=unit_price,
                                 )
 
-                                # Main stall incurs expense for the part
-                                expense = Expense.objects.create(
-                                    stall=main_stall,
-                                    total_price=total_price,
-                                    description=f"Parts for Service #{service.id} - {item_used.item.name}",
-                                    created_by=user,
-                                    source="service",
-                                )
+                                # DISABLED: Do NOT create expense for sub stall sales
+                                # Net sales for sub stall are calculated separately
+                                # expense = Expense.objects.create(
+                                #     stall=main_stall,
+                                #     total_price=total_price,
+                                #     description=f"Parts for Service #{service.id} - {item_used.item.name}",
+                                #     created_by=user,
+                                #     source="service",
+                                # )
 
-                                ExpenseItem.objects.create(
-                                    expense=expense,
-                                    item=item_used.item,
-                                    quantity=charged_qty,
-                                    unit_price=unit_price,
-                                    total_price=total_price,
-                                )
+                                # ExpenseItem.objects.create(
+                                #     expense=expense,
+                                #     item=item_used.item,
+                                #     quantity=charged_qty,
+                                #     unit_price=unit_price,
+                                #     total_price=total_price,
+                                # )
 
                                 # Link expense to item_used
-                                item_used.expense = expense
-                                item_used.save(update_fields=['expense'])
+                                # item_used.expense = expense
+                                # item_used.save(update_fields=['expense'])
 
             # Calculate and save revenue attribution
             revenue_data = RevenueCalculator.calculate_service_revenue(service, save=True)
