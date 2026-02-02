@@ -19,6 +19,7 @@ from services.api.serializers import (
     ServiceCancellationSerializer,
     ServiceCompletionSerializer,
     ServicePaymentSerializer,
+    ServiceRefundRequestSerializer,
     ServiceSerializer,
     TechnicianAssignmentSerializer,
 )
@@ -161,6 +162,42 @@ class ServiceViewSet(viewsets.ModelViewSet):
         service = self.get_object()
 
         serializer = ServiceCancellationSerializer(
+            data=request.data,
+            context={"service": service, "request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        result = serializer.save()
+
+        return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="refund")
+    def refund(self, request, pk=None):
+        """
+        Process a refund for a completed service.
+        Parts are NOT returned to stock (already used).
+
+        Request body:
+        {
+            "refund_amount": 500.00,
+            "reason": "Customer dissatisfaction",
+            "refund_type": "partial",  // "full" or "partial"
+            "refund_method": "cash"  // "cash", "gcash", or "bank_transfer"
+        }
+
+        Response:
+        {
+            "refund_id": 45,
+            "service_id": 123,
+            "refund_amount": 500.00,
+            "refund_type": "partial",
+            "total_refunded": 500.00,
+            "net_revenue": 1500.00,
+            "parts_returned_to_stock": 0
+        }
+        """
+        service = self.get_object()
+
+        serializer = ServiceRefundRequestSerializer(
             data=request.data,
             context={"service": service, "request": request}
         )

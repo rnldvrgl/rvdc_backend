@@ -29,6 +29,7 @@ from services.models import (
     Service,
     ServiceAppliance,
     ServicePayment,
+    ServiceRefund,
     TechnicianAssignment,
 )
 from users.models import CustomUser
@@ -70,6 +71,11 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
     free_quantity = serializers.IntegerField(read_only=True)
     promo_name = serializers.CharField(read_only=True)
     charged_quantity = serializers.SerializerMethodField()
+    discounted_price = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        read_only=True
+    )
     line_total = serializers.SerializerMethodField()
 
     class Meta:
@@ -87,10 +93,22 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
             "free_quantity",
             "promo_name",
             "charged_quantity",
+            "discount_amount",
+            "discount_percentage",
+            "discount_reason",
+            "discounted_price",
             "line_total",
             "apply_copper_tube_promo",
+            "is_cancelled",
+            "cancelled_at",
         ]
-        read_only_fields = ["free_quantity", "promo_name"]
+        read_only_fields = [
+            "free_quantity",
+            "promo_name",
+            "discounted_price",
+            "is_cancelled",
+            "cancelled_at"
+        ]
 
     def get_charged_quantity(self, obj):
         """Quantity that will be charged (total - free)."""
@@ -99,12 +117,8 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
         return obj.quantity - obj.free_quantity
 
     def get_line_total(self, obj):
-        """Total price for this line item."""
-        if obj.is_free or not obj.item:
-            return Decimal('0.00')
-
-        charged_qty = obj.quantity - obj.free_quantity
-        return obj.item.retail_price * charged_qty
+        """Total price for this line item after discounts."""
+        return obj.line_total  # Use model property which handles discounts
 
     def validate(self, data):
         """Validate stock availability for reservation."""
@@ -290,6 +304,16 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         source="appliance_type.name",
         read_only=True
     )
+    assigned_technician_name = serializers.CharField(
+        source="assigned_technician.get_full_name",
+        read_only=True,
+        allow_null=True
+    )
+    discounted_labor_fee = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        read_only=True
+    )
     total_parts_cost = serializers.SerializerMethodField()
 
     class Meta:
@@ -304,15 +328,21 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "issue_reported",
             "diagnosis_notes",
             "status",
+            "assigned_technician",
+            "assigned_technician_name",
             "labor_fee",
             "labor_is_free",
             "labor_original_amount",
+            "labor_discount_amount",
+            "labor_discount_percentage",
+            "labor_discount_reason",
+            "discounted_labor_fee",
             "apply_free_installation",
             "items_used",
             "technician_assignments",
             "total_parts_cost",
         ]
-        read_only_fields = ["labor_original_amount"]
+        read_only_fields = ["labor_original_amount", "discounted_labor_fee"]
 
     def get_total_parts_cost(self, obj):
         """Calculate total cost of parts (excluding free items/quantities)."""
@@ -443,6 +473,12 @@ class ServiceSerializer(serializers.ModelSerializer):
         decimal_places=2,
         read_only=True
     )
+    net_revenue = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        read_only=True
+    )
+    has_refunds = serializers.BooleanField(read_only=True)
     payment_status = serializers.SerializerMethodField()
 
     class Meta:
@@ -473,7 +509,19 @@ class ServiceSerializer(serializers.ModelSerializer):
             "total_revenue",
             "total_paid",
             "balance_due",
+            "net_revenue",
+            "has_refunds",
             "payment_status",
+            # Cancellation fields
+            "cancellation_reason",
+            "cancellation_date",
+            # Refund fields
+            "total_refunded",
+            "last_refund_date",
+            # Discount fields
+            "service_discount_amount",
+            "service_discount_percentage",
+            "discount_reason",
             "appliances",
             "technician_assignments",
             "payments",
@@ -484,9 +532,14 @@ class ServiceSerializer(serializers.ModelSerializer):
             "total_revenue",
             "total_paid",
             "balance_due",
+            "net_revenue",
+            "has_refunds",
             "payment_status",
             "created_at",
             "updated_at",
+            "cancellation_date",
+            "total_refunded",
+            "last_refund_date",
         ]
 
     def get_fields(self):
@@ -864,16 +917,77 @@ class ServiceCancellationSerializer(serializers.Serializer):
 
     def save(self):
         """Execute service cancellation workflow."""
-        from services.business_logic import ServiceCancellationHandler
+        from services.business_logic import ServicePaymentManager
+
+        service = self.context.get("service")
+        reason = self.validated_data.get("reason", "")
+
+        result = ServicePaymentManager.cancel_service(
+            service=service,
+            reason=reason
+        )
+
+        return result
+
+
+class ServiceRefundRequestSerializer(serializers.Serializer):
+    """
+    Serializer for processing a service refund.
+
+    Only for completed services where parts are already used.
+    """
+
+    refund_amount = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Amount to refund"
+    )
+    reason = serializers.CharField(
+        help_text="Reason for refund"
+    )
+    refund_type = serializers.ChoiceField(
+        choices=[('full', 'Full Refund'), ('partial', 'Partial Refund')],
+        default='partial'
+    )
+    refund_method = serializers.ChoiceField(
+        choices=[
+            ('cash', 'Cash'),
+            ('gcash', 'GCash'),
+            ('bank_transfer', 'Bank Transfer'),
+        ],
+        default='cash'
+    )
+
+    def validate(self, data):
+        """Validate refund can be processed."""
+        from utils.enums import ServiceStatus
+
+        service = self.context.get("service")
+        if not service:
+            raise ValidationError("Service instance required in context.")
+
+        if service.status != ServiceStatus.COMPLETED:
+            raise ValidationError(
+                "Can only process refunds for completed services. "
+                "Use cancel endpoint for incomplete services."
+            )
+
+        return data
+
+    def save(self):
+        """Execute service refund workflow."""
+        from services.business_logic import ServicePaymentManager
 
         service = self.context.get("service")
         user = self.context.get("request").user if self.context.get("request") else None
-        reason = self.validated_data.get("reason", "")
-
-        result = ServiceCancellationHandler.cancel_service(
+        
+        result = ServicePaymentManager.refund_service(
             service=service,
-            reason=reason,
-            user=user
+            refund_amount=self.validated_data['refund_amount'],
+            reason=self.validated_data['reason'],
+            refund_type=self.validated_data['refund_type'],
+            refund_method=self.validated_data['refund_method'],
+            processed_by=user
         )
 
         return result
@@ -908,6 +1022,39 @@ class ServicePaymentSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class ServiceRefundSerializer(serializers.ModelSerializer):
+    """Serializer for ServiceRefund model."""
+
+    processed_by_name = serializers.CharField(
+        source="processed_by.get_full_name", read_only=True, allow_null=True
+    )
+    refund_type_display = serializers.CharField(
+        source="get_refund_type_display", read_only=True
+    )
+    refund_method_display = serializers.CharField(
+        source="get_refund_method_display", read_only=True
+    )
+
+    class Meta:
+        model = ServiceRefund
+        fields = [
+            "id",
+            "service",
+            "refund_amount",
+            "refund_type",
+            "refund_type_display",
+            "reason",
+            "refund_date",
+            "processed_by",
+            "processed_by_name",
+            "refund_method",
+            "refund_method_display",
+            "notes",
+            "created_at",
+        ]
+        read_only_fields = ["id", "refund_date", "created_at"]
 
 
 class CreateServicePaymentSerializer(serializers.Serializer):

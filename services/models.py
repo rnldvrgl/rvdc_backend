@@ -137,6 +137,50 @@ class Service(models.Model):
         help_text="Payment status of this service",
     )
 
+    # Cancellation tracking (for incomplete services)
+    cancellation_reason = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Reason for service cancellation"
+    )
+    cancellation_date = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="When service was cancelled"
+    )
+    
+    # Refund tracking (for completed services)
+    total_refunded = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Total amount refunded for this completed service"
+    )
+    last_refund_date = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="Date of most recent refund"
+    )
+    
+    # Service-level discounts
+    service_discount_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Fixed discount amount for entire service"
+    )
+    service_discount_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        help_text="Percentage discount for entire service (0.00 - 100.00)"
+    )
+    discount_reason = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="Reason for discount (e.g., 'Senior Citizen', 'Loyalty Discount')"
+    )
+
     class Meta:
         ordering = ["-created_at"]
 
@@ -195,6 +239,16 @@ class Service(models.Model):
     def balance_due(self):
         """Remaining balance for this service."""
         return max(self.total_revenue - self.total_paid, 0)
+    
+    @property
+    def net_revenue(self):
+        """Revenue after refunds"""
+        return self.total_paid - (self.total_refunded or 0)
+    
+    @property
+    def has_refunds(self):
+        """Check if service has any refunds"""
+        return (self.total_refunded or 0) > 0
 
     def update_payment_status(self):
         """Update payment status based on total paid vs total revenue."""
@@ -254,6 +308,66 @@ class ServicePayment(models.Model):
         super().save(*args, **kwargs)
         # Automatically update the related service's payment status
         self.service.update_payment_status()
+
+
+# ----------------------------------
+# Service Refund
+# ----------------------------------
+class ServiceRefund(models.Model):
+    """Track refunds for completed services"""
+    
+    REFUND_TYPE_CHOICES = [
+        ('full', 'Full Refund'),
+        ('partial', 'Partial Refund'),
+    ]
+    
+    service = models.ForeignKey(
+        Service,
+        on_delete=models.CASCADE,
+        related_name='refunds'
+    )
+    refund_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Amount refunded"
+    )
+    refund_type = models.CharField(
+        max_length=10,
+        choices=REFUND_TYPE_CHOICES,
+        default='partial'
+    )
+    reason = models.TextField(help_text="Reason for refund")
+    refund_date = models.DateTimeField(auto_now_add=True)
+    processed_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="refunds_processed"
+    )
+    
+    # Financial tracking
+    refund_method = models.CharField(
+        max_length=20,
+        choices=[
+            ('cash', 'Cash'),
+            ('gcash', 'GCash'),
+            ('bank_transfer', 'Bank Transfer'),
+        ],
+        default='cash'
+    )
+    
+    notes = models.TextField(blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['-refund_date']
+        verbose_name = "Service Refund"
+        verbose_name_plural = "Service Refunds"
+    
+    def __str__(self):
+        return f"Refund #{self.id} - Service #{self.service.id} - ₱{self.refund_amount}"
 
 
 # ----------------------------------
@@ -317,6 +431,17 @@ class ServiceAppliance(models.Model):
     status = models.CharField(
         max_length=20, choices=ApplianceStatus.choices, default=ApplianceStatus.RECEIVED
     )
+    
+    # Technician assignment
+    assigned_technician = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_appliances",
+        help_text="Technician assigned to work on this appliance"
+    )
+    
     labor_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     labor_is_free = models.BooleanField(
         default=False, help_text="Mark labor for this appliance as free."
@@ -329,6 +454,42 @@ class ServiceAppliance(models.Model):
         blank=True,
         help_text="Original labor fee before promo discount (e.g., free installation)",
     )
+    
+    # Labor discounts
+    labor_discount_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Fixed discount amount for labor"
+    )
+    labor_discount_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        help_text="Percentage discount for labor (0.00 - 100.00)"
+    )
+    labor_discount_reason = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="Reason for labor discount"
+    )
+    
+    @property
+    def discounted_labor_fee(self):
+        """Labor fee after item-level discount"""
+        if self.labor_is_free:
+            return 0
+        
+        fee = self.labor_fee
+        
+        # Apply fixed discount
+        fee = max(fee - self.labor_discount_amount, 0)
+        
+        # Apply percentage discount
+        if self.labor_discount_percentage > 0:
+            fee = fee * (1 - (self.labor_discount_percentage / 100))
+        
+        return max(fee, 0)
 
     class Meta:
         ordering = ["appliance_type__name", "brand"]
@@ -379,6 +540,57 @@ class ApplianceItemUsed(BaseItemUsed):
         blank=True,
         help_text="Name of applied promotion (e.g., 'Free 10ft Copper Tube Promo')",
     )
+    
+    # Item-level discounts
+    discount_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Fixed discount amount for this item"
+    )
+    discount_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        help_text="Percentage discount (0.00 - 100.00)"
+    )
+    discount_reason = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="Reason for item discount"
+    )
+    
+    # Cancellation tracking (only for cancelled services)
+    is_cancelled = models.BooleanField(
+        default=False,
+        help_text="True if service was cancelled and part returned to stock"
+    )
+    cancelled_at = models.DateTimeField(blank=True, null=True)
+    
+    @property
+    def discounted_price(self):
+        """Calculate price per unit after discount"""
+        if not self.item:
+            return 0
+        
+        base_price = self.item.retail_price
+        
+        # Apply fixed discount first
+        price = max(base_price - self.discount_amount, 0)
+        
+        # Then apply percentage discount
+        if self.discount_percentage > 0:
+            price = price * (1 - (self.discount_percentage / 100))
+        
+        return max(price, 0)  # Never go negative
+    
+    @property
+    def line_total(self):
+        """Total for this line item after discounts"""
+        if self.is_free:
+            return 0
+        charged_qty = self.quantity - self.free_quantity
+        return self.discounted_price * charged_qty
 
     # Link to an Expense created automatically when items are consumed from
     # another stall (main stall incurs an expense for parts sourced from

@@ -892,6 +892,163 @@ class ServicePaymentManager:
         return service
 
 
+    @staticmethod
+    def cancel_service(service, reason=""):
+        """
+        Cancel an incomplete service and return unused parts to stock.
+        Only use this for services that are NOT completed.
+        
+        Args:
+            service: Service instance to cancel
+            reason: Reason for cancellation
+        
+        Returns:
+            dict with cancellation summary
+        
+        Raises:
+            ValidationError: If service is already completed
+        """
+        from django.utils import timezone
+        from sales.models import SalesTransaction
+        from services.models import ServiceStatus
+        
+        # Prevent cancelling completed services (use refund instead)
+        if service.status == ServiceStatus.COMPLETED:
+            raise ValidationError(
+                "Cannot cancel a completed service. Use refund_service() instead."
+            )
+        
+        with transaction.atomic():
+            # 1. Mark service as cancelled
+            original_status = service.status
+            service.status = ServiceStatus.CANCELLED
+            service.cancellation_reason = reason
+            service.cancellation_date = timezone.now()
+            service.save(update_fields=["status", "cancellation_reason", "cancellation_date"])
+            
+            # 2. Return parts to stock (parts NOT used yet)
+            parts_returned = 0
+            for appliance in service.appliances.all():
+                for item_used in appliance.items_used.all():
+                    if item_used.stall_stock:
+                        # Return quantity to stock
+                        item_used.stall_stock.quantity += item_used.quantity
+                        # Release reservation if any
+                        if item_used.stall_stock.reserved_quantity >= item_used.quantity:
+                            item_used.stall_stock.reserved_quantity -= item_used.quantity
+                        item_used.stall_stock.save()
+                        parts_returned += 1
+                        
+                        # Mark item_used as cancelled
+                        item_used.is_cancelled = True
+                        item_used.cancelled_at = timezone.now()
+                        item_used.save(update_fields=["is_cancelled", "cancelled_at"])
+            
+            # 3. Void sales transactions
+            transactions_voided = 0
+            if service.related_transaction:
+                service.related_transaction.voided = True
+                service.related_transaction.voided_at = timezone.now()
+                service.related_transaction.void_reason = f"Service cancelled: {reason}"
+                service.related_transaction.save(update_fields=["voided", "voided_at", "void_reason"])
+                transactions_voided += 1
+            
+            # Find and void sub stall transaction
+            sub_stall = get_sub_stall()
+            sub_transaction = SalesTransaction.objects.filter(
+                stall=sub_stall,
+                client=service.client,
+                created_at__gte=service.created_at,
+            ).first()
+            
+            if sub_transaction:
+                sub_transaction.voided = True
+                sub_transaction.voided_at = timezone.now()
+                sub_transaction.void_reason = f"Service cancelled: {reason}"
+                sub_transaction.save(update_fields=["voided", "voided_at", "void_reason"])
+                transactions_voided += 1
+            
+            # 4. Calculate refund amount (if payments were made)
+            refund_amount = service.total_paid
+            
+            return {
+                'service_id': service.id,
+                'original_status': original_status,
+                'parts_returned_to_stock': parts_returned,
+                'transactions_voided': transactions_voided,
+                'refund_due': float(refund_amount),
+            }
+    
+    @staticmethod
+    def refund_service(service, refund_amount, reason="", refund_type="full", refund_method="cash", processed_by=None):
+        """
+        Process refund for a COMPLETED service where parts are already used.
+        Parts are NOT returned to stock.
+        
+        Args:
+            service: Service instance (must be completed)
+            refund_amount: Amount to refund (Decimal)
+            reason: Reason for refund (e.g., "Customer dissatisfaction", "Warranty issue")
+            refund_type: "full" or "partial"
+            refund_method: "cash", "gcash", or "bank_transfer"
+            processed_by: User processing the refund (optional)
+        
+        Returns:
+            dict with refund details
+        
+        Raises:
+            ValidationError: If service is not completed or refund invalid
+        """
+        from django.utils import timezone
+        from services.models import ServiceRefund, ServiceStatus
+        
+        # Only allow refunds for completed services
+        if service.status != ServiceStatus.COMPLETED:
+            raise ValidationError(
+                "Can only process refunds for completed services. "
+                "Use cancel_service() for incomplete services."
+            )
+        
+        # Validate refund amount
+        refund_amount = Decimal(str(refund_amount))
+        if refund_amount <= 0:
+            raise ValidationError("Refund amount must be greater than zero")
+        
+        if refund_amount > service.total_paid:
+            raise ValidationError(
+                f"Refund amount (₱{refund_amount}) cannot exceed total paid (₱{service.total_paid})"
+            )
+        
+        with transaction.atomic():
+            # Create refund record
+            refund = ServiceRefund.objects.create(
+                service=service,
+                refund_amount=refund_amount,
+                refund_type=refund_type,
+                reason=reason,
+                refund_method=refund_method,
+                processed_by=processed_by,
+            )
+            
+            # Update service refund tracking
+            service.total_refunded = (service.total_refunded or 0) + refund_amount
+            service.last_refund_date = timezone.now()
+            service.save(update_fields=['total_refunded', 'last_refund_date'])
+            
+            # DO NOT return parts to stock (already used)
+            # DO NOT void sales transactions (costs already incurred)
+            
+            return {
+                'refund_id': refund.id,
+                'service_id': service.id,
+                'refund_amount': float(refund_amount),
+                'refund_type': refund_type,
+                'total_refunded': float(service.total_refunded),
+                'net_revenue': float(service.net_revenue),
+                'parts_returned_to_stock': 0,  # None - parts already used
+            }
+
+
 def create_service_payment(service, payment_type, amount, received_by=None, notes=""):
     """Shortcut to create a service payment."""
     return ServicePaymentManager.create_payment(
