@@ -443,6 +443,10 @@ class ServiceSerializer(serializers.ModelSerializer):
     appliances = ServiceApplianceSerializer(many=True, required=False)
     payments = serializers.SerializerMethodField()
 
+    # Write-only fields for datetime inputs from frontend
+    appointment_datetime = serializers.DateTimeField(write_only=True, required=False, allow_null=True)
+    received_at = serializers.DateTimeField(required=False, allow_null=True)
+
     # Read-only fields
     client_name = serializers.CharField(source="client.full_name", read_only=True)
     stall_name = serializers.CharField(source="stall.name", read_only=True)
@@ -497,6 +501,7 @@ class ServiceSerializer(serializers.ModelSerializer):
             "pickup_date",
             "delivery_date",
             "received_at",
+            "appointment_datetime",
             "status",
             "remarks",
             "notes",
@@ -605,6 +610,7 @@ class ServiceSerializer(serializers.ModelSerializer):
         """
         appliances_data = validated_data.pop("appliances", [])
         technician_assignments_data = validated_data.pop("technician_assignments", [])
+        appointment_datetime = validated_data.pop("appointment_datetime", None)
 
         with transaction.atomic():
             service = Service.objects.create(**validated_data)
@@ -657,7 +663,7 @@ class ServiceSerializer(serializers.ModelSerializer):
                 technician_ids.append(technician.id)
 
             # Auto-create Schedule(s) based on service_mode
-            self._create_schedules_for_service(service, list(set(technician_ids)))
+            self._create_schedules_for_service(service, list(set(technician_ids)), appointment_datetime)
 
             # Calculate initial revenue (no transactions yet)
             RevenueCalculator.calculate_service_revenue(service, save=True)
@@ -761,7 +767,7 @@ class ServiceSerializer(serializers.ModelSerializer):
 
         return instance
 
-    def _create_schedules_for_service(self, service, technician_ids):
+    def _create_schedules_for_service(self, service, technician_ids, appointment_datetime=None):
         """
         Auto-create Schedule records based on service_mode.
 
@@ -785,14 +791,20 @@ class ServiceSerializer(serializers.ModelSerializer):
 
         # HOME_SERVICE: Create 1 schedule for the appointment
         if service.service_mode == ServiceMode.HOME_SERVICE:
-            # Use today's date and current time as defaults
-            # Frontend should provide actual scheduling data in future
+            # Use appointment_datetime if provided, otherwise use current datetime
+            if appointment_datetime:
+                scheduled_date = appointment_datetime.date()
+                scheduled_time = appointment_datetime.time()
+            else:
+                scheduled_date = timezone.now().date()
+                scheduled_time = timezone.now().time()
+
             schedule = Schedule.objects.create(
                 client=service.client,
                 service=service,
                 schedule_type='home_service',
-                scheduled_date=timezone.now().date(),
-                scheduled_time=timezone.now().time(),
+                scheduled_date=scheduled_date,
+                scheduled_time=scheduled_time,
                 estimated_duration=60,
                 status='pending',
                 address=service.override_address or (service.client.address if service.client else ''),

@@ -569,18 +569,26 @@ class AnalyticsViewSet(ViewSet):
 
 class CalendarEventsView(APIView):
     """
-    API endpoint for fetching calendar events (birthdays, holidays, schedules)
-    Supports multiple technicians per schedule
+    API endpoint for fetching calendar events (birthdays, holidays, schedules, leaves)
+    Implements role-based filtering:
+    - Technicians: Their birthdays, all holidays, schedules they're assigned to, their leaves
+    - Clerks: All birthdays, all holidays, their leaves only
+    - Managers/Admins: All events
 
     Query Parameters:
         - start: Start date (ISO format)
         - end: End date (ISO format)
-        - event_types: Comma-separated list of event types (birthday, holiday, schedule)
-        - technician_ids: Comma-separated list of technician IDs
+        - event_types: Comma-separated list of event types (birthday, holiday, schedule, leave)
+        - technician_ids: Comma-separated list of technician IDs (for manual filtering)
         - service_type: Filter schedules by service type
     """
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        # Get current user and role
+        user = request.user
+        user_role = getattr(user, 'role', None)
+        
         # Get date range from query params
         start_param = request.query_params.get("start")
         end_param = request.query_params.get("end")
@@ -614,16 +622,24 @@ class CalendarEventsView(APIView):
 
         events = []
 
-        # Fetch birthdays
+        # Fetch birthdays - Role-based filtering
         if include_birthdays:
-            birthdays = CustomUser.objects.filter(
+            birthdays_query = CustomUser.objects.filter(
                 is_deleted=False,
                 birthday__isnull=False
-            ).values('id', 'first_name', 'last_name', 'birthday')
+            )
+            
+            # Role-based filtering for birthdays
+            if user_role == 'technician':
+                # Technicians see only their own birthday
+                birthdays_query = birthdays_query.filter(id=user.id)
+            # Clerks, managers, and admins see all birthdays (no additional filter)
 
-            for user in birthdays:
+            birthdays = birthdays_query.values('id', 'first_name', 'last_name', 'birthday')
+
+            for birthday_user in birthdays:
                 # Calculate birthday for current year range
-                birthday = user['birthday']
+                birthday = birthday_user['birthday']
                 year_start = start_date.year
                 year_end = end_date.year
 
@@ -631,15 +647,15 @@ class CalendarEventsView(APIView):
                     birthday_this_year = birthday.replace(year=year)
                     if start_date <= birthday_this_year <= end_date:
                         events.append({
-                            'id': f"birthday-{user['id']}-{year}",
-                            'title': f"{user['first_name']} {user['last_name']}'s Birthday",
+                            'id': f"birthday-{birthday_user['id']}-{year}",
+                            'title': f"{birthday_user['first_name']} {birthday_user['last_name']}'s Birthday",
                             'start': birthday_this_year.isoformat(),
                             'end': birthday_this_year.isoformat(),
                             'allDay': True,
                             'extendedProps': {
                                 'type': 'birthday',
-                                'user_id': user['id'],
-                                'user_name': f"{user['first_name']} {user['last_name']}",
+                                'user_id': birthday_user['id'],
+                                'user_name': f"{birthday_user['first_name']} {birthday_user['last_name']}",
                             }
                         })
 
@@ -668,11 +684,20 @@ class CalendarEventsView(APIView):
         # Fetch schedules with multiple technicians
         if include_schedules:
             schedules_query = Schedule.objects.filter(
-                scheduled_datetime__date__gte=start_date,
-                scheduled_datetime__date__lte=end_date
-            ).prefetch_related('technicians', 'client')
+                scheduled_date__gte=start_date,
+                scheduled_date__lte=end_date
+            ).prefetch_related('technicians', 'client', 'service')
+            
+            # Role-based filtering for schedules
+            if user_role == 'technician':
+                # Technicians see only schedules they are assigned to
+                schedules_query = schedules_query.filter(technicians__id=user.id).distinct()
+            elif user_role == 'clerk':
+                # Clerks see no schedules
+                schedules_query = Schedule.objects.none()
+            # Managers and admins see all schedules (no additional filter)
 
-            # Apply additional filters
+            # Apply additional filters (after role-based filtering)
             if technician_ids_param:
                 try:
                     tech_ids = [int(tid.strip()) for tid in technician_ids_param.split(',')]
@@ -689,26 +714,58 @@ class CalendarEventsView(APIView):
                 technician_names = [tech.get_full_name() for tech in technicians]
                 technician_ids = [tech.id for tech in technicians]
 
-                # Get display name for service type
-                service_type_dict = dict(Schedule.SERVICE_TYPES)
-                service_display = service_type_dict.get(schedule.service_type, schedule.service_type)
-
+                # Get display name for schedule type
+                schedule_type_dict = dict(Schedule.SCHEDULE_TYPES)
+                schedule_display = schedule_type_dict.get(schedule.schedule_type, schedule.schedule_type)
+    
                 # Create title
                 tech_display = ", ".join(technician_names) if technician_names else "Unassigned"
-                title = f"{service_display} - {schedule.client.full_name}"
+                title = f"{schedule_display} - {schedule.client.full_name}"
                 if technician_names:
                     title += f" ({tech_display})"
+
+                # Combine date and time for the event
+                if schedule.scheduled_time:
+                    # Combine date and time
+                    scheduled_datetime = timezone.datetime.combine(
+                        schedule.scheduled_date,
+                        schedule.scheduled_time
+                    )
+                    # Make timezone-aware if needed
+                    if timezone.is_naive(scheduled_datetime):
+                        scheduled_datetime = timezone.make_aware(scheduled_datetime)
+                    start_iso = scheduled_datetime.isoformat()
+                    all_day = False
+                else:
+                    # No time specified, treat as all-day event
+                    start_iso = schedule.scheduled_date.isoformat()
+                    all_day = True
+
+                # Debug logging
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(f"Schedule {schedule.id}: scheduled_date={schedule.scheduled_date}, scheduled_time={schedule.scheduled_time}, start_iso={start_iso}")
+
+                # Get service type if service is linked
+                service_type = None
+                service_type_display = None
+                if schedule.service:
+                    service_type = schedule.service.service_type
+                    from utils.enums import ServiceType
+                    service_type_display = ServiceType(service_type).label if service_type else None
 
                 events.append({
                     'id': f"schedule-{schedule.id}",
                     'title': title,
-                    'start': schedule.scheduled_datetime.isoformat(),
-                    'allDay': False,
+                    'start': start_iso,
+                    'allDay': all_day,
                     'extendedProps': {
                         'type': 'schedule',
                         'schedule_id': schedule.id,
-                        'service_type': schedule.service_type,
-                        'service_type_display': service_display,
+                        'schedule_type': schedule.schedule_type,
+                        'schedule_type_display': schedule_display,
+                        'service_type': service_type,
+                        'service_type_display': service_type_display,
                         'client_name': schedule.client.full_name,
                         'client_id': schedule.client.id,
                         'technician_names': technician_names,
@@ -721,11 +778,19 @@ class CalendarEventsView(APIView):
 
         # Fetch approved leaves
         if include_leaves:
-            leaves = LeaveRequest.objects.filter(
+            leaves_query = LeaveRequest.objects.filter(
                 status='APPROVED',
                 date__gte=start_date,
                 date__lte=end_date
-            ).select_related('employee').values(
+            ).select_related('employee')
+            
+            # Role-based filtering for leaves
+            if user_role in ['technician', 'clerk']:
+                # Technicians and clerks see only their own leaves
+                leaves_query = leaves_query.filter(employee=user)
+            # Managers and admins see all leaves (no additional filter)
+            
+            leaves = leaves_query.values(
                 'id', 'employee__first_name', 'employee__last_name',
                 'employee_id', 'leave_type', 'date', 'is_half_day',
                 'shift_period', 'reason'
