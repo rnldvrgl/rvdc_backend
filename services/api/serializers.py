@@ -345,13 +345,11 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         read_only_fields = ["labor_original_amount", "discounted_labor_fee"]
 
     def get_total_parts_cost(self, obj):
-        """Calculate total cost of parts (excluding free items/quantities)."""
+        """Calculate total cost of parts including discounts (excluding free items/quantities)."""
         total = Decimal('0.00')
         for item_used in obj.items_used.all():
-            if item_used.is_free or not item_used.item:
-                continue
-            charged_qty = item_used.quantity - item_used.free_quantity
-            total += item_used.item.retail_price * charged_qty
+            # Use the line_total property which already accounts for discounts
+            total += item_used.line_total
         return total
 
     def create(self, validated_data):

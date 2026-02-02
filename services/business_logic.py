@@ -208,24 +208,16 @@ class RevenueCalculator:
         main_revenue = Decimal('0.00')
         sub_revenue = Decimal('0.00')
 
-        # Calculate labor fees (Main stall revenue)
+        # Calculate labor fees (Main stall revenue) with discounts
         for appliance in service.appliances.all():
-            # Use actual labor_fee (which is 0 if free installation applied)
-            main_revenue += appliance.labor_fee or Decimal('0.00')
+            # Use discounted_labor_fee which accounts for labor discounts
+            main_revenue += appliance.discounted_labor_fee or Decimal('0.00')
 
-        # Calculate parts revenue (Sub stall revenue)
+        # Calculate parts revenue (Sub stall revenue) with discounts
         for appliance in service.appliances.all():
             for item_used in appliance.items_used.all():
-                if item_used.is_free:
-                    # Free items don't contribute to revenue
-                    continue
-
-                # Calculate charged quantity (total - free_quantity)
-                charged_qty = item_used.quantity - item_used.free_quantity
-
-                if charged_qty > 0 and item_used.item:  # Already has check
-                    item_revenue = item_used.item.retail_price * charged_qty
-                    sub_revenue += item_revenue
+                # Use line_total which already accounts for discounts and free quantities
+                sub_revenue += item_used.line_total
 
         total_revenue = main_revenue + sub_revenue
 
@@ -333,6 +325,7 @@ class ServiceCompletionHandler:
                                     expense=expense,
                                     item=item_used.item,
                                     quantity=charged_qty,
+                                    unit_price=unit_price,
                                     total_price=total_price,
                                 )
 
