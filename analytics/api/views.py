@@ -629,12 +629,6 @@ class CalendarEventsView(APIView):
                 birthday__isnull=False
             )
             
-            # Role-based filtering for birthdays
-            if user_role == 'technician':
-                # Technicians see only their own birthday
-                birthdays_query = birthdays_query.filter(id=user.id)
-            # Clerks, managers, and admins see all birthdays (no additional filter)
-
             birthdays = birthdays_query.values('id', 'first_name', 'last_name', 'birthday')
 
             for birthday_user in birthdays:
