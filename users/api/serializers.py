@@ -7,6 +7,7 @@ from drf_extra_fields.fields import Base64ImageField
 
 class EmployeesSerializer(serializers.ModelSerializer):
     profile_image = Base64ImageField(required=False, allow_null=True)
+    username = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = CustomUser
@@ -30,30 +31,48 @@ class EmployeesSerializer(serializers.ModelSerializer):
             "basic_salary",
         ]
         read_only_fields = ("id",)
+    
+    def validate_role(self, value):
+        """Only allow manager, clerk, and technician roles for employees"""
+        allowed_roles = ['manager', 'clerk', 'technician']
+        if value not in allowed_roles:
+            raise serializers.ValidationError(
+                f"Invalid role. Only {', '.join(allowed_roles)} are allowed for employees."
+            )
+        return value
 
     def create(self, validated_data):
         """
-        Auto-generate username from name initials and set default password.
+        Auto-generate username from name initials if not provided, and set default password.
         Example: Ronald Vergel Dela Cruz -> username: rvdc, password: rvdc12
         """
         first_name = validated_data.get("first_name", "")
         last_name = validated_data.get("last_name", "")
+        username = validated_data.get("username", "").strip()
         
-        # Generate username from initials
-        # Split last name by spaces to get all parts
-        name_parts = last_name.lower().split()
-        # Get first letter of first name and all first letters from last name parts
-        username_base = first_name[0].lower() if first_name else ""
-        for part in name_parts:
-            if part:
-                username_base += part[0]
-        
-        # Make sure username is unique by adding numbers if needed
-        username = username_base
-        counter = 1
-        while CustomUser.objects.filter(username=username).exists():
-            username = f"{username_base}{counter}"
-            counter += 1
+        # If username not provided or empty, generate from initials
+        if not username:
+            # Generate username from initials
+            # Split last name by spaces to get all parts
+            name_parts = last_name.lower().split()
+            # Get first letter of first name and all first letters from last name parts
+            username_base = first_name[0].lower() if first_name else ""
+            for part in name_parts:
+                if part:
+                    username_base += part[0]
+            
+            # Make sure username is unique by adding numbers if needed
+            username = username_base
+            counter = 1
+            while CustomUser.objects.filter(username=username).exists():
+                username = f"{username_base}{counter}"
+                counter += 1
+        else:
+            # If username provided, check if it's unique
+            if CustomUser.objects.filter(username=username).exists():
+                raise serializers.ValidationError(
+                    {"username": "This username is already taken. Please choose another one."}
+                )
         
         validated_data["username"] = username
         
