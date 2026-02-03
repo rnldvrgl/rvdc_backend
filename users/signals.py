@@ -60,8 +60,8 @@ def create_leave_balance_for_employee(sender, instance, created, **kwargs):
             LeaveBalance.objects.create(
                 employee=instance,
                 year=current_year,
-                sick_leave_total=5,
+                sick_leave_total=7,
                 sick_leave_used=0,
-                emergency_leave_total=5,
+                emergency_leave_total=3,
                 emergency_leave_used=0
             )

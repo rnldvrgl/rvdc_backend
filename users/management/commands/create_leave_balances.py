@@ -48,12 +48,9 @@ class Command(BaseCommand):
             LeaveBalance.objects.create(
                 employee=employee,
                 year=year,
-                sick_leave_total=5,
-                sick_leave_used=0,
-                emergency_leave_total=5,
-                emergency_leave_used=0
-            )
-            
+                    sick_leave_total=7,
+                    sick_leave_used=0,
+                    emergency_leave_total=3,
             self.stdout.write(
                 self.style.SUCCESS(
                     f'Created leave balance for {employee.get_full_name()} ({employee.role})'
