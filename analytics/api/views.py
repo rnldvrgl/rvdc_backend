@@ -58,7 +58,9 @@ def get_stall_filter(request):
         return {} if not stall_param else {"stall_id": stall_param}
 
     if user.role in ["manager", "clerk"]:
-        return {"stall_id": user.assigned_stall}
+        if user.assigned_stall_id:
+            return {"stall_id": user.assigned_stall_id}
+        return {}
 
     return {}
 
@@ -78,10 +80,11 @@ class SummaryStatsView(APIView):
             or 0
         )
 
-        clients_count = Client.objects.all().count()
+        clients_count = Client.objects.count()
 
         # Determine if user is admin
-        is_admin = request.user.is_staff
+        user = request.user
+        is_admin = user.is_superuser or user.role == "admin"
 
         if is_admin:
             stock_qs = StockRoomStock.objects.filter(is_deleted=False)
@@ -93,7 +96,7 @@ class SummaryStatsView(APIView):
 
         else:
             stock_qs = Stock.objects.filter(
-                is_deleted=False, **stall_filter, track_stock=True
+                is_deleted=False, track_stock=True, **stall_filter
             )
 
             no_stock_count = stock_qs.filter(quantity=0).count()
