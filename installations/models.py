@@ -78,7 +78,18 @@ class AirconInstallation(models.Model):
 
 class AirconUnit(models.Model):
     model = models.ForeignKey(AirconModel, on_delete=models.PROTECT, null=True)
-    serial_number = models.CharField(max_length=100, unique=True)
+    serial_number = models.CharField(
+        max_length=100, 
+        unique=True,
+        help_text="Indoor unit serial number"
+    )
+    outdoor_serial_number = models.CharField(
+        max_length=100,
+        unique=True,
+        null=True,
+        blank=True,
+        help_text="Outdoor unit serial number (for split-type units)"
+    )
 
     # Link to Main stall (owner of aircon units)
     stall = models.ForeignKey(

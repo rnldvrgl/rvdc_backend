@@ -61,7 +61,7 @@ class AirconModelSerializer(serializers.ModelSerializer):
 class AirconUnitSerializer(serializers.ModelSerializer):
     model = AirconModelSerializer(read_only=True)
     model_id = serializers.PrimaryKeyRelatedField(
-        source="model", queryset=AirconModel.objects.all(), write_only=True
+        source="model", queryset=AirconModel.objects.all(), write_only=True, required=True
     )
     stall_name = serializers.CharField(source="stall.name", read_only=True)
     warranty_end_date = serializers.ReadOnlyField()
@@ -78,6 +78,7 @@ class AirconUnitSerializer(serializers.ModelSerializer):
             "model",
             "model_id",
             "serial_number",
+            "outdoor_serial_number",
             "stall",
             "stall_name",
             "sale",
@@ -97,7 +98,76 @@ class AirconUnitSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["stall", "is_sold", "sale_price"]
+        read_only_fields = [
+            "stall", 
+            "is_sold", 
+            "sale_price", 
+            "reserved_by", 
+            "reserved_at", 
+            "sale", 
+            "installation", 
+            "warranty_start_date",
+            "free_cleaning_redeemed"
+        ]
+    
+    def validate_serial_number(self, value):
+        """Ensure indoor serial number is unique and uppercase"""
+        value = value.upper()
+        
+        # Check for uniqueness, excluding current instance if updating
+        qs = AirconUnit.objects.filter(serial_number=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        
+        if qs.exists():
+            raise serializers.ValidationError("A unit with this indoor serial number already exists.")
+        
+        return value
+    
+    def validate_outdoor_serial_number(self, value):
+        """Ensure outdoor serial number is unique and uppercase if provided"""
+        if not value:
+            return value
+            
+        value = value.upper()
+        
+        # Check for uniqueness, excluding current instance if updating
+        qs = AirconUnit.objects.filter(outdoor_serial_number=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        
+        if qs.exists():
+            raise serializers.ValidationError("A unit with this outdoor serial number already exists.")
+        
+        return value
+    
+    def create(self, validated_data):
+        """Create unit with automatic stall assignment based on user role"""
+        request = self.context.get('request')
+        user = request.user if request else None
+        
+        # Auto-assign stall based on user role
+        if user:
+            if user.role in ['manager', 'clerk'] and user.assigned_stall:
+                # For manager/clerk, use their assigned main stall
+                from inventory.models import Stall
+                main_stall = Stall.objects.filter(
+                    stall_type='main',
+                    is_system=True
+                ).first()
+                if main_stall:
+                    validated_data['stall'] = main_stall
+            elif user.role == 'admin':
+                # For admin, use the main stall
+                from inventory.models import Stall
+                main_stall = Stall.objects.filter(
+                    stall_type='main',
+                    is_system=True
+                ).first()
+                if main_stall:
+                    validated_data['stall'] = main_stall
+        
+        return super().create(validated_data)
 
     def validate_serial_number(self, value):
         if AirconUnit.objects.filter(serial_number__iexact=value).exists():

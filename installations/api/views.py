@@ -56,8 +56,7 @@ class AirconBrandViewSet(viewsets.ModelViewSet):
     search_fields = ["name"]
     ordering_fields = ["name"]
 
-    def get_queryset(self):
-        return get_role_filtered_queryset(self.request, super().get_queryset())
+    # No role filtering - brands are global resources
 
 
 class AirconModelViewSet(viewsets.ModelViewSet):
@@ -73,8 +72,7 @@ class AirconModelViewSet(viewsets.ModelViewSet):
     search_fields = ["name", "brand__name"]
     ordering_fields = ["name", "retail_price"]
 
-    def get_queryset(self):
-        return get_role_filtered_queryset(self.request, super().get_queryset())
+    # No role filtering - models are global resources
 
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):
@@ -103,16 +101,20 @@ class AirconModelViewSet(viewsets.ModelViewSet):
 
 class AirconUnitViewSet(viewsets.ModelViewSet):
     """
-    Aircon unit operations with sales and installation workflows.
+    Aircon unit inventory management.
+    
+    This viewset manages the inventory of aircon units available for installation.
+    Units are added to inventory and later linked to sales/installations through
+    the installation workflow.
 
     Endpoints:
-    - GET /aircon-units/ - List all units
-    - POST /aircon-units/ - Create new unit
+    - GET /aircon-units/ - List all units in inventory
+    - POST /aircon-units/ - Add new unit to inventory
     - GET /aircon-units/{id}/ - Get unit details
-    - PUT/PATCH /aircon-units/{id}/ - Update unit
-    - DELETE /aircon-units/{id}/ - Delete unit
+    - PUT/PATCH /aircon-units/{id}/ - Update unit information
+    - DELETE /aircon-units/{id}/ - Remove unit from inventory
     - GET /aircon-units/available/ - List available units for sale
-    - POST /aircon-units/sell/ - Sell one or more units
+    - POST /aircon-units/sell/ - Sell one or more units (creates sale transaction)
     - POST /aircon-units/{id}/reserve/ - Reserve a unit for a client
     - POST /aircon-units/{id}/release-reservation/ - Release reservation
     - POST /aircon-units/{id}/create-installation/ - Create installation service
