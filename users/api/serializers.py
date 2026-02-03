@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.core.exceptions import ValidationError as DjangoValidationError
 from users.models import CustomUser
 from inventory.api.serializers import StallSerializer
 from drf_extra_fields.fields import Base64ImageField
@@ -59,7 +60,12 @@ class EmployeesSerializer(serializers.ModelSerializer):
         # Set default password: rvdc12
         user = CustomUser(**validated_data)
         user.set_password("rvdc12")
-        user.save()
+        
+        try:
+            user.save()
+        except DjangoValidationError as e:
+            # Convert Django ValidationError to DRF ValidationError
+            raise serializers.ValidationError({"role": e.messages})
         
         return user
 
@@ -155,4 +161,8 @@ class UserSerializer(serializers.ModelSerializer):
         if "profile_image" in validated_data and validated_data["profile_image"] == "":
             validated_data["profile_image"] = None
 
-        return super().update(instance, validated_data)
+        try:
+            return super().update(instance, validated_data)
+        except DjangoValidationError as e:
+            # Convert Django ValidationError to DRF ValidationError
+            raise serializers.ValidationError({"role": e.messages})
