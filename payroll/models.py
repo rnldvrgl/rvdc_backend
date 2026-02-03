@@ -1048,6 +1048,9 @@ class WeeklyPayroll(models.Model):
         """
         from payroll.models import ManualDeduction
 
+        # Get deduction metadata to check which deductions are in this payroll
+        deduction_metadata = self.deduction_metadata or {}
+
         # Get all manual deductions that should be marked as applied
         per_employee_deductions = ManualDeduction.objects.filter(
             is_deleted=False,
@@ -1061,13 +1064,13 @@ class WeeklyPayroll(models.Model):
         # Mark deductions as applied
         deductions_to_mark = []
         for deduction in per_employee_deductions:
-            # Check if this deduction is in the current payroll
-            if self.deduction_items.filter(
-                source_type='ManualDeduction',
-                source_id=deduction.id
-            ).exists():
-                deduction.applied_date = self.week_start
-                deductions_to_mark.append(deduction)
+            # Check if this deduction is in the current payroll by checking deduction_metadata
+            for key, metadata in deduction_metadata.items():
+                if (metadata.get('source_type') == 'ManualDeduction' and
+                    metadata.get('source_id') == deduction.id):
+                    deduction.applied_date = self.week_start
+                    deductions_to_mark.append(deduction)
+                    break
 
         if deductions_to_mark:
             ManualDeduction.objects.bulk_update(deductions_to_mark, ['applied_date'])
@@ -1089,12 +1092,14 @@ class WeeklyPayroll(models.Model):
             elif deduction.effective_date >= self.week_start and deduction.effective_date < self.week_end:
                 should_mark = True
 
-            if should_mark and self.deduction_items.filter(
-                source_type='ManualDeduction',
-                source_id=deduction.id
-            ).exists():
-                deduction.applied_date = self.week_start
-                onetime_to_mark.append(deduction)
+            if should_mark:
+                # Check if this deduction is in the current payroll by checking deduction_metadata
+                for key, metadata in deduction_metadata.items():
+                    if (metadata.get('source_type') == 'ManualDeduction' and
+                        metadata.get('source_id') == deduction.id):
+                        deduction.applied_date = self.week_start
+                        onetime_to_mark.append(deduction)
+                        break
 
         if onetime_to_mark:
             ManualDeduction.objects.bulk_update(onetime_to_mark, ['applied_date'])

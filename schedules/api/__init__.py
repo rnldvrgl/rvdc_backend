@@ -1,1 +1,1 @@
-# Schedules API package
+# Schedules API module

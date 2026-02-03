@@ -4,7 +4,7 @@ from django.db import migrations
 def unseed_stalls(apps, schema_editor):
     Stall = apps.get_model("inventory", "Stall")
     for name, location in [
-        ("Main", "Service"),
+        ("Main", "Services"),
         ("Sub", "Parts")
     ]:
         stall = Stall.objects.filter(name=name, location=location).first()

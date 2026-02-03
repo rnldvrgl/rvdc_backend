@@ -1,9 +1,6 @@
 import uuid
 
-from django.conf import settings
-from django.contrib.auth import get_user_model
-from django.db import models, transaction
-from django.utils import timezone
+from django.db import models
 
 
 # =========== MANAGERS ===========
@@ -93,6 +90,12 @@ class Item(models.Model):
 
 
 class Stall(models.Model):
+    STALL_TYPE_CHOICES = [
+        ("main", "Main Stall"),
+        ("sub", "Sub Stall"),
+        ("other", "Other"),
+    ]
+
     name = models.CharField(max_length=100)
     location = models.CharField(max_length=255)
     # Only stalls that are inventory owners should have Stock rows.
@@ -101,6 +104,13 @@ class Stall(models.Model):
     # Marks stalls that are system-configured (main/sub) and should not be
     # created/edited/deleted via public CRUD endpoints.
     is_system = models.BooleanField(default=False)
+    # Identifies the type of stall in the two-stall architecture
+    stall_type = models.CharField(
+        max_length=10,
+        choices=STALL_TYPE_CHOICES,
+        default="other",
+        help_text="Stall type: Main (services + aircon units), Sub (parts), or Other",
+    )
     is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -238,158 +248,3 @@ class StockRoomStock(models.Model):
 
     def __str__(self):
         return f"{self.item.name} - {self.quantity} {self.item.unit_of_measure}"
-
-
-class StockTransfer(models.Model):
-    from_stall = models.ForeignKey(
-        "inventory.Stall",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="outgoing_transfers",
-    )
-    to_stall = models.ForeignKey(
-        "inventory.Stall", on_delete=models.CASCADE, related_name="incoming_transfers"
-    )
-    technician = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="requested_transfers",
-    )
-    used_for = models.CharField(max_length=100, blank=True, null=True)
-    transferred_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True
-    )
-    transfer_date = models.DateTimeField(auto_now_add=True)
-    is_finalized = models.BooleanField(default=False)
-    finalized_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        ordering = ["-transfer_date"]
-
-    def __str__(self):
-        return f"Transfer to {self.to_stall.name} on {self.transfer_date.strftime('%Y-%m-%d')}"
-
-    def can_be_finalized_by(self, user):
-        if user.role == "admin":
-            return True
-        if user.role in ["manager", "clerk"] and user.assigned_stall == self.from_stall:
-            return True
-        return False
-
-    def finalize(self, user):
-        from expenses.models import Expense, ExpenseItem
-        from notifications.models import Notification
-
-        # Import sales models here to avoid circular imports at module import time
-        from sales.models import SalesItem, SalesTransaction
-
-        if self.is_finalized:
-            return
-
-        with transaction.atomic():
-            # 1. Mark as finalized
-            self.is_finalized = True
-            self.finalized_at = timezone.now()
-            self.save()
-
-            # 2. Decrement stock on the from_stall (if present) and create a SalesTransaction
-            #    for the from_stall so the supplying stall records a sale.
-            sales_txn = None
-            if self.from_stall:
-                sales_txn = SalesTransaction.objects.create(
-                    stall=self.from_stall,
-                    client=None,
-                    sales_clerk=user,
-                )
-
-            total_price = 0
-            # 3. Create Expense record (for receiving stall) and SalesItem entries (for supplying stall)
-            expense = Expense.objects.create(
-                stall=self.to_stall,
-                total_price=0,  # will update below
-                description=f"Finalized stock transfer from {self.from_stall or 'Stock Room'}",
-                created_by=user,
-                source="transfer",
-                transfer=self,
-            )
-
-            for t_item in self.items.select_related("item"):
-                item_total = t_item.item.retail_price * t_item.quantity
-                total_price += item_total
-
-                # Create ExpenseItem for receiver
-                ExpenseItem.objects.create(
-                    expense=expense,
-                    item=t_item.item,
-                    quantity=t_item.quantity,
-                    total_price=item_total,
-                )
-
-                # Decrement stock from the supplying stall (if recorded)
-                if self.from_stall:
-                    try:
-                        stock = Stock.objects.get(
-                            stall=self.from_stall, item=t_item.item
-                        )
-                        stock.quantity = max(stock.quantity - t_item.quantity, 0)
-                        stock.save()
-                    except Stock.DoesNotExist:
-                        # If no stock row exists, skip - transfer records the movement
-                        pass
-
-                # Create SalesItem for the supplying stall's SalesTransaction
-                if sales_txn:
-                    SalesItem.objects.create(
-                        transaction=sales_txn,
-                        item=t_item.item,
-                        quantity=t_item.quantity,
-                        final_price_per_unit=t_item.item.retail_price,
-                    )
-
-            # 4. Update expense total
-            expense.total_price = total_price
-            expense.save()
-
-            # 6. Notify manager/clerk of to_stall
-            manager_user = (
-                get_user_model()
-                .objects.filter(
-                    assigned_stall=self.to_stall, role__in=["manager", "clerk"]
-                )
-                .first()
-            )
-
-            if manager_user:
-                from_stall_name = (
-                    self.from_stall.name if self.from_stall else "Stock Room"
-                )
-                to_stall_name = self.to_stall.name if self.to_stall else "Unknown"
-
-                Notification.objects.create(
-                    user=manager_user,
-                    type="expense_created",
-                    data={
-                        "expense_id": expense.id,
-                        "from_stall": from_stall_name,
-                        "to_stall": to_stall_name,
-                        "amount": float(total_price),
-                    },
-                    message=(
-                        f"A stock transfer from {from_stall_name} to {to_stall_name} "
-                        f"Total: ₱{total_price:,.2f}."
-                    ),
-                )
-
-
-class StockTransferItem(models.Model):
-    transfer = models.ForeignKey(
-        StockTransfer, on_delete=models.CASCADE, related_name="items"
-    )
-    item = models.ForeignKey(Item, on_delete=models.CASCADE)
-    quantity = models.PositiveIntegerField()
-
-    def __str__(self):
-        return f"{self.quantity} {self.item.unit_of_measure} of {self.item.name}"

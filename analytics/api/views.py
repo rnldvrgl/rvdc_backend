@@ -1,5 +1,18 @@
 from datetime import datetime, time, timedelta
 
+from analytics.business_logic import (
+    ClientAnalytics,
+    DashboardAnalytics,
+    InventoryAnalytics,
+    OutstandingAnalytics,
+    PaymentAnalytics,
+    RevenueAnalytics,
+    ServiceAnalytics,
+    WarrantyAnalytics,
+    get_date_range_from_request,
+    get_stall_from_request,
+)
+from attendance.models import LeaveRequest
 from clients.models import Client
 from django.db.models import (
     Count,
@@ -14,9 +27,11 @@ from django.utils.dateparse import parse_date
 from expenses.models import Expense
 from inventory.models import Stock, StockRoomStock
 from payroll.models import Holiday
-from attendance.models import LeaveRequest
+from rest_framework import permissions, status
+from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.viewsets import ViewSet
 from sales.models import SalesItem, SalesPayment, SalesTransaction
 from schedules.models import Schedule
 from users.models import CustomUser
@@ -316,20 +331,264 @@ class UnpaidSalesStatusView(APIView):
         )
 
 
+# ----------------------------------
+# New Comprehensive Analytics Views
+# ----------------------------------
+class AnalyticsViewSet(ViewSet):
+    """
+    Comprehensive analytics endpoints.
+
+    Provides analytics for:
+    - Revenue (sales + services)
+    - Payment collections
+    - Outstanding balances and aging
+    - Service performance
+    - Technician productivity
+    - Warranty claims
+    - Client behavior
+    - Inventory turnover
+    - Dashboard summaries
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    @action(detail=False, methods=["get"], url_path="revenue-summary")
+    def revenue_summary(self, request):
+        """
+        Get revenue summary for sales and services.
+
+        Query params:
+        - start_date: YYYY-MM-DD (default: 30 days ago)
+        - end_date: YYYY-MM-DD (default: today)
+        - stall: Stall ID (optional)
+
+        Returns comprehensive revenue breakdown.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        stall = get_stall_from_request(request)
+
+        data = RevenueAnalytics.get_revenue_summary(start_date, end_date, stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="revenue-over-time")
+    def revenue_over_time(self, request):
+        """
+        Get revenue over time (daily, weekly, or monthly).
+
+        Query params:
+        - start_date, end_date, stall (as above)
+        - period: 'day', 'week', or 'month' (default: 'day')
+
+        Returns time-series revenue data.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        stall = get_stall_from_request(request)
+        period = request.query_params.get("period", "day")
+
+        data = RevenueAnalytics.get_revenue_over_time(start_date, end_date, stall, period)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="payment-collections")
+    def payment_collections(self, request):
+        """
+        Get payment collection summary.
+
+        Query params:
+        - start_date, end_date, stall
+
+        Returns total collections from sales and services.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        stall = get_stall_from_request(request)
+
+        data = PaymentAnalytics.get_collection_summary(start_date, end_date, stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="payment-methods")
+    def payment_methods(self, request):
+        """
+        Get payment method breakdown.
+
+        Query params:
+        - start_date, end_date, stall
+
+        Returns breakdown by payment type (cash, gcash, etc.).
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        stall = get_stall_from_request(request)
+
+        data = PaymentAnalytics.get_payment_method_breakdown(start_date, end_date, stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="outstanding-summary")
+    def outstanding_summary(self, request):
+        """
+        Get outstanding balance summary.
+
+        Query params:
+        - stall (optional)
+
+        Returns outstanding balances for sales and services.
+        """
+        stall = get_stall_from_request(request)
+
+        data = OutstandingAnalytics.get_outstanding_summary(stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="aging-report")
+    def aging_report(self, request):
+        """
+        Get aging report for outstanding balances.
+
+        Query params:
+        - stall (optional)
+
+        Returns balances bucketed by age (0-30, 31-60, 61-90, 90+ days).
+        """
+        stall = get_stall_from_request(request)
+
+        data = OutstandingAnalytics.get_aging_report(stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="service-summary")
+    def service_summary(self, request):
+        """
+        Get service performance summary.
+
+        Query params:
+        - start_date, end_date, stall
+
+        Returns service metrics including completion rates and revenue.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        stall = get_stall_from_request(request)
+
+        data = ServiceAnalytics.get_service_summary(start_date, end_date, stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="technician-productivity")
+    def technician_productivity(self, request):
+        """
+        Get technician productivity report.
+
+        Query params:
+        - start_date, end_date
+
+        Returns productivity metrics for each technician.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+
+        data = ServiceAnalytics.get_technician_productivity(start_date, end_date)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="warranty-summary")
+    def warranty_summary(self, request):
+        """
+        Get warranty claims summary.
+
+        Query params:
+        - start_date, end_date
+
+        Returns warranty claim metrics and costs.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+
+        data = WarrantyAnalytics.get_warranty_summary(start_date, end_date)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="top-clients")
+    def top_clients(self, request):
+        """
+        Get top clients by spending.
+
+        Query params:
+        - start_date, end_date
+        - limit: Number of clients to return (default: 10)
+
+        Returns top clients ranked by total spending.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        limit = int(request.query_params.get("limit", 10))
+
+        data = ClientAnalytics.get_top_clients(start_date, end_date, limit)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="inventory-summary")
+    def inventory_summary(self, request):
+        """
+        Get inventory health summary.
+
+        Query params:
+        - stall (optional)
+
+        Returns inventory metrics including stock levels and value.
+        """
+        stall = get_stall_from_request(request)
+
+        data = InventoryAnalytics.get_inventory_summary(stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="stock-turnover")
+    def stock_turnover(self, request):
+        """
+        Get stock turnover analysis.
+
+        Query params:
+        - start_date, end_date
+        - limit: Number of items to return (default: 20)
+
+        Returns items ranked by movement/turnover.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        limit = int(request.query_params.get("limit", 20))
+
+        data = InventoryAnalytics.get_stock_turnover(start_date, end_date, limit)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="dashboard")
+    def dashboard(self, request):
+        """
+        Get consolidated dashboard summary.
+
+        Query params:
+        - start_date, end_date, stall
+
+        Returns comprehensive dashboard data including:
+        - Revenue summary
+        - Collection summary
+        - Outstanding balances
+        - Service metrics
+        - Inventory health
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        stall = get_stall_from_request(request)
+
+        data = DashboardAnalytics.get_dashboard_summary(start_date, end_date, stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+
 class CalendarEventsView(APIView):
     """
-    API endpoint for fetching calendar events (birthdays, holidays, schedules)
-    Supports multiple technicians per schedule
+    API endpoint for fetching calendar events (birthdays, holidays, schedules, leaves)
+    Implements role-based filtering:
+    - Technicians: Their birthdays, all holidays, schedules they're assigned to, their leaves
+    - Clerks: All birthdays, all holidays, their leaves only
+    - Managers/Admins: All events
 
     Query Parameters:
         - start: Start date (ISO format)
         - end: End date (ISO format)
-        - event_types: Comma-separated list of event types (birthday, holiday, schedule)
-        - technician_ids: Comma-separated list of technician IDs
+        - event_types: Comma-separated list of event types (birthday, holiday, schedule, leave)
+        - technician_ids: Comma-separated list of technician IDs (for manual filtering)
         - service_type: Filter schedules by service type
     """
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        # Get current user and role
+        user = request.user
+        user_role = getattr(user, 'role', None)
+        
         # Get date range from query params
         start_param = request.query_params.get("start")
         end_param = request.query_params.get("end")
@@ -363,16 +622,18 @@ class CalendarEventsView(APIView):
 
         events = []
 
-        # Fetch birthdays
+        # Fetch birthdays - Role-based filtering
         if include_birthdays:
-            birthdays = CustomUser.objects.filter(
+            birthdays_query = CustomUser.objects.filter(
                 is_deleted=False,
                 birthday__isnull=False
-            ).values('id', 'first_name', 'last_name', 'birthday')
+            )
+            
+            birthdays = birthdays_query.values('id', 'first_name', 'last_name', 'birthday')
 
-            for user in birthdays:
+            for birthday_user in birthdays:
                 # Calculate birthday for current year range
-                birthday = user['birthday']
+                birthday = birthday_user['birthday']
                 year_start = start_date.year
                 year_end = end_date.year
 
@@ -380,15 +641,15 @@ class CalendarEventsView(APIView):
                     birthday_this_year = birthday.replace(year=year)
                     if start_date <= birthday_this_year <= end_date:
                         events.append({
-                            'id': f"birthday-{user['id']}-{year}",
-                            'title': f"{user['first_name']} {user['last_name']}'s Birthday",
+                            'id': f"birthday-{birthday_user['id']}-{year}",
+                            'title': f"{birthday_user['first_name']} {birthday_user['last_name']}'s Birthday",
                             'start': birthday_this_year.isoformat(),
                             'end': birthday_this_year.isoformat(),
                             'allDay': True,
                             'extendedProps': {
                                 'type': 'birthday',
-                                'user_id': user['id'],
-                                'user_name': f"{user['first_name']} {user['last_name']}",
+                                'user_id': birthday_user['id'],
+                                'user_name': f"{birthday_user['first_name']} {birthday_user['last_name']}",
                             }
                         })
 
@@ -417,11 +678,20 @@ class CalendarEventsView(APIView):
         # Fetch schedules with multiple technicians
         if include_schedules:
             schedules_query = Schedule.objects.filter(
-                scheduled_datetime__date__gte=start_date,
-                scheduled_datetime__date__lte=end_date
-            ).prefetch_related('technicians', 'client')
+                scheduled_date__gte=start_date,
+                scheduled_date__lte=end_date
+            ).prefetch_related('technicians', 'client', 'service')
+            
+            # Role-based filtering for schedules
+            if user_role == 'technician':
+                # Technicians see only schedules they are assigned to
+                schedules_query = schedules_query.filter(technicians__id=user.id).distinct()
+            elif user_role == 'clerk':
+                # Clerks see no schedules
+                schedules_query = Schedule.objects.none()
+            # Managers and admins see all schedules (no additional filter)
 
-            # Apply additional filters
+            # Apply additional filters (after role-based filtering)
             if technician_ids_param:
                 try:
                     tech_ids = [int(tid.strip()) for tid in technician_ids_param.split(',')]
@@ -438,26 +708,58 @@ class CalendarEventsView(APIView):
                 technician_names = [tech.get_full_name() for tech in technicians]
                 technician_ids = [tech.id for tech in technicians]
 
-                # Get display name for service type
-                service_type_dict = dict(Schedule.SERVICE_TYPES)
-                service_display = service_type_dict.get(schedule.service_type, schedule.service_type)
-
+                # Get display name for schedule type
+                schedule_type_dict = dict(Schedule.SCHEDULE_TYPES)
+                schedule_display = schedule_type_dict.get(schedule.schedule_type, schedule.schedule_type)
+    
                 # Create title
                 tech_display = ", ".join(technician_names) if technician_names else "Unassigned"
-                title = f"{service_display} - {schedule.client.full_name}"
+                title = f"{schedule_display} - {schedule.client.full_name}"
                 if technician_names:
                     title += f" ({tech_display})"
+
+                # Combine date and time for the event
+                if schedule.scheduled_time:
+                    # Combine date and time
+                    scheduled_datetime = timezone.datetime.combine(
+                        schedule.scheduled_date,
+                        schedule.scheduled_time
+                    )
+                    # Make timezone-aware if needed
+                    if timezone.is_naive(scheduled_datetime):
+                        scheduled_datetime = timezone.make_aware(scheduled_datetime)
+                    start_iso = scheduled_datetime.isoformat()
+                    all_day = False
+                else:
+                    # No time specified, treat as all-day event
+                    start_iso = schedule.scheduled_date.isoformat()
+                    all_day = True
+
+                # Debug logging
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(f"Schedule {schedule.id}: scheduled_date={schedule.scheduled_date}, scheduled_time={schedule.scheduled_time}, start_iso={start_iso}")
+
+                # Get service type if service is linked
+                service_type = None
+                service_type_display = None
+                if schedule.service:
+                    service_type = schedule.service.service_type
+                    from utils.enums import ServiceType
+                    service_type_display = ServiceType(service_type).label if service_type else None
 
                 events.append({
                     'id': f"schedule-{schedule.id}",
                     'title': title,
-                    'start': schedule.scheduled_datetime.isoformat(),
-                    'allDay': False,
+                    'start': start_iso,
+                    'allDay': all_day,
                     'extendedProps': {
                         'type': 'schedule',
                         'schedule_id': schedule.id,
-                        'service_type': schedule.service_type,
-                        'service_type_display': service_display,
+                        'schedule_type': schedule.schedule_type,
+                        'schedule_type_display': schedule_display,
+                        'service_type': service_type,
+                        'service_type_display': service_type_display,
                         'client_name': schedule.client.full_name,
                         'client_id': schedule.client.id,
                         'technician_names': technician_names,
@@ -470,13 +772,21 @@ class CalendarEventsView(APIView):
 
         # Fetch approved leaves
         if include_leaves:
-            leaves = LeaveRequest.objects.filter(
+            leaves_query = LeaveRequest.objects.filter(
                 status='APPROVED',
                 date__gte=start_date,
                 date__lte=end_date
-            ).select_related('employee').values(
-                'id', 'employee__first_name', 'employee__last_name', 
-                'employee_id', 'leave_type', 'date', 'is_half_day', 
+            ).select_related('employee')
+            
+            # Role-based filtering for leaves
+            if user_role in ['technician', 'clerk']:
+                # Technicians and clerks see only their own leaves
+                leaves_query = leaves_query.filter(employee=user)
+            # Managers and admins see all leaves (no additional filter)
+            
+            leaves = leaves_query.values(
+                'id', 'employee__first_name', 'employee__last_name',
+                'employee_id', 'leave_type', 'date', 'is_half_day',
                 'shift_period', 'reason'
             )
 
@@ -485,7 +795,7 @@ class CalendarEventsView(APIView):
                 leave_type_display = dict(LeaveRequest.LEAVE_TYPE_CHOICES).get(
                     leave['leave_type'], leave['leave_type']
                 )
-                
+
                 # Get shift period display
                 shift_period_choices = {
                     'AM': 'Morning',
@@ -493,11 +803,11 @@ class CalendarEventsView(APIView):
                     'FULL': 'Full Day'
                 }
                 shift_display = shift_period_choices.get(leave['shift_period'], 'Full Day')
-                
+
                 # Build title
                 duration = f"Half Day - {shift_display}" if leave['is_half_day'] else "Full Day"
                 title = f"{leave['employee__first_name']} {leave['employee__last_name']} - {leave_type_display} ({duration})"
-                
+
                 events.append({
                     'id': f"leave-{leave['id']}",
                     'title': title,
@@ -519,4 +829,3 @@ class CalendarEventsView(APIView):
                 })
 
         return Response(events)
-

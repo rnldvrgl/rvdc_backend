@@ -11,6 +11,7 @@ class EmployeesSerializer(serializers.ModelSerializer):
         model = CustomUser
         fields = [
             "id",
+            "username",
             "email",
             "first_name",
             "last_name",
@@ -28,6 +29,39 @@ class EmployeesSerializer(serializers.ModelSerializer):
             "basic_salary",
         ]
         read_only_fields = ("id",)
+
+    def create(self, validated_data):
+        """
+        Auto-generate username from name initials and set default password.
+        Example: Ronald Vergel Dela Cruz -> username: rvdc, password: rvdc12
+        """
+        first_name = validated_data.get("first_name", "")
+        last_name = validated_data.get("last_name", "")
+        
+        # Generate username from initials
+        # Split last name by spaces to get all parts
+        name_parts = last_name.lower().split()
+        # Get first letter of first name and all first letters from last name parts
+        username_base = first_name[0].lower() if first_name else ""
+        for part in name_parts:
+            if part:
+                username_base += part[0]
+        
+        # Make sure username is unique by adding numbers if needed
+        username = username_base
+        counter = 1
+        while CustomUser.objects.filter(username=username).exists():
+            username = f"{username_base}{counter}"
+            counter += 1
+        
+        validated_data["username"] = username
+        
+        # Set default password: rvdc12
+        user = CustomUser(**validated_data)
+        user.set_password("rvdc12")
+        user.save()
+        
+        return user
 
 
 class UserSerializer(serializers.ModelSerializer):

@@ -1,13 +1,16 @@
-from notifications.models import Notification
-from django.utils.timesince import timesince
 from django.utils import timezone
+from django.utils.timesince import timesince
+from notifications.models import Notification
 from rest_framework import serializers
 
 
 class NotificationSerializer(serializers.ModelSerializer):
+    """Serializer for Notification model."""
+
     relative_time = serializers.SerializerMethodField()
-    summary = serializers.SerializerMethodField()
-    entity_id = serializers.SerializerMethodField()
+    type_display = serializers.CharField(source="get_type_display", read_only=True)
+    priority_display = serializers.CharField(source="get_priority_display", read_only=True)
+    is_expired = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Notification
@@ -15,63 +18,41 @@ class NotificationSerializer(serializers.ModelSerializer):
             "id",
             "user",
             "type",
-            "data",
+            "type_display",
+            "priority",
+            "priority_display",
+            "title",
             "message",
+            "data",
+            "action_url",
+            "action_text",
             "is_read",
+            "read_at",
+            "is_archived",
+            "archived_at",
             "created_at",
+            "updated_at",
+            "expires_at",
+            "is_expired",
             "relative_time",
-            "summary",
-            "entity_id",
+        ]
+        read_only_fields = [
+            "id",
+            "created_at",
+            "updated_at",
+            "read_at",
+            "archived_at",
         ]
 
     def get_relative_time(self, obj):
+        """Get human-readable relative time."""
         return timesince(obj.created_at, timezone.now()) + " ago"
 
-    def get_summary(self, obj):
-        t = obj.type
-        d = obj.data or {}
 
-        if t == "expense_created":
-            from_stall = d.get("from_stall")
-            to_stall = d.get("to_stall")
-            amount = d.get("amount")
+class NotificationSummarySerializer(serializers.Serializer):
+    """Serializer for notification summary."""
 
-            if from_stall and to_stall and amount is not None:
-                return (
-                    f"Transfer expense: {from_stall} ➔ {to_stall} "
-                    f"({self.format_currency(amount)})"
-                )
-            elif to_stall and amount is not None:
-                return f"Expense for {to_stall} ({self.format_currency(amount)})"
-            return "New expense recorded."
-
-        elif t == "appointment_reminder":
-            client = d.get("client_name")
-            time = d.get("time")
-            if client and time:
-                return f"Appointment: {client} at {time}"
-            return "Upcoming appointment."
-
-        elif t == "stock_low":
-            item = d.get("item_name")
-            remaining = d.get("remaining")
-            if item and remaining is not None:
-                return f"Low stock: {item} ({remaining} left)"
-            return "Low stock alert."
-
-        return obj.message or "Notification"
-
-    def get_entity_id(self, obj):
-        d = obj.data or {}
-        t = obj.type
-
-        if t == "expense_created":
-            return d.get("expense_id")
-        elif t == "appointment_reminder":
-            return d.get("appointment_id")
-        elif t == "stock_low" or t == "restock":
-            return d.get("stock_id") or d.get("item_id")
-        return None
-
-    def format_currency(self, amount):
-        return f"₱{amount:,.2f}"
+    total_notifications = serializers.IntegerField()
+    unread_count = serializers.IntegerField()
+    read_count = serializers.IntegerField()
+    by_priority = serializers.DictField()
