@@ -16,6 +16,9 @@ services:
                 condition: service_healthy
         ports:
             - "8000:8000"
+        volumes:
+            - /srv/rvdc_backend/media:/app/media  # Map media files to host
+            - /srv/rvdc_backend/staticfiles:/app/staticfiles  # Map static files to host
 
 volumes:
     postgres_data:
