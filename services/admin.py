@@ -6,6 +6,7 @@ from .models import (
     ApplianceType,
     Service,
     ServiceAppliance,
+    ServicePayment,
     ServiceStatusHistory,
     TechnicianAssignment,
 )
@@ -19,9 +20,12 @@ class ServiceAdmin(admin.ModelAdmin):
         "stall",
         "service_type",
         "service_mode",
-        "scheduled_date",
-        "scheduled_time",
+        "pickup_date",
+        "delivery_date",
         "status",
+        "payment_status",
+        "total_revenue",
+        "total_paid",
         "created_at",
         "updated_at",
     )
@@ -29,8 +33,9 @@ class ServiceAdmin(admin.ModelAdmin):
         "service_type",
         "service_mode",
         "status",
+        "payment_status",
         "stall",
-        "scheduled_date",
+        "pickup_date",
         "created_at",
     )
     search_fields = (
@@ -131,3 +136,29 @@ class ServiceStatusHistoryAdmin(admin.ModelAdmin):
     ordering = ("-changed_at",)
     list_select_related = ("service", "changed_by")
     list_per_page = 25
+
+
+@admin.register(ServicePayment)
+class ServicePaymentAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "service",
+        "payment_type",
+        "amount",
+        "payment_date",
+        "received_by",
+        "created_at",
+    )
+    list_filter = ("payment_type", "payment_date", "created_at")
+    search_fields = (
+        "service__client__full_name",
+        "received_by__username",
+        "received_by__first_name",
+        "received_by__last_name",
+        "notes",
+    )
+    date_hierarchy = "payment_date"
+    ordering = ("-payment_date",)
+    list_select_related = ("service", "received_by")
+    list_per_page = 25
+    readonly_fields = ("created_at", "updated_at")

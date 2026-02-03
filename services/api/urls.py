@@ -4,6 +4,7 @@ from services.api.views import (
     ServiceApplianceViewSet,
     ApplianceItemUsedViewSet,
     TechnicianAssignmentViewSet,
+    ApplianceTypeViewSet,
 )
 
 router = DefaultRouter()
@@ -17,5 +18,6 @@ router.register(
     TechnicianAssignmentViewSet,
     basename="technician-assignment",
 )
+router.register(r"appliance-types", ApplianceTypeViewSet, basename="appliance-type")
 
 urlpatterns = router.urls

@@ -1,0 +1,21 @@
+# Force LF line endings on all text files
+* text=auto eol=lf
+
+# Shell scripts should always be LF
+*.sh text eol=lf
+
+# Environment files
+*.env text eol=lf
+
+# Optional: JSON, YAML, etc.
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Ignore binaries
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary

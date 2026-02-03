@@ -1,20 +1,15 @@
-from django.db import transaction
-from rest_framework import serializers
-from rest_framework.exceptions import ValidationError
 from inventory.models import (
     Item,
+    ProductCategory,
     Stall,
     Stock,
-    ProductCategory,
     StockRoomStock,
-    StockTransfer,
-    StockTransferItem,
 )
+from rest_framework import serializers
 from utils.inventory import (
-    create_stall_with_initial_stocks,
     create_item_with_initial_stock,
+    create_stall_with_initial_stocks,
 )
-from expenses.models import Expense
 
 
 class ProductCategorySerializer(serializers.ModelSerializer):
@@ -188,163 +183,3 @@ class StockRestockSerializer(serializers.Serializer):
         if value <= 0:
             raise serializers.ValidationError("Quantity must be a positive integer.")
         return value
-
-
-class StockTransferItemSerializer(serializers.ModelSerializer):
-    item = serializers.PrimaryKeyRelatedField(queryset=Item.objects.all())
-
-    class Meta:
-        model = StockTransferItem
-        fields = ["item", "quantity"]
-
-    def to_representation(self, instance):
-        rep = super().to_representation(instance)
-        rep["item"] = ItemSerializer(instance.item).data
-        return rep
-
-
-class StockTransferSerializer(serializers.ModelSerializer):
-    items = StockTransferItemSerializer(many=True)
-    is_paid = serializers.SerializerMethodField()
-    paid_at = serializers.SerializerMethodField()
-    total_price = serializers.SerializerMethodField()
-
-    class Meta:
-        model = StockTransfer
-        fields = [
-            "id",
-            "from_stall",
-            "to_stall",
-            "technician",
-            "transferred_by",
-            "transfer_date",
-            "is_finalized",
-            "finalized_at",
-            "items",
-            "is_paid",
-            "paid_at",
-            "total_price",
-            "used_for",
-        ]
-        read_only_fields = [
-            "transferred_by",
-            "transfer_date",
-            "is_finalized",
-            "finalized_at",
-            "total_price",
-        ]
-
-    def to_representation(self, instance):
-        from users.api.serializers import TechnicianSerializer
-        from inventory.api.serializers import StallSerializer
-
-        rep = super().to_representation(instance)
-        rep["from_stall"] = (
-            StallSerializer(instance.from_stall).data if instance.from_stall else None
-        )
-        rep["to_stall"] = (
-            StallSerializer(instance.to_stall).data if instance.to_stall else None
-        )
-        rep["technician"] = (
-            TechnicianSerializer(instance.technician).data
-            if instance.technician
-            else None
-        )
-        return rep
-
-    def get_total_price(self, obj):
-        return sum(
-            (item.item.retail_price or 0) * item.quantity for item in obj.items.all()
-        )
-
-    def get_is_paid(self, obj):
-        try:
-            return obj.expense.is_paid
-        except Expense.DoesNotExist:
-            return False
-
-    def get_paid_at(self, obj):
-        try:
-            return obj.expense.paid_at
-        except Expense.DoesNotExist:
-            return None
-
-    def _save_items(self, transfer, items_data):
-        for item_data in items_data:
-            StockTransferItem.objects.create(transfer=transfer, **item_data)
-            self._adjust_stock(item_data, transfer)
-
-    def create(self, validated_data):
-        items_data = validated_data.pop("items")
-        self._check_stock_levels(items_data, validated_data.get("from_stall"))
-        with transaction.atomic():
-            transfer = StockTransfer.objects.create(**validated_data)
-            self._save_items(transfer, items_data)
-        return transfer
-
-    def update(self, instance, validated_data):
-        items_data = validated_data.pop("items", None)
-        with transaction.atomic():
-            instance.technician = validated_data.get("technician", instance.technician)
-            instance.to_stall = validated_data.get("to_stall", instance.to_stall)
-            instance.used_for = validated_data.get("used_for", instance.used_for)
-            instance.save()
-
-            if items_data is not None:
-                for old_item in instance.items.all():
-                    self._reverse_stock(old_item, instance)
-                instance.items.all().delete()
-                self._save_items(instance, items_data)
-        return instance
-
-    def _check_stock_levels(self, items_data, from_stall):
-        for item_data in items_data:
-            item, qty = item_data["item"], item_data["quantity"]
-            stock = (
-                Stock.objects.filter(stall=from_stall, item=item).first()
-                if from_stall
-                else StockRoomStock.objects.filter(item=item).first()
-            )
-            if not stock or stock.quantity < qty:
-                location = from_stall.name if from_stall else "stock room"
-                raise ValidationError(f"Not enough stock of {item.name} in {location}")
-
-    def _adjust_stock(self, item_data, transfer):
-        item, qty = item_data["item"], item_data["quantity"]
-        if transfer.from_stall:
-            stock = Stock.objects.get(stall=transfer.from_stall, item=item)
-            stock.quantity -= qty
-            stock.save()
-        else:
-            room_stock = StockRoomStock.objects.get(item=item)
-            room_stock.quantity -= qty
-            room_stock.save()
-
-        # Only create/add quantity to the receiving stall if it is an inventory owner
-        if transfer.to_stall and getattr(transfer.to_stall, "inventory_enabled", False):
-            to_stock, _ = Stock.objects.get_or_create(
-                stall=transfer.to_stall, item=item, defaults={"quantity": 0}
-            )
-            to_stock.quantity += qty
-            to_stock.save()
-
-    def _reverse_stock(self, transfer_item, transfer):
-        item, qty = transfer_item.item, transfer_item.quantity
-        if transfer.from_stall:
-            stock = Stock.objects.get(stall=transfer.from_stall, item=item)
-            stock.quantity += qty
-            stock.save()
-        else:
-            room_stock = StockRoomStock.objects.get(item=item)
-            room_stock.quantity += qty
-            room_stock.save()
-
-        # Only attempt to adjust receiver stock if it is an inventory owner
-        if transfer.to_stall and getattr(transfer.to_stall, "inventory_enabled", False):
-            to_stock = Stock.objects.get(stall=transfer.to_stall, item=item)
-            if to_stock.quantity < qty:
-                raise ValidationError(
-                    f"Cannot rollback {qty} from {item.name} at {transfer.to_stall.name}, only {to_stock.quantity} available."
-                )
-            to_stock.quantity -= qty
-            to_stock.save()

@@ -60,10 +60,10 @@ def seed_system_stalls(apps, schema_editor):
         return stall
 
     # Seed the two system-managed stalls:
-    # - Main (Service): not inventory owner, read-only system stall
+    # - Main (Services): not inventory owner, read-only system stall
     # - Sub (Parts): inventory owner, single source-of-truth for stock
     ensure_stall(
-        name="Main", location="Service", inventory_enabled=False, is_system=True
+        name="Main", location="Services", inventory_enabled=False, is_system=True
     )
     ensure_stall(name="Sub", location="Parts", inventory_enabled=True, is_system=True)
 

@@ -1,6 +1,5 @@
-from django.db import models
-from django_filters import rest_framework as filters
 from clients.models import Client
+from django_filters import rest_framework as filters
 
 
 class ClientFilter(filters.FilterSet):

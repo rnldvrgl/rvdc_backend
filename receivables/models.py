@@ -80,7 +80,7 @@ class ChequeCollection(models.Model):
 
     def __str__(self):
         return (
-            f"Cheque {self.cheque_number} - {self.client.name} ({self.date_collected})"
+            f"Cheque {self.cheque_number} - {self.client.full_name} ({self.date_collected})"
         )
 
     def save(self, *args, **kwargs):

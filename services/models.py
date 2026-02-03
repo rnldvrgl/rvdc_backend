@@ -1,10 +1,29 @@
-from datetime import datetime, timedelta
-
 from clients.models import Client
+from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
 from inventory.models import Item, Stock
 from users.models import CustomUser
 from utils.enums import ApplianceStatus, ServiceMode, ServiceStatus, ServiceType
+
+
+# ----------------------------------
+# Payment Enums
+# ----------------------------------
+class PaymentType(models.TextChoices):
+    CASH = "cash", _("Cash")
+    GCASH = "gcash", _("GCash")
+    CREDIT = "credit", _("Credit")
+    DEBIT = "debit", _("Debit")
+    CHEQUE = "cheque", _("Cheque")
+
+
+class PaymentStatus(models.TextChoices):
+    UNPAID = "unpaid", _("Unpaid")
+    PARTIAL = "partial", _("Partial")
+    PAID = "paid", _("Paid")
+    REFUNDED = "refunded", _("Refunded")
 
 
 # ----------------------------------
@@ -62,11 +81,26 @@ class Service(models.Model):
     override_address = models.TextField(blank=True, null=True)
     override_contact_person = models.CharField(max_length=100, blank=True, null=True)
     override_contact_number = models.CharField(max_length=20, blank=True, null=True)
-    scheduled_date = models.DateField(blank=True, null=True)
-    scheduled_time = models.TimeField(blank=True, null=True)
-    estimated_duration = models.PositiveIntegerField(default=60)  # minutes
-    pickup_date = models.DateField(blank=True, null=True)
-    delivery_date = models.DateField(blank=True, null=True)
+
+    # Pull-out service fields (scheduling is handled by Schedule model)
+    pickup_date = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="Pickup date and time for pull-out services (set at service creation)"
+    )
+    delivery_date = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="Delivery date and time for pull-out services (set when scheduling delivery after repair)"
+    )
+
+    # For carry-in services: track when unit was received
+    received_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="When customer dropped off unit (carry-in services)"
+    )
+
     status = models.CharField(
         max_length=30, choices=ServiceStatus.choices, default=ServiceStatus.IN_PROGRESS
     )
@@ -75,9 +109,106 @@ class Service(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Revenue tracking for two-stall architecture
+    main_stall_revenue = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Revenue attributed to Main stall (labor + aircon units)",
+    )
+    sub_stall_revenue = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Revenue attributed to Sub stall (parts)",
+    )
+    total_revenue = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Total service revenue (main + sub)",
+    )
+
+    # Payment tracking
+    payment_status = models.CharField(
+        max_length=10,
+        choices=PaymentStatus.choices,
+        default=PaymentStatus.UNPAID,
+        help_text="Payment status of this service",
+    )
+
+    # Cancellation tracking (for incomplete services)
+    cancellation_reason = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Reason for service cancellation"
+    )
+    cancellation_date = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="When service was cancelled"
+    )
+    
+    # Refund tracking (for completed services)
+    total_refunded = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Total amount refunded for this completed service"
+    )
+    last_refund_date = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="Date of most recent refund"
+    )
+    
+    # Service-level discounts
+    service_discount_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Fixed discount amount for entire service"
+    )
+    service_discount_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        help_text="Percentage discount for entire service (0.00 - 100.00)"
+    )
+    discount_reason = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="Reason for discount (e.g., 'Senior Citizen', 'Loyalty Discount')"
+    )
+
     class Meta:
         ordering = ["-created_at"]
 
+    def clean(self):
+        """Validate service data"""
+        super().clean()
+
+        # Motor Rewind services must use carry-in mode
+        if self.service_type == ServiceType.MOTOR_REWIND:
+            if self.service_mode != ServiceMode.CARRY_IN:
+                raise ValidationError({
+                    'service_mode': 'Motor Rewind services must use Carry-In mode.'
+                })
+
+        # Pull-out services must have pickup_date
+        if self.service_mode == ServiceMode.PULL_OUT:
+            if not self.pickup_date:
+                raise ValidationError({
+                    'pickup_date': 'Pull-out services must have a pickup date.'
+                })
+
+    def save(self, *args, **kwargs):
+        """Override save to run validation"""
+        if kwargs.pop('skip_validation', False):
+            super().save(*args, **kwargs)
+        else:
+            self.full_clean()
+            super().save(*args, **kwargs)
 
     def __str__(self):
 
@@ -100,12 +231,143 @@ class Service(models.Model):
         return appliance_costs + parts_costs
 
     @property
-    def scheduled_end_time(self):
-        """Calculate end time using start + estimated_duration (if available)."""
-        if self.scheduled_date and self.scheduled_time:
-            dt = datetime.combine(self.scheduled_date, self.scheduled_time)
-            return (dt + timedelta(minutes=self.estimated_duration)).time()
-        return None
+    def total_paid(self):
+        """Total amount paid for this service across all payments."""
+        return sum(payment.amount for payment in self.payments.all())
+
+    @property
+    def balance_due(self):
+        """Remaining balance for this service."""
+        return max(self.total_revenue - self.total_paid, 0)
+    
+    @property
+    def net_revenue(self):
+        """Revenue after refunds"""
+        return self.total_paid - (self.total_refunded or 0)
+    
+    @property
+    def has_refunds(self):
+        """Check if service has any refunds"""
+        return (self.total_refunded or 0) > 0
+
+    def update_payment_status(self):
+        """Update payment status based on total paid vs total revenue."""
+        total = self.total_revenue
+        paid = self.total_paid
+
+        if paid == 0:
+            self.payment_status = PaymentStatus.UNPAID
+        elif paid < total:
+            self.payment_status = PaymentStatus.PARTIAL
+        else:
+            self.payment_status = PaymentStatus.PAID
+
+        self.save(update_fields=["payment_status"])
+
+
+# ----------------------------------
+# Service Payment
+# ----------------------------------
+class ServicePayment(models.Model):
+    """Payment record for a service."""
+
+    service = models.ForeignKey(
+        Service, related_name="payments", on_delete=models.CASCADE
+    )
+    payment_type = models.CharField(max_length=10, choices=PaymentType.choices)
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Amount paid in this transaction",
+    )
+    payment_date = models.DateTimeField(default=timezone.now)
+    received_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="service_payments_received",
+        help_text="User who received this payment",
+    )
+    notes = models.TextField(
+        blank=True, help_text="Additional notes about this payment"
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-payment_date"]
+        verbose_name = "Service Payment"
+        verbose_name_plural = "Service Payments"
+
+    def __str__(self):
+        return f"{self.payment_type}: ₱{self.amount} for Service #{self.service.id}"
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # Automatically update the related service's payment status
+        self.service.update_payment_status()
+
+
+# ----------------------------------
+# Service Refund
+# ----------------------------------
+class ServiceRefund(models.Model):
+    """Track refunds for completed services"""
+    
+    REFUND_TYPE_CHOICES = [
+        ('full', 'Full Refund'),
+        ('partial', 'Partial Refund'),
+    ]
+    
+    service = models.ForeignKey(
+        Service,
+        on_delete=models.CASCADE,
+        related_name='refunds'
+    )
+    refund_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Amount refunded"
+    )
+    refund_type = models.CharField(
+        max_length=10,
+        choices=REFUND_TYPE_CHOICES,
+        default='partial'
+    )
+    reason = models.TextField(help_text="Reason for refund")
+    refund_date = models.DateTimeField(auto_now_add=True)
+    processed_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="refunds_processed"
+    )
+    
+    # Financial tracking
+    refund_method = models.CharField(
+        max_length=20,
+        choices=[
+            ('cash', 'Cash'),
+            ('gcash', 'GCash'),
+            ('bank_transfer', 'Bank Transfer'),
+        ],
+        default='cash'
+    )
+    
+    notes = models.TextField(blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['-refund_date']
+        verbose_name = "Service Refund"
+        verbose_name_plural = "Service Refunds"
+    
+    def __str__(self):
+        return f"Refund #{self.id} - Service #{self.service.id} - ₱{self.refund_amount}"
 
 
 # ----------------------------------
@@ -169,10 +431,65 @@ class ServiceAppliance(models.Model):
     status = models.CharField(
         max_length=20, choices=ApplianceStatus.choices, default=ApplianceStatus.RECEIVED
     )
+    
+    # Technician assignment
+    assigned_technician = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_appliances",
+        help_text="Technician assigned to work on this appliance"
+    )
+    
     labor_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     labor_is_free = models.BooleanField(
         default=False, help_text="Mark labor for this appliance as free."
     )
+    # Promo support - track original amount before discount
+    labor_original_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Original labor fee before promo discount (e.g., free installation)",
+    )
+    
+    # Labor discounts
+    labor_discount_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Fixed discount amount for labor"
+    )
+    labor_discount_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        help_text="Percentage discount for labor (0.00 - 100.00)"
+    )
+    labor_discount_reason = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="Reason for labor discount"
+    )
+    
+    @property
+    def discounted_labor_fee(self):
+        """Labor fee after item-level discount"""
+        if self.labor_is_free:
+            return 0
+        
+        fee = self.labor_fee
+        
+        # Apply fixed discount
+        fee = max(fee - self.labor_discount_amount, 0)
+        
+        # Apply percentage discount
+        if self.labor_discount_percentage > 0:
+            fee = fee * (1 - (self.labor_discount_percentage / 100))
+        
+        return max(fee, 0)
 
     class Meta:
         ordering = ["appliance_type__name", "brand"]
@@ -212,6 +529,68 @@ class ApplianceItemUsed(BaseItemUsed):
     is_free = models.BooleanField(
         default=False, help_text="Mark this part as free to the customer."
     )
+
+    # Promo support - track free quantity for promotions (e.g., first 10ft copper tube free)
+    free_quantity = models.PositiveIntegerField(
+        default=0,
+        help_text="Quantity given free as part of promotion",
+    )
+    promo_name = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Name of applied promotion (e.g., 'Free 10ft Copper Tube Promo')",
+    )
+    
+    # Item-level discounts
+    discount_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Fixed discount amount for this item"
+    )
+    discount_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        help_text="Percentage discount (0.00 - 100.00)"
+    )
+    discount_reason = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="Reason for item discount"
+    )
+    
+    # Cancellation tracking (only for cancelled services)
+    is_cancelled = models.BooleanField(
+        default=False,
+        help_text="True if service was cancelled and part returned to stock"
+    )
+    cancelled_at = models.DateTimeField(blank=True, null=True)
+    
+    @property
+    def discounted_price(self):
+        """Calculate price per unit after discount"""
+        if not self.item:
+            return 0
+        
+        base_price = self.item.retail_price
+        
+        # Apply fixed discount first
+        price = max(base_price - self.discount_amount, 0)
+        
+        # Then apply percentage discount
+        if self.discount_percentage > 0:
+            price = price * (1 - (self.discount_percentage / 100))
+        
+        return max(price, 0)  # Never go negative
+    
+    @property
+    def line_total(self):
+        """Total for this line item after discounts"""
+        if self.is_free:
+            return 0
+        charged_qty = self.quantity - self.free_quantity
+        return self.discounted_price * charged_qty
 
     # Link to an Expense created automatically when items are consumed from
     # another stall (main stall incurs an expense for parts sourced from

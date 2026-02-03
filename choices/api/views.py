@@ -1,20 +1,28 @@
-from rest_framework import generics, permissions
-
-from inventory.models import Item, Stall, ProductCategory
-from inventory.api.serializers import (
-    ItemSerializer,
-    StallSerializer,
-    ProductCategorySerializer,
-)
 from clients.api.serializers import ClientSerializer
 from clients.models import Client
+from expenses.api.serializers import ExpenseCategoryListSerializer
+from expenses.models import ExpenseCategory
 from installations.api.serializers import AirconBrandSerializer
 from installations.models import AirconBrand
-from users.models import CustomUser
-from users.api.serializers import TechnicianSerializer, UserSerializer
-from rest_framework.views import APIView
+from inventory.api.serializers import (
+    ItemSerializer,
+    ProductCategorySerializer,
+    StallSerializer,
+)
+from inventory.models import Item, ProductCategory, Stall
+from rest_framework import generics, permissions, serializers
 from rest_framework.response import Response
+from rest_framework.views import APIView
+from services.models import ApplianceType
+from users.api.serializers import EmployeesSerializer, UserSerializer
+from users.models import CustomUser
 from utils.enums import AirconType, BankChoices
+
+
+class ApplianceTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ApplianceType
+        fields = ["id", "name"]
 
 
 class ChoicesAPIView(APIView):
@@ -46,7 +54,8 @@ class StallChoicesAPIView(BaseChoicesAPIView):
     serializer_class = StallSerializer
 
     def get_queryset(self):
-        queryset = Stall.objects.filter(is_deleted=False)
+        # Only return system stalls (the two main stalls: Main and Sub)
+        queryset = Stall.objects.filter(is_deleted=False, is_system=True)
         exclude_id = self.request.query_params.get("exclude")
         if exclude_id:
             queryset = queryset.exclude(id=exclude_id)
@@ -63,13 +72,18 @@ class ClientChoicesAPIView(BaseChoicesAPIView):
     serializer_class = ClientSerializer
 
 
-class TechnicianChoicesAPIView(BaseChoicesAPIView):
+class EmployeesChoicesAPIView(BaseChoicesAPIView):
+    queryset = CustomUser.objects.exclude(role="admin").filter(is_deleted=False)
+    serializer_class = EmployeesSerializer
+
+
+class TechniciansChoicesAPIView(BaseChoicesAPIView):
     queryset = CustomUser.objects.filter(role="technician", is_deleted=False)
-    serializer_class = TechnicianSerializer
+    serializer_class = UserSerializer
 
 
 class UsersChoicesAPIView(BaseChoicesAPIView):
-    queryset = CustomUser.objects.filter(is_deleted=False).exclude(role="technician")
+    queryset = CustomUser.objects.filter(is_deleted=False)
     serializer_class = UserSerializer
 
 
@@ -84,3 +98,13 @@ class AirconTypesChoicesAPIView(ChoicesAPIView):
 class AirconBrandsChoicesAPIView(BaseChoicesAPIView):
     queryset = AirconBrand.objects.all()
     serializer_class = AirconBrandSerializer
+
+
+class ExpenseCategoriesChoicesAPIView(BaseChoicesAPIView):
+    queryset = ExpenseCategory.objects.filter(is_deleted=False, is_active=True)
+    serializer_class = ExpenseCategoryListSerializer
+
+
+class ApplianceTypesChoicesAPIView(BaseChoicesAPIView):
+    queryset = ApplianceType.objects.all()
+    serializer_class = ApplianceTypeSerializer
