@@ -122,3 +122,5 @@ atlassian-ide-plugin.xml
 staticfiles/
 static/
 *.md
+
+media/
