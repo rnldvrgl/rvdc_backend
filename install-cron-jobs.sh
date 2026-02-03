@@ -85,21 +85,15 @@ cat > "$SCRIPT_DIR/auto-close-attendance.sh" << 'EOF'
 #!/bin/bash
 LOG_FILE="/var/log/cron-auto-close-attendance.log"
 CONTAINER_NAME="CONTAINER_NAME_PLACEHOLDER"
+export TZ=Asia/Manila
 
-echo "=== Auto-Close Attendance - $(date) ===" >> "$LOG_FILE"
+echo "=== Auto-Close Attendance - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
+docker exec "$CONTAINER_NAME" python manage.py auto_close_attendance >> "$LOG_FILE" 2>&1
 
-# Check if auto-close is enabled in PayrollSettings
-if docker exec "$CONTAINER_NAME" python manage.py check_auto_close_enabled > /dev/null 2>&1; then
-    echo "Auto-close is enabled, running..." >> "$LOG_FILE"
-    docker exec "$CONTAINER_NAME" python manage.py auto_close_attendance >> "$LOG_FILE" 2>&1
-
-    if [ $? -eq 0 ]; then
-        echo "✅ Success - $(date)" >> "$LOG_FILE"
-    else
-        echo "❌ Failed - $(date)" >> "$LOG_FILE"
-    fi
+if [ $? -eq 0 ]; then
+    echo "✅ Success - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
 else
-    echo "ℹ️  Auto-close is disabled in PayrollSettings, skipping - $(date)" >> "$LOG_FILE"
+    echo "❌ Failed - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
 fi
 echo "" >> "$LOG_FILE"
 EOF
@@ -109,14 +103,15 @@ cat > "$SCRIPT_DIR/mark-absences.sh" << 'EOF'
 #!/bin/bash
 LOG_FILE="/var/log/cron-mark-absences.log"
 CONTAINER_NAME="CONTAINER_NAME_PLACEHOLDER"
+export TZ=Asia/Manila
 
-echo "=== Mark Daily Absences - $(date) ===" >> "$LOG_FILE"
+echo "=== Mark Daily Absences - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
 docker exec "$CONTAINER_NAME" python manage.py mark_daily_absences >> "$LOG_FILE" 2>&1
 
 if [ $? -eq 0 ]; then
-    echo "✅ Success - $(date)" >> "$LOG_FILE"
+    echo "✅ Success - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
 else
-    echo "❌ Failed - $(date)" >> "$LOG_FILE"
+    echo "❌ Failed - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
 fi
 echo "" >> "$LOG_FILE"
 EOF
@@ -126,12 +121,13 @@ cat > "$SCRIPT_DIR/weekly-attendance-payroll-fix.sh" << 'EOF'
 #!/bin/bash
 LOG_FILE="/var/log/cron-weekly-attendance-payroll-fix.log"
 CONTAINER_NAME="CONTAINER_NAME_PLACEHOLDER"
+export TZ=Asia/Manila
 
 # Calculate last week (Saturday to Friday)
 LAST_SATURDAY=$(date -d "last saturday -7 days" +%Y-%m-%d)
 LAST_FRIDAY=$(date -d "yesterday" +%Y-%m-%d)
 
-echo "=== Weekly Attendance & Payroll Fix - $(date) ===" >> "$LOG_FILE"
+echo "=== Weekly Attendance & Payroll Fix - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
 echo "Processing period: $LAST_SATURDAY to $LAST_FRIDAY" >> "$LOG_FILE"
 
 # Step 1: Verify attendance issues
@@ -158,9 +154,9 @@ yes
 CONFIRM
 
 if [ $? -eq 0 ]; then
-    echo "✅ Weekly fix complete - $(date)" >> "$LOG_FILE"
+    echo "✅ Weekly fix complete - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
 else
-    echo "❌ Weekly fix failed - $(date)" >> "$LOG_FILE"
+    echo "❌ Weekly fix failed - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
 fi
 echo "" >> "$LOG_FILE"
 EOF
@@ -170,11 +166,12 @@ cat > "$SCRIPT_DIR/yearly-update-holidays.sh" << 'EOF'
 #!/bin/bash
 LOG_FILE="/var/log/cron-yearly-update-holidays.log"
 CONTAINER_NAME="CONTAINER_NAME_PLACEHOLDER"
+export TZ=Asia/Manila
 
 CURRENT_YEAR=$(date +%Y)
 NEXT_YEAR=$((CURRENT_YEAR + 1))
 
-echo "=== Update Holiday Years - $(date) ===" >> "$LOG_FILE"
+echo "=== Update Holiday Years - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
 echo "Updating holidays to year: $NEXT_YEAR" >> "$LOG_FILE"
 
 docker exec "$CONTAINER_NAME" python manage.py update_holiday_years \
@@ -183,9 +180,9 @@ yes
 CONFIRM
 
 if [ $? -eq 0 ]; then
-    echo "✅ Holiday years updated - $(date)" >> "$LOG_FILE"
+    echo "✅ Holiday years updated - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
 else
-    echo "❌ Holiday update failed - $(date)" >> "$LOG_FILE"
+    echo "❌ Holiday update failed - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
 fi
 echo "" >> "$LOG_FILE"
 EOF
@@ -195,8 +192,9 @@ cat > "$SCRIPT_DIR/yearly-replenish-leaves.sh" << 'EOF'
 #!/bin/bash
 LOG_FILE="/var/log/cron-yearly-replenish-leaves.log"
 CONTAINER_NAME="CONTAINER_NAME_PLACEHOLDER"
+export TZ=Asia/Manila
 
-echo "=== Replenish Leave Balances - $(date) ===" >> "$LOG_FILE"
+echo "=== Replenish Leave Balances - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
 echo "Resetting leave balances for all employees" >> "$LOG_FILE"
 
 docker exec "$CONTAINER_NAME" python manage.py replenish_leave_balances \
@@ -207,9 +205,9 @@ yes
 CONFIRM
 
 if [ $? -eq 0 ]; then
-    echo "✅ Leave balances replenished - $(date)" >> "$LOG_FILE"
+    echo "✅ Leave balances replenished - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
 else
-    echo "❌ Leave replenishment failed - $(date)" >> "$LOG_FILE"
+    echo "❌ Leave replenishment failed - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
 fi
 echo "" >> "$LOG_FILE"
 EOF
@@ -219,11 +217,12 @@ cat > "$SCRIPT_DIR/yearly-archive-payrolls.sh" << 'EOF'
 #!/bin/bash
 LOG_FILE="/var/log/cron-yearly-archive-payrolls.log"
 CONTAINER_NAME="CONTAINER_NAME_PLACEHOLDER"
+export TZ=Asia/Manila
 
 CURRENT_YEAR=$(date +%Y)
 LAST_YEAR=$((CURRENT_YEAR - 1))
 
-echo "=== Archive Old Payrolls - $(date) ===" >> "$LOG_FILE"
+echo "=== Archive Old Payrolls - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
 echo "Archiving payrolls from year: $LAST_YEAR and earlier" >> "$LOG_FILE"
 
 # Export before deleting
@@ -235,9 +234,9 @@ yes
 CONFIRM
 
 if [ $? -eq 0 ]; then
-    echo "✅ Payrolls archived - $(date)" >> "$LOG_FILE"
+    echo "✅ Payrolls archived - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
 else
-    echo "❌ Payroll archival failed - $(date)" >> "$LOG_FILE"
+    echo "❌ Payroll archival failed - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
 fi
 echo "" >> "$LOG_FILE"
 EOF
