@@ -658,9 +658,9 @@ class AnalyticsViewSet(ViewSet):
 
 class CalendarEventsView(APIView):
     """
-    API endpoint for fetching calendar events (birthdays, holidays, schedules, leaves)
+    API endpoint for fetching calendar events (birthdays, holidays, schedules, leaves, deliveries)
     Implements role-based filtering:
-    - Technicians: Their birthdays, all holidays, schedules they're assigned to, their leaves
+    - Technicians: Their birthdays, all holidays, schedules they're assigned to, their leaves, their deliveries
     - Clerks: All birthdays, all holidays, their leaves only
     - Managers/Admins: All events
 
@@ -858,6 +858,54 @@ class CalendarEventsView(APIView):
                         'notes': schedule.notes,
                     }
                 })
+            
+            # Also fetch delivery dates from services
+            from services.models import Service
+            
+            services_query = Service.objects.filter(
+                delivery_date__isnull=False,
+                delivery_date__date__gte=start_date,
+                delivery_date__date__lte=end_date
+            ).select_related('client')
+            
+            # Role-based filtering for delivery dates
+            if user_role == 'technician':
+                # Technicians see only their assigned services
+                services_query = services_query.filter(
+                    schedule__technicians__id=user.id
+                ).distinct()
+            elif user_role == 'clerk':
+                # Clerks see no delivery dates
+                services_query = Service.objects.none()
+            # Managers and admins see all delivery dates
+            
+            for service in services_query:
+                delivery_datetime = service.delivery_date
+                delivery_date = delivery_datetime.date()
+                delivery_time = delivery_datetime.time()
+                
+                # Check if delivery date is within range
+                if start_date <= delivery_date <= end_date:
+                    title = f"Delivery - {service.client.full_name}"
+                    
+                    # Use full datetime for the event
+                    start_iso = delivery_datetime.isoformat()
+                    
+                    events.append({
+                        'id': f"delivery-{service.id}",
+                        'title': title,
+                        'start': start_iso,
+                        'allDay': False,
+                        'extendedProps': {
+                            'type': 'delivery',
+                            'service_id': service.id,
+                            'client_name': service.client.full_name,
+                            'client_id': service.client.id,
+                            'service_type': service.service_type,
+                            'delivery_date': delivery_date.isoformat(),
+                            'delivery_time': delivery_time.strftime('%H:%M'),
+                        }
+                    })
 
         # Fetch approved leaves
         if include_leaves:
