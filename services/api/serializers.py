@@ -25,6 +25,7 @@ from services.business_logic import (
 )
 from services.models import (
     ApplianceItemUsed,
+    ApplianceType,
     PaymentType,
     Service,
     ServiceAppliance,
@@ -33,6 +34,15 @@ from services.models import (
     TechnicianAssignment,
 )
 from users.models import CustomUser
+
+
+class ApplianceTypeSerializer(serializers.ModelSerializer):
+    """Serializer for ApplianceType model."""
+
+    class Meta:
+        model = ApplianceType
+        fields = ["id", "name"]
+        read_only_fields = ["id"]
 
 
 class ApplianceItemUsedSerializer(serializers.ModelSerializer):
@@ -290,6 +300,16 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
 
     items_used = ApplianceItemUsedSerializer(many=True, required=False)
     technician_assignments = TechnicianAssignmentSerializer(many=True, required=False, read_only=True)
+    
+    # Nested appliance type (read for GET, write accepts ID)
+    appliance_type = ApplianceTypeSerializer(read_only=True)
+    appliance_type_id = serializers.PrimaryKeyRelatedField(
+        queryset=ApplianceType.objects.all(),
+        source='appliance_type',
+        write_only=True,
+        allow_null=True,
+        required=False
+    )
 
     # Promo fields
     apply_free_installation = serializers.BooleanField(
@@ -300,10 +320,6 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
     )
 
     # Read-only computed fields
-    appliance_type_name = serializers.CharField(
-        source="appliance_type.name",
-        read_only=True
-    )
     assigned_technician_name = serializers.CharField(
         source="assigned_technician.get_full_name",
         read_only=True,
@@ -322,7 +338,7 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "id",
             "service",
             "appliance_type",
-            "appliance_type_name",
+            "appliance_type_id",
             "brand",
             "model",
             "issue_reported",
@@ -445,6 +461,8 @@ class ServiceSerializer(serializers.ModelSerializer):
 
     # Write-only fields for datetime inputs from frontend
     appointment_datetime = serializers.DateTimeField(write_only=True, required=False, allow_null=True)
+    pickup_date = serializers.DateTimeField(required=False, allow_null=True)
+    delivery_date = serializers.DateTimeField(required=False, allow_null=True)
     received_at = serializers.DateTimeField(required=False, allow_null=True)
 
     # Read-only fields

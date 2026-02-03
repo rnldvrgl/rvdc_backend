@@ -14,6 +14,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from services.api.serializers import (
     ApplianceItemUsedSerializer,
+    ApplianceTypeSerializer,
     CreateServicePaymentSerializer,
     ServiceApplianceSerializer,
     ServiceCancellationSerializer,
@@ -26,6 +27,7 @@ from services.api.serializers import (
 from services.business_logic import RevenueCalculator, ServicePaymentManager
 from services.models import (
     ApplianceItemUsed,
+    ApplianceType,
     Service,
     ServiceAppliance,
     TechnicianAssignment,
@@ -735,3 +737,27 @@ class TechnicianAssignmentViewSet(viewsets.ModelViewSet):
         ]
 
         return get_role_based_filter_response(request, filters_config, ordering_config)
+
+
+# --------------------------
+# ApplianceType ViewSet
+# --------------------------
+class ApplianceTypeViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing appliance types.
+
+    Endpoints:
+    - GET /appliance-types/ - List all appliance types
+    - POST /appliance-types/ - Create a new appliance type
+    - GET /appliance-types/{id}/ - Retrieve an appliance type
+    - PATCH /appliance-types/{id}/ - Update an appliance type
+    - DELETE /appliance-types/{id}/ - Delete an appliance type
+    """
+
+    queryset = ApplianceType.objects.all()
+    serializer_class = ApplianceTypeSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filterset_fields = ["name"]
+    search_fields = ["name"]
+    ordering_fields = ["name", "id"]
+    ordering = ["name"]

@@ -83,15 +83,15 @@ class Service(models.Model):
     override_contact_number = models.CharField(max_length=20, blank=True, null=True)
 
     # Pull-out service fields (scheduling is handled by Schedule model)
-    pickup_date = models.DateField(
+    pickup_date = models.DateTimeField(
         blank=True,
         null=True,
-        help_text="Pickup date for pull-out services (set at service creation)"
+        help_text="Pickup date and time for pull-out services (set at service creation)"
     )
-    delivery_date = models.DateField(
+    delivery_date = models.DateTimeField(
         blank=True,
         null=True,
-        help_text="Delivery date for pull-out services (set when scheduling delivery after repair)"
+        help_text="Delivery date and time for pull-out services (set when scheduling delivery after repair)"
     )
 
     # For carry-in services: track when unit was received
