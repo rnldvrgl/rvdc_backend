@@ -67,10 +67,16 @@ def get_stall_filter(request):
 
 class SummaryStatsView(APIView):
     def get(self, request):
+        from decimal import Decimal
+        from services.models import Service
+        from schedules.models import Schedule
+        
         start_date, end_date = get_date_range(request)
         stall_filter = get_stall_filter(request)
+        today = timezone.now().date()
 
-        revenue = (
+        # Sales revenue
+        sales_revenue = (
             SalesItem.objects.filter(
                 transaction__created_at__range=(start_date, end_date),
                 transaction__is_deleted=False,
@@ -80,30 +86,48 @@ class SummaryStatsView(APIView):
             or 0
         )
 
-        clients_count = Client.objects.count()
+        # Service revenue
+        service_qs = Service.objects.filter(
+            created_at__date__gte=start_date.date() if hasattr(start_date, 'date') else start_date,
+            created_at__date__lte=end_date.date() if hasattr(end_date, 'date') else end_date,
+        )
+        if stall_filter:
+            service_qs = service_qs.filter(**stall_filter)
+        
+        service_revenue = service_qs.aggregate(total=Sum("total_revenue"))["total"] or Decimal("0")
 
-        # Determine if user is admin
+        # Total revenue (sales + services)
+        total_revenue = float(sales_revenue) + float(service_revenue)
+
+        # Clients
+        clients_count = Client.objects.filter(is_deleted=False).count()
+        
+        # New clients in period
+        new_clients = Client.objects.filter(
+            created_at__range=(start_date, end_date),
+            is_deleted=False
+        ).count()
+
+        # Stock inventory
         user = request.user
         is_admin = user.is_superuser or user.role == "admin"
 
         if is_admin:
             stock_qs = StockRoomStock.objects.filter(is_deleted=False)
-
             no_stock_count = stock_qs.filter(quantity=0).count()
             low_stock_count = stock_qs.filter(
                 quantity__gt=0, quantity__lte=F("low_stock_threshold")
             ).count()
-
         else:
             stock_qs = Stock.objects.filter(
                 is_deleted=False, track_stock=True, **stall_filter
             )
-
             no_stock_count = stock_qs.filter(quantity=0).count()
             low_stock_count = stock_qs.filter(
                 quantity__gt=0, quantity__lte=F("low_stock_threshold")
             ).count()
 
+        # Expenses
         expense = (
             Expense.objects.filter(
                 created_at__range=(start_date, end_date),
@@ -114,24 +138,54 @@ class SummaryStatsView(APIView):
             or 0
         )
 
-        net_income = (
-            SalesItem.objects.filter(
-                transaction__created_at__range=(start_date, end_date),
-                transaction__is_deleted=False,
-                **{"transaction__%s" % k: v for k, v in stall_filter.items()}
-            ).aggregate(
-                total=Sum(
-                    ExpressionWrapper(
-                        F("quantity") * F("final_price_per_unit"),
-                        output_field=FloatField(),
-                    )
-                )
-            )[
-                "total"
-            ]
-            or 0
+        # Net income
+        net_income = total_revenue - float(expense)
+
+        # Outstanding balances
+        from sales.models import SalesTransaction
+        
+        sales_outstanding = SalesTransaction.objects.filter(
+            is_deleted=False,
+            voided=False,
+            payment_status__in=['partial', 'unpaid']
+        ).aggregate(
+            total=Sum(F("total_price") - F("amount_paid"))
+        )["total"] or Decimal("0")
+        
+        services_outstanding = Service.objects.filter(
+            payment_status__in=['partial', 'unpaid']
+        ).aggregate(
+            total=Sum(F("total_revenue") - F("amount_paid"))
+        )["total"] or Decimal("0")
+        
+        total_outstanding = float(sales_outstanding) + float(services_outstanding)
+
+        # Service metrics
+        service_stats = Service.objects.filter(
+            created_at__date__gte=start_date.date() if hasattr(start_date, 'date') else start_date,
+            created_at__date__lte=end_date.date() if hasattr(end_date, 'date') else end_date,
+        ).aggregate(
+            total=Count('id'),
+            completed=Count('id', filter=Q(status='completed')),
+            active=Count('id', filter=Q(status__in=['pending', 'in_progress', 'confirmed']))
+        )
+        
+        completion_rate = (
+            (service_stats['completed'] / service_stats['total'] * 100)
+            if service_stats['total'] > 0 else 0
         )
 
+        # Schedule metrics
+        pending_schedules = Schedule.objects.filter(
+            scheduled_date=today,
+            status='pending'
+        ).count()
+        
+        today_schedules = Schedule.objects.filter(
+            scheduled_date=today
+        ).count()
+
+        # Top selling item
         top_selling_item = (
             SalesItem.objects.filter(
                 transaction__created_at__range=(start_date, end_date),
@@ -144,18 +198,42 @@ class SummaryStatsView(APIView):
             .first()
         )
 
-        expense_count = Expense.objects.filter(
-            created_at__range=(start_date, end_date), is_deleted=False, **stall_filter
-        ).count()
-
         return Response(
             {
-                "total_sales": float(revenue),
+                # Revenue metrics
+                "total_sales": float(sales_revenue),
+                "service_revenue": float(service_revenue),
+                "total_revenue": total_revenue,
+                "net_income": net_income,
+                
+                # Outstanding balances
+                "total_outstanding": total_outstanding,
+                "sales_outstanding": float(sales_outstanding),
+                "services_outstanding": float(services_outstanding),
+                
+                # Service performance
+                "total_services": service_stats['total'],
+                "active_services": service_stats['active'],
+                "completed_services": service_stats['completed'],
+                "service_completion_rate": round(completion_rate, 1),
+                
+                # Schedule metrics
+                "today_schedules": today_schedules,
+                "pending_schedules": pending_schedules,
+                
+                # Client metrics
                 "total_clients": clients_count,
+                "new_clients": new_clients,
+                
+                # Inventory
                 "low_stock_items": low_stock_count,
                 "no_stock_items": no_stock_count,
+                "inventory_alerts": low_stock_count + no_stock_count,
+                
+                # Expenses
                 "total_expense": float(expense),
-                "net_income": float(net_income) - float(expense),
+                
+                # Top selling
                 "top_selling_item": {
                     "name": (
                         top_selling_item["item__name"] if top_selling_item else None
@@ -164,7 +242,6 @@ class SummaryStatsView(APIView):
                         top_selling_item["total_sold"] if top_selling_item else 0
                     ),
                 },
-                "expense_count": expense_count,
             }
         )
 
