@@ -144,13 +144,22 @@ class SummaryStatsView(APIView):
         # Outstanding balances
         from sales.models import SalesTransaction
         
-        sales_outstanding = SalesTransaction.objects.filter(
+        # Calculate sales outstanding (total price from items minus payments)
+        sales_transactions = SalesTransaction.objects.filter(
             is_deleted=False,
             voided=False,
             payment_status__in=['partial', 'unpaid']
+        ).annotate(
+            total_price=Sum(F('items__quantity') * F('items__final_price_per_unit')),
+            total_paid=Sum('payments__amount')
         ).aggregate(
-            total=Sum(F("total_price") - F("amount_paid"))
-        )["total"] or Decimal("0")
+            total_due=Sum('total_price'),
+            total_paid=Sum('total_paid')
+        )
+        
+        sales_total_due = sales_transactions['total_due'] or Decimal("0")
+        sales_total_paid = sales_transactions['total_paid'] or Decimal("0")
+        sales_outstanding = sales_total_due - sales_total_paid
         
         services_outstanding = Service.objects.filter(
             payment_status__in=['partial', 'unpaid']
