@@ -34,15 +34,15 @@ class ScheduleViewSet(viewsets.ModelViewSet):
         'client__full_name',
         'technicians__first_name',
         'technicians__last_name',
-        'service_type',
+        'schedule_type',
         'notes',
     ]
     ordering_fields = [
-        'scheduled_datetime',
+        'scheduled_date',
         'created_at',
-        'service_type',
+        'schedule_type',
     ]
-    ordering = ['-scheduled_datetime']
+    ordering = ['-scheduled_date', '-scheduled_time']
 
     def get_serializer_class(self):
         """Return appropriate serializer based on action"""
@@ -77,8 +77,8 @@ class ScheduleViewSet(viewsets.ModelViewSet):
                 start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
                 end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
                 queryset = queryset.filter(
-                    scheduled_datetime__date__gte=start.date(),
-                    scheduled_datetime__date__lte=end.date()
+                    scheduled_date__gte=start.date(),
+                    scheduled_date__lte=end.date()
                 )
             except (ValueError, AttributeError):
                 pass
@@ -89,10 +89,10 @@ class ScheduleViewSet(viewsets.ModelViewSet):
     def get_filters(self, request):
         """Return available filter options for the frontend"""
         filters_config = {
-            'service_type': {
+            'schedule_type': {
                 'options': lambda: [
                     {'label': display, 'value': value}
-                    for value, display in Schedule.SERVICE_TYPES
+                    for value, display in Schedule.SCHEDULE_TYPES
                 ],
             },
             'client': {
@@ -121,7 +121,7 @@ class ScheduleViewSet(viewsets.ModelViewSet):
         }
 
         ordering_config = [
-            {'label': 'Scheduled Date', 'value': 'scheduled_datetime'},
+            {'label': 'Scheduled Date', 'value': 'scheduled_date'},
             {'label': 'Client Name', 'value': 'client__full_name'},
             {'label': 'Service Type', 'value': 'service_type'},
             {'label': 'Created Date', 'value': 'created_at'},
@@ -136,9 +136,9 @@ class ScheduleViewSet(viewsets.ModelViewSet):
         upcoming_date = now + timedelta(days=7)
 
         queryset = self.get_queryset().filter(
-            scheduled_datetime__gte=now,
-            scheduled_datetime__lte=upcoming_date
-        ).order_by('scheduled_datetime')
+            scheduled_date__gte=now.date(),
+            scheduled_date__lte=upcoming_date.date()
+        ).order_by('scheduled_date', 'scheduled_time')
 
         page = self.paginate_queryset(queryset)
         if page is not None:
@@ -154,8 +154,8 @@ class ScheduleViewSet(viewsets.ModelViewSet):
         today = timezone.now().date()
 
         queryset = self.get_queryset().filter(
-            scheduled_datetime__date=today
-        ).order_by('scheduled_datetime')
+            scheduled_date=today
+        ).order_by('scheduled_time')
 
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
@@ -171,13 +171,13 @@ class ScheduleViewSet(viewsets.ModelViewSet):
 
         if start_date:
             try:
-                queryset = queryset.filter(scheduled_datetime__date__gte=start_date)
+                queryset = queryset.filter(scheduled_date__gte=start_date)
             except (ValueError, AttributeError):
                 pass
 
         if end_date:
             try:
-                queryset = queryset.filter(scheduled_datetime__date__lte=end_date)
+                queryset = queryset.filter(scheduled_date__lte=end_date)
             except (ValueError, AttributeError):
                 pass
 
@@ -231,8 +231,8 @@ class ScheduleViewSet(viewsets.ModelViewSet):
                 start_date = datetime.fromisoformat(start.replace('Z', '+00:00')).date()
                 end_date = datetime.fromisoformat(end.replace('Z', '+00:00')).date()
                 queryset = queryset.filter(
-                    scheduled_datetime__date__gte=start_date,
-                    scheduled_datetime__date__lte=end_date
+                    scheduled_date__gte=start_date,
+                    scheduled_date__lte=end_date
                 )
             except (ValueError, AttributeError):
                 pass
@@ -249,13 +249,13 @@ class ScheduleViewSet(viewsets.ModelViewSet):
 
             events.append({
                 'id': f'schedule-{schedule.id}',
-                'title': f'{schedule.get_service_type_display()} - {schedule.client.full_name}',
-                'start': schedule.scheduled_datetime.isoformat(),
+                'title': f'{schedule.get_schedule_type_display()} - {schedule.client.full_name}',
+                'start': datetime.combine(schedule.scheduled_date, schedule.scheduled_time).isoformat(),
                 'allDay': False,
                 'extendedProps': {
                     'type': 'schedule',
                     'schedule_id': schedule.id,
-                    'service_type': schedule.service_type,
+                    'schedule_type': schedule.schedule_type,
                     'client_name': schedule.client.full_name,
                     'client_id': schedule.client.id,
                     'technician_names': technician_names,
@@ -292,16 +292,16 @@ class ScheduleViewSet(viewsets.ModelViewSet):
             )
 
         # Check for overlapping schedules (within 2 hours) for each technician
-        time_buffer = timedelta(hours=2)
-        start_time = scheduled_dt - time_buffer
-        end_time = scheduled_dt + time_buffer
+        scheduled_date = scheduled_dt.date()
+        scheduled_time = scheduled_dt.time()
 
         all_conflicts = {}
 
         for tech_id in tech_ids:
+            # Get all schedules on the same date for this technician
             conflicting_schedules = Schedule.objects.filter(
                 technicians__id=tech_id,
-                scheduled_datetime__range=(start_time, end_time)
+                scheduled_date=scheduled_date
             ).select_related('client').distinct()
 
             # Exclude current schedule when updating
@@ -316,8 +316,8 @@ class ScheduleViewSet(viewsets.ModelViewSet):
                         {
                             'id': schedule.id,
                             'client_name': schedule.client.full_name,
-                            'scheduled_datetime': schedule.scheduled_datetime.isoformat(),
-                            'service_type': schedule.service_type,
+                            'scheduled_datetime': datetime.combine(schedule.scheduled_date, schedule.scheduled_time).isoformat(),
+                            'schedule_type': schedule.schedule_type,
                         }
                         for schedule in conflicting_schedules
                     ]
@@ -343,17 +343,17 @@ class ScheduleViewSet(viewsets.ModelViewSet):
         if start_date and end_date:
             try:
                 queryset = queryset.filter(
-                    scheduled_datetime__date__gte=start_date,
-                    scheduled_datetime__date__lte=end_date
+                    scheduled_date__gte=start_date,
+                    scheduled_date__lte=end_date
                 )
             except (ValueError, AttributeError):
                 pass
 
-        # Count by service type
-        service_counts = {}
-        for service_type, display in Schedule.SERVICE_TYPES:
-            count = queryset.filter(service_type=service_type).count()
-            service_counts[service_type] = {
+        # Count by schedule type
+        schedule_type_counts = {}
+        for schedule_type, display in Schedule.SCHEDULE_TYPES:
+            count = queryset.filter(schedule_type=schedule_type).count()
+            schedule_type_counts[schedule_type] = {
                 'label': display,
                 'count': count
             }
@@ -374,13 +374,13 @@ class ScheduleViewSet(viewsets.ModelViewSet):
         ).filter(tech_count=0).count()
 
         # Count upcoming vs past
-        now = timezone.now()
-        upcoming_count = queryset.filter(scheduled_datetime__gte=now).count()
-        past_count = queryset.filter(scheduled_datetime__lt=now).count()
+        today = timezone.now().date()
+        upcoming_count = queryset.filter(scheduled_date__gte=today).count()
+        past_count = queryset.filter(scheduled_date__lt=today).count()
 
         return Response({
             'total': queryset.count(),
-            'by_service_type': service_counts,
+            'by_schedule_type': schedule_type_counts,
             'by_technician': technician_counts,
             'unassigned': unassigned_count,
             'upcoming': upcoming_count,
