@@ -9,38 +9,86 @@ class Command(BaseCommand):
     help = "Creates default stalls and users, with roles and stall assignments"
 
     def handle(self, *args, **options):
-        # Step 1: Create default stalls
+        self.stdout.write(self.style.WARNING('\n' + '=' * 80))
+        self.stdout.write(self.style.WARNING('INITIALIZING DEFAULT STALLS AND USERS'))
+        self.stdout.write(self.style.WARNING('=' * 80 + '\n'))
+        
+        # Step 1: Clean up duplicate stalls first
+        self.stdout.write(self.style.WARNING('Step 1: Checking for duplicate stalls...'))
+        
+        # Find all stalls named "Main" or "Sub"
+        main_stalls = Stall.objects.filter(name="Main").order_by('id')
+        sub_stalls = Stall.objects.filter(name="Sub").order_by('id')
+        
+        # Keep only the first one of each, delete others
+        if main_stalls.count() > 1:
+            keep_main = main_stalls.first()
+            duplicates = main_stalls.exclude(id=keep_main.id)
+            count = duplicates.count()
+            duplicates.delete()
+            self.stdout.write(self.style.SUCCESS(f'  ✓ Removed {count} duplicate Main stall(s)'))
+        
+        if sub_stalls.count() > 1:
+            keep_sub = sub_stalls.first()
+            duplicates = sub_stalls.exclude(id=keep_sub.id)
+            count = duplicates.count()
+            duplicates.delete()
+            self.stdout.write(self.style.SUCCESS(f'  ✓ Removed {count} duplicate Sub stall(s)'))
+        
+        if main_stalls.count() <= 1 and sub_stalls.count() <= 1:
+            self.stdout.write('  • No duplicate stalls found')
+        
+        self.stdout.write('')
+        
+        # Step 2: Create or update default stalls
+        self.stdout.write(self.style.WARNING('Step 2: Ensuring default stalls exist...'))
+        
         default_stalls = [
             {
                 "name": "Main",
                 "location": "A-02 MRL Building, Mc. Arthur Hiway, Mabiga, Mabalacat City, Pampanga",
+                "inventory_enabled": False,
+                "is_system": True,
             },
             {
                 "name": "Sub",
                 "location": "A-03 MRL Building, Mc. Arthur Hiway, Mabiga, Mabalacat City, Pampanga",
+                "inventory_enabled": True,
+                "is_system": True,
             },
         ]
 
         stall_map = {}
 
         for stall_data in default_stalls:
-            stall, created = Stall.objects.get_or_create(**stall_data)
-            # Mark system stalls and inventory ownership
-            if stall.name == "Sub":
-                stall.inventory_enabled = True
-            else:
-                stall.inventory_enabled = False
-            stall.is_system = True
-            stall.save()
-            stall_map[stall.name] = stall
-            msg = (
-                f"🏪 Created Stall: {stall.name}"
-                if created
-                else f"🏪 Stall exists: {stall.name}"
+            stall, created = Stall.objects.update_or_create(
+                name=stall_data["name"],
+                defaults={
+                    "location": stall_data["location"],
+                    "inventory_enabled": stall_data["inventory_enabled"],
+                    "is_system": stall_data["is_system"],
+                }
             )
-            self.stdout.write(self.style.SUCCESS(msg) if created else msg)
+            stall_map[stall.name] = stall
+            
+            if created:
+                self.stdout.write(
+                    self.style.SUCCESS(f'  ✓ Created stall: {stall.name} at {stall.location}')
+                )
+            else:
+                self.stdout.write(
+                    f'  • Updated stall: {stall.name} at {stall.location}'
+                )
 
-        # Step 2: Create users
+        self.stdout.write('')
+        
+        # Step 3: Create users
+        self.stdout.write(self.style.WARNING('Step 3: Creating/updating default users...'))
+        self.stdout.write('')
+        
+        # Step 3: Create users
+        self.stdout.write(self.style.WARNING('Step 3: Creating/updating default users...'))
+        
         default_users = [
             {
                 "username": "rnldvrgl",
@@ -100,10 +148,10 @@ class Command(BaseCommand):
             if created:
                 user.set_password(user_data["password"])
                 self.stdout.write(
-                    self.style.SUCCESS(f"✅ Created: {user.username} ({user.role})")
+                    self.style.SUCCESS(f'  ✓ Created user: {user.username} ({user.role})')
                 )
             else:
-                self.stdout.write(f"⚠️ Exists: {user.username} ({user.role})")
+                self.stdout.write(f'  • User exists: {user.username} ({user.role})')
 
             # Ensure optional fields (assigned_stall, permissions) are updated
             updated = False
@@ -123,3 +171,11 @@ class Command(BaseCommand):
 
             if updated:
                 user.save()
+        
+        self.stdout.write('')
+        self.stdout.write(self.style.WARNING('=' * 80))
+        self.stdout.write(self.style.SUCCESS('\n✓ Initialization complete!'))
+        self.stdout.write(f'  • Stalls: {len(stall_map)} (Main, Sub)')
+        self.stdout.write(f'  • Users: {len(default_users)}')
+        self.stdout.write('')
+        self.stdout.write(self.style.WARNING('=' * 80 + '\n'))
