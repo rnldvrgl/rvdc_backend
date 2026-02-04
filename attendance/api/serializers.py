@@ -262,7 +262,6 @@ class OffenseStatisticsSerializer(serializers.Serializer):
     """Serializer for offense statistics"""
     employee_id = serializers.IntegerField()
     employee_name = serializers.CharField()
-    employee_id_number = serializers.CharField()
     total_offenses = serializers.IntegerField()
     awol_count = serializers.IntegerField()
     late_count = serializers.IntegerField()

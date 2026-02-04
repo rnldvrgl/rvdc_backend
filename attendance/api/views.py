@@ -857,15 +857,15 @@ class OffenseViewSet(viewsets.ModelViewSet):
         - at_limit: Filter employees at or above offense limit (default: 3)
         """
         from django.db.models import Count
-        from users.models import Employee
+        from users.models import CustomUser
 
         # Get filter parameters
         employee_id = request.query_params.get('employee_id')
         at_limit = request.query_params.get('at_limit', 'false').lower() == 'true'
         limit_threshold = int(request.query_params.get('limit_threshold', 3))
 
-        # Build base query
-        employees = Employee.objects.filter(is_deleted=False)
+        # Build base query - get users with technician or clerk role
+        employees = CustomUser.objects.filter(is_deleted=False, role__in=['technician', 'clerk'])
         if employee_id:
             employees = employees.filter(id=employee_id)
 
@@ -893,7 +893,6 @@ class OffenseViewSet(viewsets.ModelViewSet):
             statistics.append({
                 'employee_id': employee.id,
                 'employee_name': employee.get_full_name(),
-                'employee_id_number': employee.id_number,
                 'total_offenses': total_offenses,
                 'awol_count': offense_dict.get('AWOL', 0),
                 'late_count': offense_dict.get('LATE', 0),
