@@ -1091,7 +1091,7 @@ class HolidayViewSet(viewsets.ModelViewSet):
     Supports CRUD operations and provides filter options.
     """
     queryset = Holiday.objects.filter(is_deleted=False).order_by("-date")
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [permissions.IsAuthenticated]
     serializer_class = HolidaySerializer
     filter_backends = [
         DjangoFilterBackend,
@@ -1125,7 +1125,6 @@ class HolidayViewSet(viewsets.ModelViewSet):
 
         ordering_config = [
             {"label": "Date", "value": "date"},
-            {"label": "Name", "value": "name"},
             {"label": "Kind", "value": "kind"},
         ]
 

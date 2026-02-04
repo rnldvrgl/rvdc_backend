@@ -19,6 +19,7 @@ from django.db.models import (
     ExpressionWrapper,
     F,
     FloatField,
+    Q,
     Sum,
 )
 from django.db.models.functions import TruncDay
@@ -34,6 +35,7 @@ from rest_framework.views import APIView
 from rest_framework.viewsets import ViewSet
 from sales.models import SalesItem, SalesPayment, SalesTransaction
 from schedules.models import Schedule
+from services.models import Service, ServicePayment
 from users.models import CustomUser
 
 
@@ -68,8 +70,6 @@ def get_stall_filter(request):
 class SummaryStatsView(APIView):
     def get(self, request):
         from decimal import Decimal
-        from services.models import Service
-        from schedules.models import Schedule
         
         start_date, end_date = get_date_range(request)
         stall_filter = get_stall_filter(request)
@@ -142,30 +142,45 @@ class SummaryStatsView(APIView):
         net_income = total_revenue - float(expense)
 
         # Outstanding balances
-        from sales.models import SalesTransaction
-        
-        # Calculate sales outstanding (total price from items minus payments)
-        sales_transactions = SalesTransaction.objects.filter(
+        # Calculate sales outstanding
+        # Total due from unpaid/partial transactions
+        sales_total_due = SalesTransaction.objects.filter(
             is_deleted=False,
             voided=False,
             payment_status__in=['partial', 'unpaid']
         ).annotate(
-            total_price=Sum(F('items__quantity') * F('items__final_price_per_unit')),
-            total_paid=Sum('payments__amount')
+            total=Sum(F('items__quantity') * F('items__final_price_per_unit'))
         ).aggregate(
-            total_due=Sum('total_price'),
-            total_paid=Sum('total_paid')
-        )
+            total_due=Sum('total')
+        )['total_due'] or Decimal("0")
         
-        sales_total_due = sales_transactions['total_due'] or Decimal("0")
-        sales_total_paid = sales_transactions['total_paid'] or Decimal("0")
+        # Total paid for those transactions
+        sales_total_paid = SalesPayment.objects.filter(
+            transaction__is_deleted=False,
+            transaction__voided=False,
+            transaction__payment_status__in=['partial', 'unpaid']
+        ).aggregate(
+            total_paid=Sum('amount')
+        )['total_paid'] or Decimal("0")
+        
         sales_outstanding = sales_total_due - sales_total_paid
         
-        services_outstanding = Service.objects.filter(
+        # Calculate services outstanding
+        # Total revenue from unpaid/partial services
+        services_total_due = Service.objects.filter(
             payment_status__in=['partial', 'unpaid']
         ).aggregate(
-            total=Sum(F("total_revenue") - F("amount_paid"))
-        )["total"] or Decimal("0")
+            total_due=Sum('total_revenue')
+        )['total_due'] or Decimal("0")
+        
+        # Total paid for those services
+        services_total_paid = ServicePayment.objects.filter(
+            service__payment_status__in=['partial', 'unpaid']
+        ).aggregate(
+            total_paid=Sum('amount')
+        )['total_paid'] or Decimal("0")
+        
+        services_outstanding = services_total_due - services_total_paid
         
         total_outstanding = float(sales_outstanding) + float(services_outstanding)
 
