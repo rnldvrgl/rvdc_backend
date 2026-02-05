@@ -979,5 +979,97 @@ class CalendarEventsView(APIView):
                         'reason': leave['reason'],
                     }
                 })
+        
+        # Fetch custom calendar events
+        custom_events = CalendarEvent.objects.filter(
+            is_deleted=False,
+            event_date__gte=start_date,
+            event_date__lte=end_date
+        ).select_related('created_by').values(
+            'id', 'title', 'description', 'event_date', 'event_type', 'created_by__first_name', 'created_by__last_name'
+        )
+        
+        for custom_event in custom_events:
+            # Map event_type to color
+            type_colors = {
+                'holiday': '#ef4444',  # red
+                'meeting': '#3b82f6',  # blue
+                'maintenance': '#eab308',  # yellow
+                'training': '#8b5cf6',  # violet
+                'deadline': '#f97316',  # orange
+                'other': '#6b7280',  # gray
+            }
+            
+            events.append({
+                'id': f"custom-{custom_event['id']}",
+                'title': custom_event['title'],
+                'start': custom_event['event_date'].isoformat(),
+                'color': type_colors.get(custom_event['event_type'], '#6b7280'),
+                'extendedProps': {
+                    'type': 'custom_event',
+                    'custom_event_id': custom_event['id'],
+                    'description': custom_event['description'],
+                    'event_type': custom_event['event_type'],
+                    'created_by': f"{custom_event['created_by__first_name']} {custom_event['created_by__last_name']}",
+                }
+            })
 
         return Response(events)
+
+
+# ------------------------------------------------------------------------------
+# Calendar Events
+# ------------------------------------------------------------------------------
+
+from analytics.api.serializers import CalendarEventSerializer, CalendarEventListSerializer
+from analytics.models import CalendarEvent
+from rest_framework import viewsets
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import filters
+
+
+class CalendarEventViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing custom calendar events.
+    
+    Endpoints:
+    - GET /api/analytics/calendar-events/ - List all events
+    - POST /api/analytics/calendar-events/ - Create new event
+    - GET /api/analytics/calendar-events/<id>/ - Retrieve specific event
+    - PUT/PATCH /api/analytics/calendar-events/<id>/ - Update event
+    - DELETE /api/analytics/calendar-events/<id>/ - Soft delete event
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = CalendarEventSerializer
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['event_type', 'event_date', 'created_by']
+    search_fields = ['title', 'description']
+    ordering_fields = ['event_date', 'created_at', 'title']
+    ordering = ['-event_date']
+    
+    def get_queryset(self):
+        """Get non-deleted calendar events."""
+        queryset = CalendarEvent.objects.filter(is_deleted=False).select_related('created_by')
+        
+        # Filter by date range if provided
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        
+        if start_date:
+            queryset = queryset.filter(event_date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(event_date__lte=end_date)
+        
+        return queryset
+    
+    def get_serializer_class(self):
+        """Use lightweight serializer for list view."""
+        if self.action == 'list':
+            return CalendarEventListSerializer
+        return CalendarEventSerializer
+    
+    def perform_destroy(self, instance):
+        """Soft delete calendar event."""
+        instance.is_deleted = True
+        instance.save(update_fields=['is_deleted'])
+

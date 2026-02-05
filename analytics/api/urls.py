@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     AnalyticsViewSet,
     CalendarEventsView,
+    CalendarEventViewSet,
     CashFlowView,
     ExpensesOverTimeView,
     SalesOverTimeView,
@@ -16,6 +17,7 @@ from .views import (
 # Router for viewset-based analytics endpoints
 router = DefaultRouter()
 router.register(r'reports', AnalyticsViewSet, basename='analytics')
+router.register(r'calendar-events', CalendarEventViewSet, basename='calendar-event')
 
 # Legacy and additional URL patterns
 urlpatterns = [
