@@ -271,6 +271,59 @@ class StockViewSet(viewsets.ModelViewSet):
             {"detail": f"Restocked successfully. New quantity: {stock.quantity}"}
         )
 
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
+    @transaction.atomic
+    def add_stock(self, request, pk=None):
+        """
+        Temporary endpoint to directly add stock to stall without stock room.
+        This bypasses the stock room process for quick inventory sync.
+        """
+        stock = self.get_object()
+        
+        # Check permissions
+        if not (request.user.role == "admin" or user_can_manage_stall(request.user, stock.stall)):
+            return Response(
+                {"detail": "You do not have permission to add stock to this stall."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = StockRestockSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        quantity = serializer.validated_data["quantity"]
+
+        # Directly add to stall stock
+        stock.quantity += quantity
+        stock.save()
+
+        # Notify manager
+        manager_user = (
+            get_user_model()
+            .objects.filter(assigned_stall=stock.stall, role__in=["manager", "clerk"])
+            .first()
+        )
+
+        if manager_user:
+            Notification.objects.create(
+                user=manager_user,
+                type="restock",
+                data={
+                    "stall": stock.stall.name,
+                    "item": stock.item.name,
+                    "item_id": stock.item.id,
+                    "stock_id": stock.id,
+                    "quantity": quantity,
+                    "new_total": stock.quantity,
+                },
+                message=f"{quantity} {stock.item.unit_of_measure} of '{stock.item.name}' added to {stock.stall.name} (direct add).",
+            )
+
+        return Response(
+            {
+                "detail": f"Stock added successfully. New quantity: {stock.quantity}",
+                "quantity": stock.quantity,
+            }
+        )
+
 
 class StockRoomStockViewSet(viewsets.ModelViewSet):
     queryset = StockRoomStock.objects.all()
