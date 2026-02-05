@@ -119,10 +119,10 @@ class Command(BaseCommand):
                 "assigned_stall": stall_map.get("Main"),
             },
             {
-                "username": "rosamae",
+                "username": "hgl",
                 "password": "rvdc12",
-                "first_name": "Rosa Mae",
-                "last_name": "Repiso",
+                "first_name": "Honey Grace",
+                "last_name": "Labasan",
                 "role": "clerk",
                 "assigned_stall": stall_map.get("Sub"),
             },
