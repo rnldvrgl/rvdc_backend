@@ -191,23 +191,13 @@ class StockViewSet(viewsets.ModelViewSet):
         return StockReadSerializer
 
     def get_queryset(self):
-        return get_role_filtered_queryset(self.request, super().get_queryset())
+        return filter_by_date_range(self.request, super().get_queryset())
 
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):
         filters_config = {
-            "stall": {
-                "options": get_stall_options,
-                "exclude_for": ["clerk", "manager"],
-            },
             "status": {
                 "options": get_status_options,
-            },
-            "track_stock": {
-                "options": lambda: [
-                    {"label": "Yes", "value": "true"},
-                    {"label": "No", "value": "false"},
-                ],
             },
         }
 
