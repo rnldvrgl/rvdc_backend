@@ -221,9 +221,16 @@ fi
 # =============================================================================
 step "Step 8: ${ICON_DATABASE} Running database migrations..."
 
-${COMPOSE} exec -T api python manage.py migrate --noinput
+log "Checking for pending migrations..."
+MIGRATION_OUTPUT=$(${COMPOSE} exec -T api python manage.py migrate --noinput 2>&1)
 
-success "Migrations completed"
+if echo "$MIGRATION_OUTPUT" | grep -q "No migrations to apply"; then
+    success "No pending migrations - database is up to date"
+else
+    success "Migrations applied successfully"
+    echo -e "${GRAY}${MIGRATION_OUTPUT}${NC}"
+fi
+
 echo ""
 
 # =============================================================================
