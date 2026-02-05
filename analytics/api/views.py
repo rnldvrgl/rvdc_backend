@@ -881,7 +881,7 @@ class CalendarEventsView(APIView):
                 delivery_date__isnull=False,
                 delivery_date__date__gte=start_date,
                 delivery_date__date__lte=end_date
-            ).select_related('client')
+            ).select_related('client').prefetch_related('schedules__technicians')
             
             # Role-based filtering for delivery dates
             if user_role == 'technician':
@@ -906,6 +906,21 @@ class CalendarEventsView(APIView):
                     # Use full datetime for the event
                     start_iso = delivery_datetime.isoformat()
                     
+                    # Get technicians from related schedules
+                    technician_names = []
+                    technician_ids = []
+                    schedules = service.schedules.all()
+                    for schedule in schedules:
+                        for tech in schedule.technicians.all():
+                            tech_name = f"{tech.first_name} {tech.last_name}"
+                            if tech_name not in technician_names:
+                                technician_names.append(tech_name)
+                                technician_ids.append(tech.id)
+                    
+                    # Get service type display
+                    from utils.enums import ServiceType
+                    service_type_display = ServiceType(service.service_type).label if service.service_type else None
+                    
                     events.append({
                         'id': f"delivery-{service.id}",
                         'title': title,
@@ -917,8 +932,12 @@ class CalendarEventsView(APIView):
                             'client_name': service.client.full_name,
                             'client_id': service.client.id,
                             'service_type': service.service_type,
+                            'service_type_display': service_type_display,
                             'delivery_date': delivery_date.isoformat(),
                             'delivery_time': delivery_time.strftime('%H:%M'),
+                            'technician_names': technician_names,
+                            'technician_ids': technician_ids,
+                            'notes': service.notes,
                         }
                     })
 
@@ -990,13 +1009,13 @@ class CalendarEventsView(APIView):
         )
         
         for custom_event in custom_events:
-            # Map event_type to color
+            # Map event_type to color - distinguished colors
             type_colors = {
-                'meeting': '#3b82f6',  # blue
-                'maintenance': '#eab308',  # yellow
-                'training': '#8b5cf6',  # violet
-                'deadline': '#f97316',  # orange
-                'other': '#6b7280',  # gray
+                'meeting': '#06b6d4',  # cyan-500
+                'maintenance': '#eab308',  # yellow-500
+                'training': '#a855f7',  # purple-500
+                'deadline': '#f43f5e',  # rose-500
+                'other': '#64748b',  # slate-500
             }
             
             events.append({
