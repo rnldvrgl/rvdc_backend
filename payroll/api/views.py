@@ -188,6 +188,13 @@ class WeeklyPayrollGenerateView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
+        # Check if employee is included in payroll
+        if not employee.include_in_payroll:
+            return Response(
+                {'employee_id': ['This employee is not included in payroll generation.']},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         # Check if employee has basic_salary
         if not employee.basic_salary or employee.basic_salary <= 0:
             return Response(
@@ -836,8 +843,8 @@ class WeeklyPayrollBulkGenerateView(APIView):
         week_start = last_cutoff - timedelta(days=6)
         week_end = week_start + timedelta(days=6)
 
-        # Get employees
-        employees_qs = User.objects.filter(is_deleted=False, is_active=True)
+        # Get employees (only those with include_in_payroll=True)
+        employees_qs = User.objects.filter(is_deleted=False, is_active=True, include_in_payroll=True)
         if employee_ids:
             employees_qs = employees_qs.filter(id__in=employee_ids)
 

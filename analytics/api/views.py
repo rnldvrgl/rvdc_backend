@@ -887,7 +887,7 @@ class CalendarEventsView(APIView):
             if user_role == 'technician':
                 # Technicians see only their assigned services
                 services_query = services_query.filter(
-                    schedule__technicians__id=user.id
+                    schedules__technicians__id=user.id
                 ).distinct()
             elif user_role == 'clerk':
                 # Clerks see no delivery dates

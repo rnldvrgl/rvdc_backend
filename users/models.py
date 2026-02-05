@@ -39,6 +39,14 @@ class CustomUser(AbstractUser):
     philhealth_number = models.CharField(max_length=50, blank=True, null=True)
     tin_number = models.CharField(max_length=50, blank=True, null=True)
     basic_salary = models.DecimalField(max_digits=10, decimal_places=2, null=True)
+    include_in_payroll = models.BooleanField(
+        default=True,
+        help_text="Include this employee in payroll generation"
+    )
+    has_government_benefits = models.BooleanField(
+        default=True,
+        help_text="Apply government benefits (SSS, PhilHealth, Pag-IBIG, Tax) to this employee"
+    )
     is_deleted = models.BooleanField(default=False)
 
     USERNAME_FIELD = "username"

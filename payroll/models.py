@@ -925,29 +925,32 @@ class WeeklyPayroll(models.Model):
             logger.error(f"Error applying manual deductions: {e}")
 
         # Apply government benefits (SSS, PhilHealth, Pag-IBIG, BIR Tax)
+        # Only apply if employee has has_government_benefits flag set to True
         try:
             from payroll.models import GovernmentBenefit
 
-            gov_benefits = GovernmentBenefit.objects.filter(
-                is_active=True,
-                effective_start__lte=self.week_start,
-            ).filter(
-                models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
-            )
+            # Check if employee has government benefits enabled
+            if self.employee.has_government_benefits:
+                gov_benefits = GovernmentBenefit.objects.filter(
+                    is_active=True,
+                    effective_start__lte=self.week_start,
+                ).filter(
+                    models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
+                )
 
-            for benefit in gov_benefits:
-                employee_share = benefit.compute_employee_share(self.gross_pay)
+                for benefit in gov_benefits:
+                    employee_share = benefit.compute_employee_share(self.gross_pay)
 
-                if employee_share > 0:
-                    key = benefit.benefit_type
-                    deductions_map[key] = self._q(employee_share)
+                    if employee_share > 0:
+                        key = benefit.benefit_type
+                        deductions_map[key] = self._q(employee_share)
 
-                    category = 'tax' if benefit.benefit_type == 'bir_tax' else 'government'
-                    deduction_metadata_map[key] = {
-                        'source_type': 'GovernmentBenefit',
-                        'source_id': benefit.id,
-                        'category': category,
-                    }
+                        category = 'tax' if benefit.benefit_type == 'bir_tax' else 'government'
+                        deduction_metadata_map[key] = {
+                            'source_type': 'GovernmentBenefit',
+                            'source_id': benefit.id,
+                            'category': category,
+                        }
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)

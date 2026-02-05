@@ -76,6 +76,19 @@ class EmployeesChoicesAPIView(BaseChoicesAPIView):
     queryset = CustomUser.objects.exclude(role="admin").filter(is_deleted=False)
     serializer_class = EmployeesSerializer
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        include_in_payroll = self.request.query_params.get('include_in_payroll')
+        
+        if include_in_payroll is not None:
+            # Convert string to boolean
+            if include_in_payroll.lower() in ['true', '1', 'yes']:
+                queryset = queryset.filter(include_in_payroll=True)
+            elif include_in_payroll.lower() in ['false', '0', 'no']:
+                queryset = queryset.filter(include_in_payroll=False)
+        
+        return queryset
+
 
 class TechniciansChoicesAPIView(BaseChoicesAPIView):
     queryset = CustomUser.objects.filter(role="technician", is_deleted=False)
