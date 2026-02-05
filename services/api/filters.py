@@ -9,6 +9,8 @@ class ServiceFilter(filters.FilterSet):
     )
     status = filters.CharFilter(field_name="status", lookup_expr="iexact")
     service_type = filters.CharFilter(field_name="service_type", lookup_expr="iexact")
+    service_mode = filters.CharFilter(field_name="service_mode", lookup_expr="iexact")
+    stall = filters.NumberFilter(field_name="stall_id", lookup_expr="exact")
 
     class Meta:
         model = Service
@@ -17,6 +19,8 @@ class ServiceFilter(filters.FilterSet):
             "technician",
             "status",
             "service_type",
+            "service_mode",
+            "stall",
         ]
 
 

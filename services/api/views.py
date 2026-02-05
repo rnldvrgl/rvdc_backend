@@ -9,9 +9,11 @@ Features:
 """
 
 from django.db.models import Q
-from rest_framework import permissions, status, viewsets
+from rest_framework import permissions, status, viewsets, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django_filters.rest_framework import DjangoFilterBackend
+
 from services.api.serializers import (
     ApplianceItemUsedSerializer,
     ApplianceTypeSerializer,
@@ -24,6 +26,7 @@ from services.api.serializers import (
     ServiceSerializer,
     TechnicianAssignmentSerializer,
 )
+from services.api.filters import ServiceFilter
 from services.business_logic import RevenueCalculator, ServicePaymentManager
 from services.models import (
     ApplianceItemUsed,
@@ -39,7 +42,7 @@ from utils.filters.options import (
     get_user_options,
 )
 from utils.filters.role_filters import get_role_based_filter_response
-from utils.query import filter_by_date_range
+from utils.query import filter_by_date_range, get_role_filtered_queryset
 
 
 # --------------------------
@@ -68,6 +71,20 @@ class ServiceViewSet(viewsets.ModelViewSet):
 
     serializer_class = ServiceSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_class = ServiceFilter
+    search_fields = [
+        "client__full_name",
+        "client__contact_number",
+        "status",
+        "service_type",
+        "service_mode",
+    ]
+    ordering_fields = "__all__"
 
     def get_queryset(self):
         qs = (
@@ -80,48 +97,28 @@ class ServiceViewSet(viewsets.ModelViewSet):
                 "technician_assignments__technician",
             )
         )
-
-        # Apply filters from query params
-        status = self.request.query_params.get("status")
-        if status:
-            qs = qs.filter(status=status)
-
-        service_type = self.request.query_params.get("service_type")
-        if service_type:
-            qs = qs.filter(service_type=service_type)
-
-        service_mode = self.request.query_params.get("service_mode")
-        if service_mode:
-            qs = qs.filter(service_mode=service_mode)
-
-        technician = self.request.query_params.get("technician")
-        if technician:
-            qs = qs.filter(technician_assignments__technician_id=technician).distinct()
-
-        return filter_by_date_range(self.request, qs)
+        
+        return get_role_filtered_queryset(self.request, qs)
 
     @action(detail=True, methods=["post"], url_path="complete")
     def complete(self, request, pk=None):
         """
-        Complete a service.
-
-        This endpoint:
-        1. Consumes reserved stock (decrements quantity and reserved_quantity)
-        2. Creates SalesTransactions for Sub stall (parts sold)
-        3. Creates Expenses for Main stall (parts purchased)
-        4. Calculates revenue attribution (main vs sub)
-        5. Optionally creates unified customer receipt
-        6. Updates service status to COMPLETED
+        Complete a service, consume reserved stock, and create transactions.
 
         Request body:
         {
-            "create_receipt": true  // Optional, default true
+            "create_receipt": true,  // Optional: create a receipt
+            "notes": "Service completed successfully"  // Optional
         }
 
         Response:
         {
             "service_id": 123,
             "status": "completed",
+            "consumed_items": [
+                {"item": "Capacitor", "quantity": 2},
+                {"item": "Copper Tube", "quantity": 15}
+            ],
             "revenue": {
                 "main_revenue": "500.00",
                 "sub_revenue": "300.00",
