@@ -992,7 +992,6 @@ class CalendarEventsView(APIView):
         for custom_event in custom_events:
             # Map event_type to color
             type_colors = {
-                'holiday': '#ef4444',  # red
                 'meeting': '#3b82f6',  # blue
                 'maintenance': '#eab308',  # yellow
                 'training': '#8b5cf6',  # violet

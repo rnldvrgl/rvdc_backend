@@ -12,7 +12,6 @@ class CalendarEvent(models.Model):
     Custom calendar event that can be displayed in the analytics calendar.
     
     Types:
-    - holiday: Public holidays or company holidays
     - meeting: Team meetings or important appointments
     - maintenance: Scheduled maintenance or downtime
     - training: Training sessions or workshops
@@ -21,7 +20,6 @@ class CalendarEvent(models.Model):
     """
     
     EVENT_TYPES = [
-        ('holiday', 'Holiday'),
         ('meeting', 'Meeting'),
         ('maintenance', 'Maintenance'),
         ('training', 'Training'),
