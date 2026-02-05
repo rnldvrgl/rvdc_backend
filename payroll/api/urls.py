@@ -38,6 +38,12 @@ urlpatterns = [
         views.WeeklyPayrollDetailView.as_view(),
         name="weeklypayroll-detail",
     ),
+    # Download payroll as PDF
+    path(
+        "weekly-payrolls/<int:pk>/download-pdf/",
+        views.WeeklyPayrollDownloadPDFView.as_view(),
+        name="weeklypayroll-download-pdf",
+    ),
     # Update payroll status
     path(
         "weekly-payrolls/<int:pk>/status/",

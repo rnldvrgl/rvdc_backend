@@ -562,6 +562,20 @@ class WeeklyPayrollDetailView(generics.RetrieveUpdateDestroyAPIView):
         instance.save(update_fields=["is_deleted"])
 
 
+class WeeklyPayrollDownloadPDFView(APIView):
+    """Download a payslip as PDF."""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request, pk):
+        from payroll.utils.pdf_generator import generate_payslip_pdf
+        
+        try:
+            payroll = WeeklyPayroll.objects.select_related("employee").get(pk=pk, is_deleted=False)
+            return generate_payslip_pdf(payroll)
+        except WeeklyPayroll.DoesNotExist:
+            raise NotFound(detail="Payroll record not found.")
+
+
 class WeeklyPayrollUpdateStatusView(APIView):
     """
     PATCH to update payroll status (draft -> approved -> paid).
