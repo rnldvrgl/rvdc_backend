@@ -21,6 +21,7 @@ Usage:
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
+from datetime import date
 from users.models import CustomUser
 
 from attendance.models import LeaveBalance
@@ -48,6 +49,12 @@ class Command(BaseCommand):
             help='Emergency leave days to allocate (default: 3)',
         )
         parser.add_argument(
+            '--year',
+            type=int,
+            default=date.today().year,
+            help='Year for leave balance (default: current year)',
+        )
+        parser.add_argument(
             '--dry-run',
             action='store_true',
             help='Show what would be replenished without making changes',
@@ -69,6 +76,7 @@ class Command(BaseCommand):
         employee_id = options['employee_id']
         sick_leave_days = options['sick_leave']
         emergency_leave_days = options['emergency_leave']
+        year = options['year']
         reset = options['reset']
 
         self.stdout.write(self.style.SUCCESS('\n' + '=' * 80))
@@ -76,6 +84,7 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS('=' * 80))
 
         self.stdout.write('\nAllocation:')
+        self.stdout.write(f'  Year: {year}')
         self.stdout.write(f'  Sick Leave: {sick_leave_days} days')
         self.stdout.write(f'  Emergency Leave: {emergency_leave_days} days')
         self.stdout.write(f'  Mode: {"RESET (overwrite)" if reset else "REPLENISH (add)"}')
@@ -102,6 +111,7 @@ class Command(BaseCommand):
                 employees,
                 sick_leave_days,
                 emergency_leave_days,
+                year,
                 reset,
                 verbose,
                 dry_run=True
@@ -116,12 +126,13 @@ class Command(BaseCommand):
                 employees,
                 sick_leave_days,
                 emergency_leave_days,
+                year,
                 reset,
                 verbose,
                 dry_run=False
             )
 
-    def _replenish_leaves(self, employees, sick_days, emergency_days, reset, verbose, dry_run):
+    def _replenish_leaves(self, employees, sick_days, emergency_days, year, reset, verbose, dry_run):
         """Replenish leave balances for employees."""
         replenished = 0
         created = 0
@@ -135,6 +146,7 @@ class Command(BaseCommand):
                 # Get or create leave balance
                 balance, was_created = LeaveBalance.objects.get_or_create(
                     employee=employee,
+                    year=year,
                     defaults={
                         'sick_leave_total': sick_days,
                         'sick_leave_used': 0,
