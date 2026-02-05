@@ -441,6 +441,80 @@ class GovernmentBenefit(models.Model):
         return Decimal("0.00")
 
 
+class EmployeeBenefitOverride(models.Model):
+    """
+    Per-employee overrides for government benefit amounts.
+    Takes precedence over GovernmentBenefit and TaxBracket calculations.
+    Use for employees with custom arrangements (e.g., owners, contractors).
+    """
+    
+    BENEFIT_TYPES = [
+        ('sss', 'SSS'),
+        ('philhealth', 'PhilHealth'),
+        ('pagibig', 'Pag-IBIG / HDMF'),
+        ('bir_tax', 'BIR Withholding Tax'),
+    ]
+    
+    employee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="benefit_overrides"
+    )
+    benefit_type = models.CharField(max_length=20, choices=BENEFIT_TYPES)
+    
+    # Fixed weekly amounts
+    employee_share_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        help_text="Fixed employee contribution amount per week"
+    )
+    employer_share_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Fixed employer contribution amount per week (for reporting)"
+    )
+    
+    # Date effectiveness
+    effective_start = models.DateField(help_text="Date this override becomes effective")
+    effective_end = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date this override ends (null = still active)"
+    )
+    
+    is_active = models.BooleanField(default=True)
+    notes = models.TextField(blank=True, help_text="Reason for override or special notes")
+    
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="created_benefit_overrides"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-effective_start', 'employee', 'benefit_type']
+        indexes = [
+            models.Index(fields=['employee', 'benefit_type', 'is_active']),
+            models.Index(fields=['effective_start', 'effective_end']),
+        ]
+        # Ensure one active override per employee per benefit type per date range
+        constraints = [
+            models.UniqueConstraint(
+                fields=['employee', 'benefit_type', 'effective_start'],
+                name='unique_employee_benefit_start_date'
+            )
+        ]
+    
+    def __str__(self):
+        return f"{self.employee.get_full_name()} - {self.get_benefit_type_display()} - ₱{self.employee_share_amount}"
+
+
 class WeeklyPayroll(models.Model):
 
     """
@@ -927,28 +1001,65 @@ class WeeklyPayroll(models.Model):
         # Apply government benefits (SSS, PhilHealth, Pag-IBIG, BIR Tax)
         # Only apply if employee has has_government_benefits flag set to True
         try:
-            from payroll.models import GovernmentBenefit
+            from payroll.models import EmployeeBenefitOverride, GovernmentBenefit, TaxBracket
 
             # Check if employee has government benefits enabled
             if self.employee.has_government_benefits:
-                gov_benefits = GovernmentBenefit.objects.filter(
-                    is_active=True,
-                    effective_start__lte=self.week_start,
-                ).filter(
-                    models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
-                )
-
-                for benefit in gov_benefits:
-                    employee_share = benefit.compute_employee_share(self.gross_pay)
-
+                benefit_types = ['sss', 'philhealth', 'pagibig', 'bir_tax']
+                
+                for benefit_type in benefit_types:
+                    employee_share = Decimal('0.00')
+                    source_type = None
+                    source_id = None
+                    
+                    # Priority 1: Check for employee-specific override first (highest priority)
+                    override = EmployeeBenefitOverride.objects.filter(
+                        employee=self.employee,
+                        benefit_type=benefit_type,
+                        is_active=True,
+                        effective_start__lte=self.week_start,
+                    ).filter(
+                        models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
+                    ).first()
+                    
+                    if override:
+                        # Use override amount (weekly fixed)
+                        employee_share = override.employee_share_amount
+                        source_type = 'EmployeeBenefitOverride'
+                        source_id = override.id
+                    else:
+                        # Priority 2: Check GovernmentBenefit configuration
+                        govt_benefit = GovernmentBenefit.objects.filter(
+                            benefit_type=benefit_type,
+                            is_active=True,
+                            effective_start__lte=self.week_start,
+                        ).filter(
+                            models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
+                        ).first()
+                        
+                        if govt_benefit:
+                            # Use GovernmentBenefit's calculation method
+                            employee_share = govt_benefit.compute_employee_share(self.gross_pay)
+                            source_type = 'GovernmentBenefit'
+                            source_id = govt_benefit.id
+                        else:
+                            # Priority 3: Fall back to TaxBracket (legacy support)
+                            employee_share = TaxBracket.compute_tax(
+                                gross_income=self.gross_pay,
+                                as_of_date=self.week_start,
+                                bracket_type=benefit_type
+                            )
+                            source_type = 'TaxBracket'
+                            # source_id is None for TaxBracket (multiple brackets may be used)
+                    
+                    # Add to deductions if amount is positive
                     if employee_share > 0:
-                        key = benefit.benefit_type
-                        deductions_map[key] = self._q(employee_share)
-
-                        category = 'tax' if benefit.benefit_type == 'bir_tax' else 'government'
-                        deduction_metadata_map[key] = {
-                            'source_type': 'GovernmentBenefit',
-                            'source_id': benefit.id,
+                        deductions_map[benefit_type] = self._q(employee_share)
+                        
+                        category = 'tax' if benefit_type == 'bir_tax' else 'government'
+                        deduction_metadata_map[benefit_type] = {
+                            'source_type': source_type,
+                            'source_id': source_id,
                             'category': category,
                         }
         except Exception as e:

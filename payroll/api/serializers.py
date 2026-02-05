@@ -4,8 +4,10 @@ from decimal import Decimal
 from typing import Any, Dict, Mapping, Optional
 
 from django.contrib.auth import get_user_model
+from django.db import models
 from payroll.models import (
     AdditionalEarning,
+    EmployeeBenefitOverride,
     GovernmentBenefit,
     Holiday,
     ManualDeduction,
@@ -405,6 +407,85 @@ class ManualDeductionSerializer(serializers.ModelSerializer):
 
         return attrs
 
+class EmployeeBenefitOverrideSerializer(serializers.ModelSerializer):
+    """Serializer for EmployeeBenefitOverride model."""
+    employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
+    benefit_type_display = serializers.CharField(source='get_benefit_type_display', read_only=True)
+    
+    class Meta:
+        model = EmployeeBenefitOverride
+        fields = [
+            'id',
+            'employee',
+            'employee_name',
+            'benefit_type',
+            'benefit_type_display',
+            'employee_share_amount',
+            'employer_share_amount',
+            'effective_start',
+            'effective_end',
+            'is_active',
+            'notes',
+            'created_at',
+            'updated_at',
+            'created_by',
+        ]
+        read_only_fields = ['created_at', 'updated_at', 'created_by', 'employee_name', 'benefit_type_display']
+    
+    def validate(self, attrs):
+        """Validate benefit override data."""
+        employee = attrs.get('employee')
+        benefit_type = attrs.get('benefit_type')
+        effective_start = attrs.get('effective_start')
+        effective_end = attrs.get('effective_end')
+        is_active = attrs.get('is_active', True)
+        
+        # Check for duplicate active overrides for same employee + benefit type
+        if is_active and employee and benefit_type:
+            existing_query = EmployeeBenefitOverride.objects.filter(
+                employee=employee,
+                benefit_type=benefit_type,
+                is_active=True,
+            )
+            
+            # Exclude current instance when updating
+            if self.instance:
+                existing_query = existing_query.exclude(pk=self.instance.pk)
+            
+            # Check for overlapping date ranges
+            if existing_query.exists():
+                overlapping = existing_query.filter(
+                    models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=effective_start)
+                )
+                
+                if effective_end:
+                    overlapping = overlapping.filter(effective_start__lte=effective_end)
+                
+                if overlapping.exists():
+                    raise serializers.ValidationError({
+                        'benefit_type': f'An active override for this benefit type already exists for this employee with overlapping dates.'
+                    })
+        
+        # Validate date range
+        if effective_end and effective_start and effective_end < effective_start:
+            raise serializers.ValidationError({
+                'effective_end': 'End date must be on or after start date.'
+            })
+        
+        # Validate amounts are positive
+        employee_share = attrs.get('employee_share_amount')
+        if employee_share and employee_share < 0:
+            raise serializers.ValidationError({
+                'employee_share_amount': 'Amount must be positive.'
+            })
+        
+        employer_share = attrs.get('employer_share_amount')
+        if employer_share and employer_share < 0:
+            raise serializers.ValidationError({
+                'employer_share_amount': 'Amount must be positive.'
+            })
+        
+        return attrs
 
 class TaxBracketSerializer(serializers.ModelSerializer):
     created_by_detail = MinimalUserSerializer(source="created_by", read_only=True)

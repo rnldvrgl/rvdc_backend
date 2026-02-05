@@ -17,6 +17,7 @@ from payroll.api.filters import (
 )
 from payroll.api.serializers import (
     AdditionalEarningSerializer,
+    EmployeeBenefitOverrideSerializer,
     GovernmentBenefitSerializer,
     HolidaySerializer,
     ManualDeductionSerializer,
@@ -1539,3 +1540,32 @@ class GovernmentBenefitViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
+
+
+class EmployeeBenefitOverrideViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing employee-specific benefit overrides.
+    Allows setting custom benefit amounts for individual employees.
+    """
+    
+    serializer_class = EmployeeBenefitOverrideSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['employee', 'benefit_type', 'is_active']
+    search_fields = ['employee__first_name', 'employee__last_name', 'notes']
+    ordering_fields = ['effective_start', 'created_at', 'employee']
+    ordering = ['-effective_start']
+    
+    def get_queryset(self):
+        from payroll.models import EmployeeBenefitOverride
+        
+        queryset = EmployeeBenefitOverride.objects.select_related('employee').all()
+        
+        # Admin sees all, others see their own only
+        if not self.request.user.is_staff and self.request.user.role != 'admin':
+            queryset = queryset.filter(employee=self.request.user)
+        
+        return queryset
+    
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
