@@ -98,7 +98,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
             )
         )
         
-        return get_role_filtered_queryset(self.request, qs)
+        return filter_by_date_range(self.request, qs)
 
     @action(detail=True, methods=["post"], url_path="complete")
     def complete(self, request, pk=None):
