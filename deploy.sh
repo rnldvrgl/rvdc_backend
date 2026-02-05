@@ -5,7 +5,9 @@ set -Eeuo pipefail
 # RVDC Backend Deployment Script
 # =============================================================================
 # This script handles the deployment of the RVDC backend application
-# Usage: bash deploy.sh
+# Usage: bash deploy.sh [--init-users]
+# Options:
+#   --init-users    Initialize default stalls and users (optional)
 # =============================================================================
 
 timestamp() { date +'%Y-%m-%d %H:%M:%S'; }
@@ -17,6 +19,22 @@ warning() { echo "[$(timestamp)] WARNING: $*"; }
 APP_NAME="rvdc_backend"
 PROJECT_DIR="/srv/${APP_NAME}"
 ENV_FILE="${PROJECT_DIR}/.env.production"
+
+# Parse command line arguments
+INIT_USERS=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --init-users)
+            INIT_USERS=true
+            shift
+            ;;
+        *)
+            err "Unknown option: $1"
+            echo "Usage: bash deploy.sh [--init-users]"
+            exit 1
+            ;;
+    esac
+done
 
 # =============================================================================
 # Print banner
@@ -109,15 +127,20 @@ success "API container started"
 echo ""
 
 # =============================================================================
-# Step 6: Initialize default stalls
+# Step 6: Initialize default stalls and users (optional)
 # =============================================================================
-log "Step 6: Ensuring default stalls exist..."
+if [ "$INIT_USERS" = true ]; then
+    log "Step 6: Initializing default stalls and users..."
 
-log "Running create_default_users command to setup Main and Sub stalls..."
-${COMPOSE} exec -T api python manage.py create_default_users
+    log "Running create_default_users command to setup Main and Sub stalls..."
+    ${COMPOSE} exec -T api python manage.py create_default_users
 
-success "Stalls initialized"
-echo ""
+    success "Stalls and users initialized"
+    echo ""
+else
+    log "Step 6: Skipping user initialization (use --init-users to enable)"
+    echo ""
+fi
 
 # =============================================================================
 # Step 7: Run database migrations
@@ -177,8 +200,10 @@ log "  • View logs: docker compose logs -f api"
 log "  • Check status: docker compose ps"
 log "  • Restart API: docker compose restart api"
 log "  • Shell access: docker compose exec api bash"
+log "  • Redeploy with user init: bash deploy.sh --init-users"
 echo ""
 log "Database management:"
+log "  • Initialize users/stalls: docker compose exec api python manage.py create_default_users"
 log "  • Clear transactional data: docker compose exec api python manage.py clear_database"
 log "  • Interactive cleanup: docker compose exec api python manage.py clear_database_interactive"
 log "  • Add holidays: docker compose exec api python manage.py add_philippine_holidays --year 2026"

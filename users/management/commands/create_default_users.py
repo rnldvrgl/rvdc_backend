@@ -130,15 +130,61 @@ class Command(BaseCommand):
 
         for user_data in default_users:
             username = user_data["username"]
+            role = user_data["role"]
+            first_name = user_data["first_name"]
+            last_name = user_data["last_name"]
+            assigned_stall = user_data.get("assigned_stall")
+            
+            # For admin: check if admin with same name already exists
+            if role == "admin":
+                existing_admin = User.objects.filter(
+                    role="admin",
+                    first_name=first_name,
+                    last_name=last_name
+                ).first()
+                if existing_admin:
+                    self.stdout.write(
+                        f'  • Admin already exists: {existing_admin.username} ({first_name} {last_name}) - skipping'
+                    )
+                    continue
+            
+            # For clerk: check if a clerk with same name and stall already exists
+            if role == "clerk":
+                existing_clerk = User.objects.filter(
+                    role="clerk",
+                    first_name=first_name,
+                    last_name=last_name,
+                    assigned_stall=assigned_stall
+                ).first()
+                if existing_clerk:
+                    self.stdout.write(
+                        f'  • Clerk already exists: {existing_clerk.username} ({first_name} {last_name}) - skipping'
+                    )
+                    continue
+
+            # For manager: check if a manager with same name and stall already exists
+            if role == "manager" and assigned_stall:
+                existing_manager = User.objects.filter(
+                    role="manager",
+                    first_name=first_name,
+                    last_name=last_name,
+                    assigned_stall=assigned_stall
+                ).first()
+                if existing_manager:
+                    self.stdout.write(
+                        f'  • Manager already exists: {existing_manager.username} ({first_name} {last_name}) for {assigned_stall.name} - skipping'
+                    )
+                    continue
+            
             user_defaults = {
-                "first_name": user_data["first_name"],
-                "last_name": user_data["last_name"],
-                "role": user_data["role"],
+                "first_name": first_name,
+                "last_name": last_name,
+                "role": role,
             }
 
             # Optional fields
-            if "assigned_stall" in user_data:
-                user_defaults["assigned_stall"] = user_data["assigned_stall"]
+            if assigned_stall:
+                user_defaults["assigned_stall"] = assigned_stall
 
             user, created = User.objects.get_or_create(
                 username=username,
@@ -156,11 +202,13 @@ class Command(BaseCommand):
             # Ensure optional fields (assigned_stall, permissions) are updated
             updated = False
 
-            if (
-                "assigned_stall" in user_data
-                and user.assigned_stall != user_data["assigned_stall"]
-            ):
-                user.assigned_stall = user_data["assigned_stall"]
+            if assigned_stall and user.assigned_stall != assigned_stall:
+                user.assigned_stall = assigned_stall
+                updated = True
+
+            # Update role if it changed
+            if user.role != role:
+                user.role = role
                 updated = True
 
             # Apply role-based permissions
