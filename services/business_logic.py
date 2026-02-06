@@ -9,9 +9,11 @@ This module handles:
 - Service cancellation and stock release
 """
 
+from datetime import timedelta
 from decimal import Decimal
 
 from django.db import transaction
+from django.utils import timezone
 from expenses.models import Expense, ExpenseItem
 from inventory.models import Stall, Stock
 from rest_framework.exceptions import ValidationError
@@ -276,6 +278,9 @@ class ServiceCompletionHandler:
                 if not main_stall or not sub_stall:
                     raise ValidationError("System stalls not properly configured.")
 
+                # Collect all charged parts for a single sub stall transaction
+                parts_to_sell = []
+                
                 # Process each appliance item used
                 for appliance in service.appliances.all():
                     for item_used in appliance.items_used.all():
@@ -293,46 +298,28 @@ class ServiceCompletionHandler:
                         charged_qty = item_used.quantity - item_used.free_quantity
 
                         if charged_qty > 0 and not item_used.is_free:
-                            unit_price = item_used.item.retail_price
-                            total_price = unit_price * charged_qty
+                            parts_to_sell.append({
+                                'item': item_used.item,
+                                'quantity': charged_qty,
+                                'unit_price': item_used.item.retail_price,
+                            })
 
-                            # Create SalesTransaction for Sub stall (if not exists)
-                            if not item_used.expense:
-                                # Sub stall sells the part
-                                sub_sales = SalesTransaction.objects.create(
-                                    stall=sub_stall,
-                                    client=service.client,
-                                    sales_clerk=user
-                                )
-
-                                SalesItem.objects.create(
-                                    transaction=sub_sales,
-                                    item=item_used.item,
-                                    quantity=charged_qty,
-                                    final_price_per_unit=unit_price,
-                                )
-
-                                # DISABLED: Do NOT create expense for sub stall sales
-                                # Net sales for sub stall are calculated separately
-                                # expense = Expense.objects.create(
-                                #     stall=main_stall,
-                                #     total_price=total_price,
-                                #     description=f"Parts for Service #{service.id} - {item_used.item.name}",
-                                #     created_by=user,
-                                #     source="service",
-                                # )
-
-                                # ExpenseItem.objects.create(
-                                #     expense=expense,
-                                #     item=item_used.item,
-                                #     quantity=charged_qty,
-                                #     unit_price=unit_price,
-                                #     total_price=total_price,
-                                # )
-
-                                # Link expense to item_used
-                                # item_used.expense = expense
-                                # item_used.save(update_fields=['expense'])
+                # Create ONE sub stall transaction for ALL parts (if any)
+                if parts_to_sell:
+                    sub_sales = SalesTransaction.objects.create(
+                        stall=sub_stall,
+                        client=service.client,
+                        sales_clerk=user
+                    )
+                    
+                    # Add all parts to the single transaction
+                    for part in parts_to_sell:
+                        SalesItem.objects.create(
+                            transaction=sub_sales,
+                            item=part['item'],
+                            quantity=part['quantity'],
+                            final_price_per_unit=part['unit_price'],
+                        )
 
             # Calculate and save revenue attribution
             revenue_data = RevenueCalculator.calculate_service_revenue(service, save=True)
@@ -675,7 +662,10 @@ class ServicePaymentManager:
                 try:
                     # Try to access the transaction to see if it still exists
                     sales_transaction = service.related_transaction
-                    sales_transaction.id  # This will raise DoesNotExist if deleted
+                    if sales_transaction.voided:
+                        # Don't use voided transactions
+                        sales_transaction = None
+                        service.related_transaction = None
                 except SalesTransaction.DoesNotExist:
                     # Transaction was deleted, clear the reference
                     service.related_transaction = None
@@ -686,14 +676,44 @@ class ServicePaymentManager:
             sub_stall = get_sub_stall()
             
             if not sales_transaction:
-                # Create main stall sales transaction for labor fees
-                sales_transaction = SalesTransaction.objects.create(
-                    stall=service.stall or main_stall,
+                # Double-check: look for any existing main stall transaction for this service
+                # Use a more specific filter to find the exact transaction
+                target_stall = service.stall if service.stall else main_stall
+                existing_main_transaction = SalesTransaction.objects.filter(
+                    stall=target_stall,
                     client=service.client,
-                    sales_clerk=received_by,
-                )
-                service.related_transaction = sales_transaction
-                service.save(update_fields=["related_transaction"])
+                    voided=False,
+                    created_at__range=(
+                        service.created_at - timedelta(minutes=5),  # Allow small time window
+                        timezone.now()
+                    )
+                ).exclude(
+                    stall__stall_type='sub'  # Exclude sub stall transactions
+                ).order_by('created_at').first()
+                
+                if existing_main_transaction and not existing_main_transaction.items.exists():
+                    # Found empty transaction, might be from race condition - delete it
+                    existing_main_transaction.delete()
+                    existing_main_transaction = None
+                
+                if existing_main_transaction:
+                    # Use the existing transaction instead of creating a new one
+                    sales_transaction = existing_main_transaction
+                    service.related_transaction = sales_transaction
+                    service.save(update_fields=["related_transaction"])
+                else:
+                    # Create main stall sales transaction for labor fees
+                    sales_transaction = SalesTransaction.objects.create(
+                        stall=target_stall,
+                        client=service.client,
+                        sales_clerk=received_by,
+                    )
+                    service.related_transaction = sales_transaction
+                    service.save(update_fields=["related_transaction"])
+                
+                # Always sync labor fee items to ensure they match current appliances
+                # Clear existing labor items and recreate
+                sales_transaction.items.filter(item__isnull=True).delete()
                 
                 # Create sales items for all appliances' labor fees (MAIN STALL)
                 for appliance in service.appliances.all():
@@ -723,24 +743,34 @@ class ServicePaymentManager:
                                 'quantity': charged_qty,
                             })
                 
-                # Create ONE sub stall transaction for ALL parts (if any)
+                # Check if a sub stall transaction already exists (created by complete_service)
                 sub_sales_transaction = None
                 if parts_to_add:
-                    sub_sales_transaction = SalesTransaction.objects.create(
+                    # Try to find existing sub stall transaction for this service
+                    sub_sales_transaction = SalesTransaction.objects.filter(
                         stall=sub_stall,
                         client=service.client,
-                        sales_clerk=received_by,
-                    )
+                        created_at__gte=sales_transaction.created_at,
+                        voided=False,
+                    ).order_by('created_at').first()
                     
-                    # Add all parts to the single sub stall transaction
-                    for part in parts_to_add:
-                        SalesItem.objects.create(
-                            transaction=sub_sales_transaction,
-                            item=part['item'],
-                            description=part['item'].name,
-                            quantity=part['quantity'],
-                            final_price_per_unit=part['item'].retail_price,
+                    # If no existing transaction, create ONE for ALL parts
+                    if not sub_sales_transaction:
+                        sub_sales_transaction = SalesTransaction.objects.create(
+                            stall=sub_stall,
+                            client=service.client,
+                            sales_clerk=received_by,
                         )
+                        
+                        # Add all parts to the single sub stall transaction
+                        for part in parts_to_add:
+                            SalesItem.objects.create(
+                                transaction=sub_sales_transaction,
+                                item=part['item'],
+                                description=part['item'].name,
+                                quantity=part['quantity'],
+                                final_price_per_unit=part['item'].retail_price,
+                            )
                 
                 # Recreate existing service payments with proper allocation
                 # Get all previous payments (excluding the current one we just created)
