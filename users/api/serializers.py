@@ -208,6 +208,7 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             'birthday_greeting_show_emojis',
             'birthday_greeting_male_emojis',
             'birthday_greeting_female_emojis',
+            'birthday_greeting_variant',
             'updated_at',
         ]
         read_only_fields = ['id', 'updated_at']

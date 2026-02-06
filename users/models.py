@@ -117,6 +117,21 @@ class SystemSettings(models.Model):
         help_text="Comma-separated list of emojis for female employees (e.g., 🎈,🎊,🎁,🎉,💐)"
     )
     
+    VARIANT_CHOICES = [
+        ('default', 'Default'),
+        ('minimalist', 'Modern Minimalist'),
+        ('celebration', 'Celebration Theme'),
+        ('elegant', 'Elegant Professional'),
+        ('playful', 'Playful & Fun'),
+    ]
+    
+    birthday_greeting_variant = models.CharField(
+        max_length=20,
+        choices=VARIANT_CHOICES,
+        default='default',
+        help_text="Design variant for birthday greeting card"
+    )
+    
     updated_at = models.DateTimeField(auto_now=True)
     
     class Meta:

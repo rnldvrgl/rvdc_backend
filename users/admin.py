@@ -4,14 +4,29 @@ from users.models import CustomUser, SystemSettings
 
 @admin.register(SystemSettings)
 class SystemSettingsAdmin(admin.ModelAdmin):
-    list_display = ['id', 'birthday_greeting_enabled', 'updated_at']
+    list_display = ['id', 'birthday_greeting_enabled', 'birthday_greeting_variant', 'updated_at']
     fieldsets = [
         ('Birthday Greeting Settings', {
             'fields': [
                 'birthday_greeting_enabled',
+                'birthday_greeting_variant',
                 'birthday_greeting_title',
                 'birthday_greeting_message',
+                'birthday_greeting_button_text',
             ]
+        }),
+        ('Display Options', {
+            'fields': [
+                'birthday_greeting_show_confetti',
+                'birthday_greeting_show_emojis',
+            ]
+        }),
+        ('Emoji Decorations', {
+            'fields': [
+                'birthday_greeting_male_emojis',
+                'birthday_greeting_female_emojis',
+            ],
+            'description': 'Customize emoji decorations based on employee gender. Use comma-separated emojis (e.g., 🎈,🎊,🎁,🎉,🍺)'
         }),
         ('Metadata', {
             'fields': ['updated_at'],
