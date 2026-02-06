@@ -49,12 +49,14 @@ class Command(BaseCommand):
                 "location": "A-02 MRL Building, Mc. Arthur Hiway, Mabiga, Mabalacat City, Pampanga",
                 "inventory_enabled": False,
                 "is_system": True,
+                "stall_type": "main",
             },
             {
                 "name": "Sub",
                 "location": "A-03 MRL Building, Mc. Arthur Hiway, Mabiga, Mabalacat City, Pampanga",
                 "inventory_enabled": True,
                 "is_system": True,
+                "stall_type": "sub",
             },
         ]
 
@@ -67,6 +69,7 @@ class Command(BaseCommand):
                     "location": stall_data["location"],
                     "inventory_enabled": stall_data["inventory_enabled"],
                     "is_system": stall_data["is_system"],
+                    "stall_type": stall_data["stall_type"],
                 }
             )
             stall_map[stall.name] = stall
