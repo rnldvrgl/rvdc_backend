@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.core.exceptions import ValidationError as DjangoValidationError
-from users.models import CustomUser
+from users.models import CustomUser, SystemSettings
 from inventory.api.serializers import StallSerializer
 from drf_extra_fields.fields import Base64ImageField
 
@@ -18,6 +18,7 @@ class EmployeesSerializer(serializers.ModelSerializer):
             "first_name",
             "last_name",
             "role",
+            "gender",
             "birthday",
             "address",
             "province",
@@ -108,6 +109,7 @@ class UserSerializer(serializers.ModelSerializer):
             "last_name",
             "full_name",
             "role",
+            "gender",
             "birthday",
             "address",
             "contact_number",
@@ -189,3 +191,23 @@ class UserSerializer(serializers.ModelSerializer):
         except DjangoValidationError as e:
             # Convert Django ValidationError to DRF ValidationError
             raise serializers.ValidationError({"role": e.messages})
+
+
+class SystemSettingsSerializer(serializers.ModelSerializer):
+    """Serializer for system-wide settings"""
+    
+    class Meta:
+        model = SystemSettings
+        fields = [
+            'id',
+            'birthday_greeting_enabled',
+            'birthday_greeting_title',
+            'birthday_greeting_message',
+            'birthday_greeting_button_text',
+            'birthday_greeting_show_confetti',
+            'birthday_greeting_show_emojis',
+            'birthday_greeting_male_emojis',
+            'birthday_greeting_female_emojis',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'updated_at']

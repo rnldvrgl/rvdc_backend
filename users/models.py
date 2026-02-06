@@ -16,6 +16,12 @@ class CustomUser(AbstractUser):
         ("clerk", "Clerk"),
         ("technician", "Technician"),
     )
+    
+    GENDER_CHOICES = (
+        ("male", "Male"),
+        ("female", "Female"),
+        ("other", "Other"),
+    )
 
     username = models.CharField(max_length=150, unique=True, blank=True, null=True)
     email = models.EmailField(blank=True, null=True)
@@ -27,6 +33,7 @@ class CustomUser(AbstractUser):
     city = models.CharField(max_length=50, blank=True, null=True)
     barangay = models.CharField(max_length=50, blank=True, null=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    gender = models.CharField(max_length=10, choices=GENDER_CHOICES, null=True, blank=True)
     birthday = models.DateField(null=True, blank=True)
     address = models.TextField(null=True, blank=True)
     contact_number = models.CharField(max_length=15, null=True, blank=True)
@@ -64,3 +71,71 @@ class CustomUser(AbstractUser):
     def delete(self, *args, **kwargs):
         self.is_deleted = True
         self.save()
+
+
+class SystemSettings(models.Model):
+    """
+    System-wide settings for various features.
+    Only one instance should exist (singleton pattern).
+    """
+    
+    # Birthday Greeting Settings
+    birthday_greeting_enabled = models.BooleanField(
+        default=True,
+        help_text="Enable/disable birthday greeting modal"
+    )
+    birthday_greeting_title = models.CharField(
+        max_length=100,
+        default="Happy Birthday!",
+        help_text="Title for birthday greeting modal"
+    )
+    birthday_greeting_message = models.TextField(
+        default="Wishing you a wonderful day filled with happiness and joy! Thank you for being part of our team.",
+        help_text="Message shown in birthday greeting modal"
+    )
+    birthday_greeting_button_text = models.CharField(
+        max_length=50,
+        default="Thank You! 💝",
+        help_text="Text shown on the dismiss button"
+    )
+    birthday_greeting_show_confetti = models.BooleanField(
+        default=True,
+        help_text="Show animated confetti on birthday greeting"
+    )
+    birthday_greeting_show_emojis = models.BooleanField(
+        default=True,
+        help_text="Show emoji decorations on birthday greeting"
+    )
+    birthday_greeting_male_emojis = models.CharField(
+        max_length=200,
+        default="🎈,🎊,🎁,🎉,🍺",
+        help_text="Comma-separated list of emojis for male employees (e.g., 🎈,🎊,🎁,🎉,🍺)"
+    )
+    birthday_greeting_female_emojis = models.CharField(
+        max_length=200,
+        default="🎈,🎊,🎁,🎉,💐",
+        help_text="Comma-separated list of emojis for female employees (e.g., 🎈,🎊,🎁,🎉,💐)"
+    )
+    
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = "System Settings"
+        verbose_name_plural = "System Settings"
+    
+    def save(self, *args, **kwargs):
+        # Ensure only one instance exists (singleton)
+        if not self.pk and SystemSettings.objects.exists():
+            # Update existing instance instead of creating new one
+            existing = SystemSettings.objects.first()
+            self.pk = existing.pk
+        super().save(*args, **kwargs)
+    
+    @classmethod
+    def get_settings(cls):
+        """Get or create system settings instance"""
+        settings, created = cls.objects.get_or_create(pk=1)
+        return settings
+    
+    def __str__(self):
+        return "System Settings"

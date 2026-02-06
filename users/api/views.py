@@ -1,8 +1,9 @@
 from rest_framework import generics, permissions, filters
 from rest_framework.exceptions import NotFound
+from rest_framework.response import Response
 from utils.query import filter_by_date_range
-from users.models import CustomUser
-from users.api.serializers import EmployeesSerializer, UserSerializer
+from users.models import CustomUser, SystemSettings
+from users.api.serializers import EmployeesSerializer, UserSerializer, SystemSettingsSerializer
 from django_filters.rest_framework import DjangoFilterBackend
 
 
@@ -118,3 +119,22 @@ class MyProfileView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_serializer_context(self):
         return {"request": self.request}
+
+
+class SystemSettingsView(generics.RetrieveUpdateAPIView):
+    """
+    GET: Retrieve system settings (any authenticated user can view)
+    PUT/PATCH: Update system settings (admin only)
+    """
+    serializer_class = SystemSettingsSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_object(self):
+        """Always return the singleton settings instance"""
+        return SystemSettings.get_settings()
+    
+    def get_permissions(self):
+        """Allow any authenticated user to view, but only admins to update"""
+        if self.request.method in ['PUT', 'PATCH']:
+            return [permissions.IsAdminUser()]
+        return [permissions.IsAuthenticated()]

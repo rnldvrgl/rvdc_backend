@@ -13,4 +13,5 @@ urlpatterns = [
         views.UseraDetailView.as_view(),
         name="employee-detail",
     ),
+    path("settings/", views.SystemSettingsView.as_view(), name="system-settings"),
 ]
