@@ -47,10 +47,11 @@ class Command(BaseCommand):
             )
             return
         
-        # Get all active employees (excluding admin role as they don't clock in/out)
+        # Get all active employees included in payroll (excluding admin role as they don't clock in/out)
         employees = CustomUser.objects.filter(
             is_active=True,
             is_deleted=False,
+            include_in_payroll=True,
         ).exclude(role='admin')
         
         count = 0

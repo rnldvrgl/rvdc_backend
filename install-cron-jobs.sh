@@ -7,8 +7,8 @@
 # on a DigitalOcean droplet.
 #
 # Cron jobs provided:
-# - Daily: Auto-close attendance (6:30 PM Philippines time)
-# - Daily: Mark absences (7:00 PM Philippines time)
+# - Daily: Auto-close attendance (11:00 PM Philippines time)
+# - Daily: Mark absences (11:30 PM Philippines time)
 # - Weekly: Fix attendance & refresh payroll (Friday 11 PM Philippines time)
 # - Yearly: Update holiday years to new year (Jan 1, 2:00 AM Philippines time)
 # - Yearly: Replenish leave balances (Jan 1, 3:00 AM Philippines time)
@@ -80,7 +80,7 @@ echo -e "${GREEN}✅ Created $SCRIPT_DIR${NC}"
 echo ""
 echo -e "${YELLOW}Step 3: Creating cron scripts...${NC}"
 
-# Script 1: Auto-close attendance (Daily 6:30 PM)
+# Script 1: Auto-close attendance (Daily 11:00 PM)
 cat > "$SCRIPT_DIR/auto-close-attendance.sh" << 'EOF'
 #!/bin/bash
 LOG_FILE="/var/log/cron-auto-close-attendance.log"
@@ -98,7 +98,7 @@ fi
 echo "" >> "$LOG_FILE"
 EOF
 
-# Script 2: Mark absences (Daily 7:00 PM)
+# Script 2: Mark absences (Daily 11:30 PM)
 cat > "$SCRIPT_DIR/mark-absences.sh" << 'EOF'
 #!/bin/bash
 LOG_FILE="/var/log/cron-mark-absences.log"
@@ -274,8 +274,8 @@ echo ""
 echo -e "${YELLOW}Step 6: Install cron jobs?${NC}"
 echo ""
 echo -e "${BLUE}DAILY TASKS (Philippines Time):${NC}"
-echo "  • 6:30 PM  - Auto-close attendance"
-echo "  • 7:00 PM  - Mark absences"
+echo "  • 11:00 PM - Auto-close attendance"
+echo "  • 11:30 PM - Mark absences"
 echo ""
 echo -e "${BLUE}WEEKLY TASKS (Philippines Time):${NC}"
 echo "  • Friday 11:00 PM - Fix attendance & refresh payroll (for Saturday payday)"
@@ -327,11 +327,11 @@ cat >> "$TEMP_CRON" << 'CRONEND'
 # ============================================================================
 
 # DAILY TASKS (Philippines Time)
-# Daily at 6:30 PM Philippines (10:30 AM UTC) - Auto-close open attendance records
-30 10 * * * /opt/cron-scripts/auto-close-attendance.sh
+# Daily at 11:00 PM Philippines (3:00 PM UTC) - Auto-close open attendance records
+0 15 * * * /opt/cron-scripts/auto-close-attendance.sh
 
-# Daily at 7:00 PM Philippines (11:00 AM UTC) - Mark absent employees
-0 11 * * * /opt/cron-scripts/mark-absences.sh
+# Daily at 11:30 PM Philippines (3:30 PM UTC) - Mark absent employees
+30 15 * * * /opt/cron-scripts/mark-absences.sh
 
 # WEEKLY TASKS (Philippines Time)
 # Every Friday at 11:00 PM Philippines (3:00 PM UTC) - Fix last week's attendance & refresh payroll (Sat-Fri → Sat payday)
