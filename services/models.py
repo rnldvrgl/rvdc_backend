@@ -25,6 +25,7 @@ class PaymentStatus(models.TextChoices):
     PARTIAL = "partial", _("Partial")
     PAID = "paid", _("Paid")
     REFUNDED = "refunded", _("Refunded")
+    NOT_APPLICABLE = "n/a", _("N/A (Complementary)")
 
 
 # ----------------------------------
@@ -181,6 +182,17 @@ class Service(models.Model):
         blank=True,
         help_text="Reason for discount (e.g., 'Senior Citizen', 'Loyalty Discount')"
     )
+    
+    # Complementary service tracking (free services: warranty, goodwill, etc.)
+    is_complementary = models.BooleanField(
+        default=False,
+        help_text="Mark as complementary for free services (warranty, goodwill, promotional)"
+    )
+    complementary_reason = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="Reason for complementary service (e.g., 'Warranty', 'Goodwill', 'Promotional')"
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -253,6 +265,12 @@ class Service(models.Model):
 
     def update_payment_status(self):
         """Update payment status based on total paid vs total revenue."""
+        # Complementary services don't require payment
+        if self.is_complementary:
+            self.payment_status = PaymentStatus.NOT_APPLICABLE
+            self.save(update_fields=["payment_status"])
+            return
+        
         total = self.total_revenue
         paid = self.total_paid
 

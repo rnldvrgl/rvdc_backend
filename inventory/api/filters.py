@@ -23,13 +23,16 @@ class StatusFilterMixin:
         value = value.lower().strip()
 
         if value == "no_stock":
+            # No available stock (available = 0)
             return queryset.filter(available_expr__lte=0)
         elif value == "low_stock":
+            # Has stock but at or below threshold (0 < available <= threshold)
             return queryset.filter(
                 available_expr__gt=0,
                 available_expr__lte=models.F("low_stock_threshold"),
             )
         elif value == "high_stock":
+            # Above threshold (available > threshold)
             return queryset.filter(available_expr__gt=models.F("low_stock_threshold"))
         return queryset.none()
 

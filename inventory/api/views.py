@@ -1,5 +1,5 @@
 from django.contrib.auth import get_user_model
-from django.db import transaction
+from django.db import models, transaction
 from django_filters.rest_framework import DjangoFilterBackend
 from inventory.api.filters import (
     ItemFilter,
@@ -191,7 +191,12 @@ class StockViewSet(viewsets.ModelViewSet):
         return StockReadSerializer
 
     def get_queryset(self):
-        return filter_by_date_range(self.request, super().get_queryset())
+        queryset = super().get_queryset()
+        # Annotate with available quantity for filtering
+        queryset = queryset.annotate(
+            available_expr=models.F('quantity') - models.F('reserved_quantity')
+        )
+        return filter_by_date_range(self.request, queryset)
 
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):

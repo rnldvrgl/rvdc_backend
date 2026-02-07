@@ -171,7 +171,8 @@ class Stock(models.Model):
         return max(self.quantity - self.reserved_quantity, 0)
 
     def status(self):
-        if self.quantity == 0:
+        # Check available quantity (not total) for status
+        if self.available_quantity == 0:
             return "no_stock"
         elif self.available_quantity <= self.low_stock_threshold:
             return "low_stock"

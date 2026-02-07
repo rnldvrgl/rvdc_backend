@@ -311,7 +311,8 @@ class ServiceCompletionHandler:
 
                 # Create ONE sub stall transaction for ALL parts (if any)
                 # But only if one doesn't already exist (from payments)
-                if parts_to_sell:
+                # Skip transaction creation for complementary services
+                if parts_to_sell and not service.is_complementary:
                     existing_sub_transaction = None
                     
                     # Only look for existing sub transaction if payments were recorded
@@ -350,14 +351,91 @@ class ServiceCompletionHandler:
             # Update service status to completed
             service.status = ServiceStatusEnum.COMPLETED
             service.save(update_fields=['status', 'updated_at'])
+            
+            # Update payment status (sets to NOT_APPLICABLE for complementary services)
+            service.update_payment_status()
 
-            # Optionally create a unified receipt for the customer (only if has appliances/items)
-            # BUT don't create if related_transaction already exists (from payments)
-            unified_receipt = None
-            if create_receipt and service.client and has_appliances and not service.related_transaction:
-                unified_receipt = ServiceCompletionHandler._create_unified_receipt(
-                    service, user, revenue_data
+            # Create separate stall transactions based on what's being charged
+            # Skip if related_transaction exists (payments made upfront) or service is fully complementary
+            main_receipt = None
+            sub_receipt = None
+            
+            if create_receipt and service.client and has_appliances and not service.related_transaction and not service.is_complementary:
+                main_stall = get_main_stall()
+                sub_stall = get_sub_stall()
+                
+                # Check if there's any paid labor
+                has_paid_labor = any(
+                    appl.discounted_labor_fee > 0 and not appl.labor_is_free
+                    for appl in service.appliances.all()
                 )
+                
+                # Check if there's any paid parts
+                has_paid_parts = any(
+                    item_used.line_total > 0 and not item_used.is_free
+                    for appl in service.appliances.all()
+                    for item_used in appl.items_used.all()
+                )
+                
+                # Create Main stall transaction for labor if any paid labor exists
+                if has_paid_labor:
+                    main_receipt = SalesTransaction.objects.create(
+                        stall=main_stall,
+                        client=service.client,
+                        sales_clerk=user,
+                    )
+                    
+                    for appliance in service.appliances.all():
+                        labor_charge = appliance.discounted_labor_fee
+                        if labor_charge > 0 and not appliance.labor_is_free:
+                            SalesItem.objects.create(
+                                transaction=main_receipt,
+                                item=None,
+                                description=f"Labor: {appliance.appliance_type.name if appliance.appliance_type else 'Service'}",
+                                quantity=1,
+                                final_price_per_unit=labor_charge,
+                            )
+                    
+                    # Link main receipt to service
+                    service.related_transaction = main_receipt
+                    service.save(update_fields=['related_transaction'])
+                
+                # Create Sub stall transaction for parts if any paid parts exist
+                # Only if not already created earlier (check if one exists from the parts_to_sell logic)
+                if has_paid_parts:
+                    # Check if sub transaction was already created in the earlier parts_to_sell logic
+                    existing_sub_transaction = SalesTransaction.objects.filter(
+                        stall=sub_stall,
+                        client=service.client,
+                        voided=False,
+                        created_at__range=(
+                            timezone.now() - timedelta(seconds=10),
+                            timezone.now()
+                        )
+                    ).first()
+                    
+                    if not existing_sub_transaction:
+                        sub_receipt = SalesTransaction.objects.create(
+                            stall=sub_stall,
+                            client=service.client,
+                            sales_clerk=user,
+                        )
+                        
+                        for appliance in service.appliances.all():
+                            for item_used in appliance.items_used.all():
+                                if item_used.is_free:
+                                    continue
+                                
+                                charged_qty = item_used.quantity - item_used.free_quantity
+                                if charged_qty > 0 and item_used.item:
+                                    SalesItem.objects.create(
+                                        transaction=sub_receipt,
+                                        item=item_used.item,
+                                        quantity=charged_qty,
+                                        final_price_per_unit=item_used.item.retail_price,
+                                    )
+            
+            unified_receipt = main_receipt or sub_receipt
 
             return {
                 'service_id': service.id,
@@ -381,15 +459,16 @@ class ServiceCompletionHandler:
             sales_clerk=user,
         )
 
-        # Add labor charges
+        # Add labor charges (only if not marked as free)
         for appliance in service.appliances.all():
-            if appliance.labor_fee > 0:
+            labor_charge = appliance.discounted_labor_fee
+            if labor_charge > 0 and not appliance.labor_is_free:
                 SalesItem.objects.create(
                     transaction=receipt,
                     item=None,  # Non-inventory item
                     description=f"Labor: {appliance.appliance_type.name if appliance.appliance_type else 'Service'}",
                     quantity=1,
-                    final_price_per_unit=appliance.labor_fee,
+                    final_price_per_unit=labor_charge,
                 )
 
         # Add parts charges

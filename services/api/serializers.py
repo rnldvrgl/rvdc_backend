@@ -132,25 +132,34 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         """Validate stock availability for reservation."""
+        # For updates, use existing item if not provided
         item = data.get("item")
+        if not item and self.instance:
+            item = self.instance.item
+            data["item"] = item
+        
         qty = data.get("quantity", 1)
 
         # Resolve stock
         stock = data.get("stall_stock")
         if stock is None:
-            # Auto-resolve to Sub stall stock
-            sub_stall = get_sub_stall()
-            if not sub_stall:
-                raise ValidationError("Sub stall not configured in system.")
+            # For updates, use existing stock if available
+            if self.instance and self.instance.stall_stock:
+                stock = self.instance.stall_stock
+            else:
+                # Auto-resolve to Sub stall stock
+                sub_stall = get_sub_stall()
+                if not sub_stall:
+                    raise ValidationError("Sub stall not configured in system.")
 
-            stock = Stock.objects.filter(
-                item=item,
-                stall=sub_stall,
-                is_deleted=False
-            ).first()
+                stock = Stock.objects.filter(
+                    item=item,
+                    stall=sub_stall,
+                    is_deleted=False
+                ).first()
 
-            if stock is None:
-                raise ValidationError(f"No stock found for {item.name} in Sub stall.")
+                if stock is None:
+                    raise ValidationError(f"No stock found for {item.name} in Sub stall.")
 
             data["stall_stock"] = stock
 
@@ -159,12 +168,30 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
             raise ValidationError("Selected stock does not match the item.")
 
         # Check available quantity (for reservation)
-        available = stock.quantity - stock.reserved_quantity
-        if qty > available:
-            raise ValidationError(
-                f"Insufficient stock for {item.name}. "
-                f"Available: {available}, Requested: {qty}"
-            )
+        # For updates: only check if requesting MORE quantity than currently reserved
+        if self.instance:
+            # This is an update - only validate if quantity is increasing
+            old_qty = self.instance.quantity
+            new_qty = qty
+            additional_qty_needed = new_qty - old_qty
+            
+            if additional_qty_needed > 0:
+                # Need more stock - check availability
+                available = stock.quantity - stock.reserved_quantity
+                if additional_qty_needed > available:
+                    raise ValidationError(
+                        f"Insufficient stock for {item.name}. "
+                        f"Available: {available}, Additional needed: {additional_qty_needed}"
+                    )
+            # If reducing quantity or same, no stock check needed
+        else:
+            # This is a create - check full quantity
+            available = stock.quantity - stock.reserved_quantity
+            if qty > available:
+                raise ValidationError(
+                    f"Insufficient stock for {item.name}. "
+                    f"Available: {available}, Requested: {qty}"
+                )
 
         # Store validated stock for use in create()
         self._validated_stock = stock
@@ -610,6 +637,39 @@ class ServiceSerializer(serializers.ModelSerializer):
         """Get all payments for this service."""
         payments = obj.payments.all()
         return ServicePaymentSerializer(payments, many=True).data
+
+    def get_next_schedule(self, obj):
+        """Get the next upcoming or most recent schedule for this service."""
+        from datetime import date
+        from schedules.models import Schedule
+        
+        # Get all schedules for this service
+        schedules = obj.schedules.all()
+        
+        if not schedules.exists():
+            return None
+        
+        today = date.today()
+        
+        # Try to get the next upcoming schedule
+        next_schedule = schedules.filter(
+            scheduled_date__gte=today
+        ).order_by('scheduled_date', 'scheduled_time').first()
+        
+        # If no upcoming schedule, get the most recent past schedule
+        if not next_schedule:
+            next_schedule = schedules.order_by('-scheduled_date', '-scheduled_time').first()
+        
+        if next_schedule:
+            return {
+                'id': next_schedule.id,
+                'schedule_type': next_schedule.schedule_type,
+                'scheduled_date': next_schedule.scheduled_date,
+                'scheduled_time': next_schedule.scheduled_time,
+                'status': next_schedule.status,
+            }
+        
+        return None
 
     def validate(self, data):
         """Validate service data."""
