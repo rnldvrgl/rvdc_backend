@@ -853,14 +853,18 @@ class WeeklyPayroll(models.Model):
 
             if h.kind == 'regular':
                 if worked > 0:
+                    # Employee worked on holiday - always pay holiday premium for hours worked
                     add = daily_rate * reg_pct * fraction
                 else:
+                    # Employee didn't work - only pay if no_work_no_pay is disabled
                     add = (daily_rate * reg_pct) if reg_no_work else Decimal('0')
                 self.holiday_pay_regular = self._q(self.holiday_pay_regular + add)
             elif h.kind == 'special_non_working':
                 if worked > 0:
+                    # Employee worked on holiday - always pay holiday premium for hours worked
                     add = daily_rate * spec_pct * fraction
                 else:
+                    # Employee didn't work - only pay if no_work_no_pay is disabled
                     add = (daily_rate * spec_pct) if spec_no_work else Decimal('0')
                 self.holiday_pay_special = self._q(self.holiday_pay_special + add)
 
