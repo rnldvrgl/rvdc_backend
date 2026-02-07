@@ -1,7 +1,11 @@
-from django.urls import path
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
 from users.api import views
 
 name = "users"
+
+router = DefaultRouter()
+router.register(r'cash-advances', views.CashAdvanceViewSet, basename='cash-advance')
 
 urlpatterns = [
     path("", views.UserListView.as_view(), name="user-list"),
@@ -14,4 +18,5 @@ urlpatterns = [
         name="employee-detail",
     ),
     path("settings/", views.SystemSettingsView.as_view(), name="system-settings"),
+    path("", include(router.urls)),
 ]

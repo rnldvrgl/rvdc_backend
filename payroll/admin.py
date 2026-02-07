@@ -27,9 +27,35 @@ class PayrollSettingsAdmin(admin.ModelAdmin):
         "special_holiday_no_work_pays",
         "overtime_multiplier",
         "night_diff_multiplier",
+        "cash_ban_enabled",
+        "cash_ban_contribution_amount",
         "updated_at",
     )
     readonly_fields = ("updated_at",)
+    fieldsets = (
+        ("Shift Settings", {
+            "fields": ("shift_start", "shift_end", "grace_minutes", "clock_out_tolerance_minutes", "auto_close_enabled")
+        }),
+        ("Holiday Settings", {
+            "fields": (
+                "holiday_day_hours",
+                "holiday_regular_pct",
+                "holiday_special_pct",
+                "regular_holiday_no_work_pays",
+                "special_holiday_no_work_pays",
+            )
+        }),
+        ("Overtime & Night Differential", {
+            "fields": ("overtime_multiplier", "night_diff_multiplier")
+        }),
+        ("Cash Ban Contribution", {
+            "fields": ("cash_ban_enabled", "cash_ban_contribution_amount"),
+            "description": "Automatic contribution to employee cash ban fund when payroll is approved"
+        }),
+        ("Metadata", {
+            "fields": ("updated_at",)
+        }),
+    )
 
 
 @admin.register(WeeklyPayroll)
@@ -496,64 +522,20 @@ class AdditionalEarningAdmin(admin.ModelAdmin):
     )
 
 
-    @admin.action(description="Approve selected requests")
-    def approve_requests(self, request, queryset):
-        now = timezone.now()
-        queryset.update(approved=True, approved_by=request.user, approved_at=now)
+    @admin.action(description="Approve selected earnings")
+    def approve_earnings(self, request, queryset):
+        queryset.update(approved=True)
 
+    @admin.action(description="Unapprove selected earnings")
+    def unapprove_earnings(self, request, queryset):
+        queryset.update(approved=False)
 
-    @admin.action(description="Reject selected requests")
-    def reject_requests(self, request, queryset):
-        queryset.update(approved=False, approved_by=None, approved_at=None)
+    @admin.action(description="Soft delete selected earnings")
+    def soft_delete(self, request, queryset):
+        queryset.update(is_deleted=True)
 
-    actions = ("approve_requests", "reject_requests",)
+    @admin.action(description="Restore selected earnings")
+    def restore(self, request, queryset):
+        queryset.update(is_deleted=False)
 
-    fieldsets = (
-        (
-            "Request",
-            {
-                "fields": (
-
-                    "employee",
-
-                    "date",
-
-                    "time_start",
-
-                    "time_end",
-
-                    "reason",
-
-                    "approved",
-
-                    "approved_by",
-
-                    "approved_at",
-
-                )
-
-            },
-
-        ),
-
-        (
-
-            "Meta",
-
-            {
-
-                "classes": ("collapse",),
-
-                "fields": (
-
-                    "created_at",
-
-                    "updated_at",
-
-                ),
-
-            },
-
-        ),
-
-    )
+    actions = ("approve_earnings", "unapprove_earnings", "soft_delete", "restore")

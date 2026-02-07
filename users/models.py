@@ -46,6 +46,12 @@ class CustomUser(AbstractUser):
     philhealth_number = models.CharField(max_length=50, blank=True, null=True)
     tin_number = models.CharField(max_length=50, blank=True, null=True)
     basic_salary = models.DecimalField(max_digits=10, decimal_places=2, null=True)
+    cash_ban_balance = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Employee's cash ban fund balance (accumulated fund that can be received at year-end or cash advanced)"
+    )
     include_in_payroll = models.BooleanField(
         default=True,
         help_text="Include this employee in payroll generation"
@@ -67,6 +73,10 @@ class CustomUser(AbstractUser):
     has_bir_tax = models.BooleanField(
         default=True,
         help_text="Apply BIR withholding tax deductions"
+    )
+    has_cash_ban = models.BooleanField(
+        default=True,
+        help_text="Include employee in cash ban fund contributions"
     )
     
     is_deleted = models.BooleanField(default=False)
@@ -169,3 +179,60 @@ class SystemSettings(models.Model):
     
     def __str__(self):
         return "System Settings"
+
+
+class CashAdvance(models.Model):
+    """
+    Track cash advances taken from employee's cash ban balance.
+    Cash ban is a fund per employee that accumulates and can be:
+    1. Received at year-end
+    2. Cash advanced (with deduction from total balance)
+    """
+    
+    employee = models.ForeignKey(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name='cash_advances',
+        help_text="Employee who took the cash advance"
+    )
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Amount of cash advance taken from cash ban balance"
+    )
+    date = models.DateField(
+        help_text="Date when cash advance was given"
+    )
+    reason = models.TextField(
+        blank=True,
+        help_text="Reason or notes for the cash advance"
+    )
+    created_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_cash_advances',
+        help_text="User who approved/recorded this cash advance"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    is_deleted = models.BooleanField(default=False)
+    
+    class Meta:
+        ordering = ['-date', '-created_at']
+        indexes = [
+            models.Index(fields=['employee', 'date']),
+            models.Index(fields=['-date']),
+        ]
+    
+    def __str__(self):
+        return f"Cash Advance - {self.employee.get_full_name()} - ₱{self.amount} ({self.date})"
+    
+    def save(self, *args, **kwargs):
+        """Automatically deduct from employee's cash ban balance on creation"""
+        is_new = self.pk is None
+        if is_new:
+            # Deduct from employee's cash ban balance
+            self.employee.cash_ban_balance -= self.amount
+            self.employee.save(update_fields=['cash_ban_balance'])
+        super().save(*args, **kwargs)

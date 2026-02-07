@@ -16,8 +16,13 @@ class AdditionalEarning(models.Model):
     """
 
     EARNING_TYPES = [
-        ("installation_pct", "Installation Percentage"),
-        ("custom", "Custom"),
+        ("bonus", "Bonus"),
+        ("commission", "Commission"),
+        ("tip", "Customer Tip"),
+        ("performance", "Performance Incentive"),
+        ("installation_pct", "Installation %"),
+        ("allowance", "Special Allowance"),
+       ("other", "Other"),
     ]
 
     employee = models.ForeignKey(
@@ -26,7 +31,7 @@ class AdditionalEarning(models.Model):
         related_name="additional_earnings",
     )
     earning_date = models.DateField()
-    category = models.CharField(max_length=32, choices=EARNING_TYPES, default="custom")
+    category = models.CharField(max_length=32, choices=EARNING_TYPES, default="other")
     amount = models.DecimalField(
         max_digits=12, decimal_places=2, default=Decimal("0.00")
     )
@@ -1081,6 +1086,27 @@ class WeeklyPayroll(models.Model):
             logger = logging.getLogger(__name__)
             logger.error(f"Error applying government benefits: {e}")
 
+        # Apply cash ban contribution deduction (if enabled for this employee)
+        try:
+            from payroll.models import PayrollSettings
+            
+            # Check if employee has cash ban enabled
+            if getattr(self.employee, 'has_cash_ban', False):
+                settings = PayrollSettings.objects.first()
+                if settings and settings.cash_ban_enabled:
+                    contribution_amount = Decimal(settings.cash_ban_contribution_amount or 0)
+                    if contribution_amount > 0:
+                        deductions_map['cash_ban'] = self._q(contribution_amount)
+                        deduction_metadata_map['cash_ban'] = {
+                            'source_type': 'PayrollSettings',
+                            'category': 'deduction',
+                            'description': 'Cash Ban Fund Contribution',
+                        }
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error applying cash ban deduction: {e}")
+
         # Apply percentage-based deductions (HDMF savings, etc.) - Legacy
         try:
             from payroll.models import PercentageDeduction
@@ -1726,6 +1752,18 @@ class PayrollSettings(models.Model):
     )
     special_holiday_no_work_pays = models.BooleanField(
         default=False, help_text="Pay +30% daily even if no work on special non-working holiday."
+    )
+
+    # Cash Ban contribution settings
+    cash_ban_contribution_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("200.00"),
+        help_text="Fixed amount to contribute to employee's cash ban fund per payroll period.",
+    )
+    cash_ban_enabled = models.BooleanField(
+        default=True,
+        help_text="Enable automatic cash ban contributions when approving payroll.",
     )
 
     # Payroll cutoff configuration

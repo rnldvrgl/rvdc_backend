@@ -183,6 +183,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField(read_only=True)
     week_end = serializers.SerializerMethodField(read_only=True)
     total_hours = serializers.SerializerMethodField(read_only=True)
+    additional_earnings_details = serializers.SerializerMethodField(read_only=True)
     deductions = DeductionsField(required=False)
     employee = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(), required=True
@@ -208,6 +209,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "total_hours",
             "allowances",
             "additional_earnings_total",
+            "additional_earnings_details",
             "gross_pay",
             "night_diff_pay",
             "approved_ot_pay",
@@ -308,6 +310,30 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
         except Exception:
             return 0.0
 
+    def get_additional_earnings_details(self, obj: WeeklyPayroll) -> list:
+        """Return list of additional earnings for this payroll period with their details."""
+        try:
+            earnings = obj.employee.additional_earnings.filter(
+                is_deleted=False,
+                approved=True,
+                earning_date__gte=obj.week_start,
+                earning_date__lte=obj.week_end,
+            ).order_by('earning_date')
+            
+            return [
+                {
+                    'id': earning.id,
+                    'date': earning.earning_date.isoformat(),
+                    'category': earning.category,
+                    'amount': str(earning.amount),
+                    'description': earning.description or '',
+                    'reference': earning.reference or '',
+                }
+                for earning in earnings
+            ]
+        except Exception:
+            return []
+
 
 
 
@@ -319,6 +345,7 @@ class PayrollSettingsSerializer(serializers.ModelSerializer):
             "shift_start",
             "shift_end",
             "grace_minutes",
+            "clock_out_tolerance_minutes",
             "auto_close_enabled",
             "holiday_day_hours",
             "holiday_regular_pct",
@@ -328,6 +355,8 @@ class PayrollSettingsSerializer(serializers.ModelSerializer):
             "overtime_multiplier",
             "night_diff_multiplier",
             "payroll_cutoff_day",
+            "cash_ban_contribution_amount",
+            "cash_ban_enabled",
             "updated_at",
         ]
         read_only_fields = ["id", "updated_at"]

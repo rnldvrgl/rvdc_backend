@@ -1,5 +1,5 @@
 from django.contrib import admin
-from users.models import CustomUser, SystemSettings
+from users.models import CustomUser, SystemSettings, CashAdvance
 
 
 @admin.register(SystemSettings)
@@ -42,6 +42,20 @@ class SystemSettingsAdmin(admin.ModelAdmin):
     def has_delete_permission(self, request, obj=None):
         # Don't allow deleting the settings
         return False
+
+
+@admin.register(CashAdvance)
+class CashAdvanceAdmin(admin.ModelAdmin):
+    list_display = ['employee', 'amount', 'date', 'created_by', 'created_at']
+    list_filter = ['date', 'created_at']
+    search_fields = ['employee__first_name', 'employee__last_name', 'reason']
+    readonly_fields = ['created_at', 'updated_at', 'created_by']
+    date_hierarchy = 'date'
+    
+    def save_model(self, request, obj, form, change):
+        if not change:  # Only set created_by on creation
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
 
 
 # Register your models here

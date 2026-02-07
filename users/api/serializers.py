@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.core.exceptions import ValidationError as DjangoValidationError
-from users.models import CustomUser, SystemSettings
+from users.models import CustomUser, SystemSettings, CashAdvance
 from inventory.api.serializers import StallSerializer
 from drf_extra_fields.fields import Base64ImageField
 
@@ -30,13 +30,15 @@ class EmployeesSerializer(serializers.ModelSerializer):
             "sss_number",
             "philhealth_number",
             "basic_salary",
+            "cash_ban_balance",
             "include_in_payroll",
             "has_sss",
             "has_philhealth",
             "has_pagibig",
             "has_bir_tax",
+            "has_cash_ban",
         ]
-        read_only_fields = ("id",)
+        read_only_fields = ("id", "cash_ban_balance")
     
     def validate_role(self, value):
         """Only allow manager, clerk, and technician roles for employees"""
@@ -124,13 +126,15 @@ class UserSerializer(serializers.ModelSerializer):
             "sss_number",
             "philhealth_number",
             "basic_salary",
+            "cash_ban_balance",
             "include_in_payroll",
             "has_sss",
             "has_philhealth",
             "has_pagibig",
             "has_bir_tax",
+            "has_cash_ban",
         ]
-        read_only_fields = ("id",)
+        read_only_fields = ("id", "cash_ban_balance")
 
     def get_full_name(self, obj):
         return obj.get_full_name()
@@ -218,3 +222,58 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = ['id', 'updated_at']
+
+
+class CashAdvanceSerializer(serializers.ModelSerializer):
+    """Serializer for cash advance transactions"""
+    
+    employee_name = serializers.CharField(source='employee.full_name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.full_name', read_only=True)
+    remaining_balance = serializers.DecimalField(
+        source='employee.cash_ban_balance',
+        max_digits=10,
+        decimal_places=2,
+        read_only=True
+    )
+    
+    class Meta:
+        model = CashAdvance
+        fields = [
+            'id',
+            'employee',
+            'employee_name',
+            'amount',
+            'date',
+            'reason',
+            'created_by',
+            'created_by_name',
+            'remaining_balance',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+    
+    def validate(self, data):
+        """Validate that employee has sufficient cash ban balance"""
+        employee = data.get('employee')
+        amount = data.get('amount')
+        
+        if amount and employee:
+            if amount > employee.cash_ban_balance:
+                raise serializers.ValidationError({
+                    'amount': f'Insufficient cash ban balance. Available: ₱{employee.cash_ban_balance}'
+                })
+            
+            if amount <= 0:
+                raise serializers.ValidationError({
+                    'amount': 'Amount must be greater than zero.'
+                })
+        
+        return data
+    
+    def create(self, validated_data):
+        """Set created_by from request user"""
+        request = self.context.get('request')
+        if request and hasattr(request, 'user'):
+            validated_data['created_by'] = request.user
+        return super().create(validated_data)

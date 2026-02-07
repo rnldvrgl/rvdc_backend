@@ -1,9 +1,9 @@
-from rest_framework import generics, permissions, filters
+from rest_framework import generics, permissions, filters, viewsets
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from utils.query import filter_by_date_range
-from users.models import CustomUser, SystemSettings
-from users.api.serializers import EmployeesSerializer, UserSerializer, SystemSettingsSerializer
+from users.models import CustomUser, SystemSettings, CashAdvance
+from users.api.serializers import EmployeesSerializer, UserSerializer, SystemSettingsSerializer, CashAdvanceSerializer
 from django_filters.rest_framework import DjangoFilterBackend
 
 
@@ -138,3 +138,59 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
         if self.request.method in ['PUT', 'PATCH']:
             return [permissions.IsAdminUser()]
         return [permissions.IsAuthenticated()]
+
+
+class CashAdvanceViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing cash advances.
+    - List: View all cash advances (admin/manager) or own cash advances (employee)
+    - Create: Record a new cash advance (admin/manager only)
+    - Retrieve/Update/Delete: Manage specific cash advance (admin/manager only)
+    """
+    serializer_class = CashAdvanceSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_fields = ['employee', 'date']
+    search_fields = ['employee__first_name', 'employee__last_name', 'reason']
+    ordering_fields = ['date', 'amount', 'created_at']
+    ordering = ['-date', '-created_at']
+    
+    def get_queryset(self):
+        """
+        Admin/Manager: See all cash advances
+        Other users: See only their own cash advances
+        """
+        queryset = CashAdvance.objects.filter(is_deleted=False).select_related(
+            'employee', 'created_by'
+        )
+        
+        user = self.request.user
+        if user.role in ['admin', 'manager']:
+            return filter_by_date_range(self.request, queryset)
+        else:
+            # Regular employees can only see their own
+            return queryset.filter(employee=user)
+    
+    def get_permissions(self):
+        """Only admin/manager can create, update, or delete"""
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [permissions.IsAuthenticated(), IsAdminOrManager()]
+        return [permissions.IsAuthenticated()]
+    
+    def perform_destroy(self, instance):
+        """Soft delete and restore balance"""
+        instance.is_deleted = True
+        instance.save()
+        # Restore balance when deleting cash advance
+        instance.employee.cash_ban_balance += instance.amount
+        instance.employee.save(update_fields=['cash_ban_balance'])
+
+
+class IsAdminOrManager(permissions.BasePermission):
+    """Permission class to check if user is admin or manager"""
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.role in ['admin', 'manager']

@@ -191,8 +191,49 @@ def generate_payslip_pdf(payroll):
         if float(payroll.allowances or 0) > 0:
             earnings_data.append(['Allowances', format_currency(float(payroll.allowances))])
         
+        # Show detailed additional earnings if available
         if float(payroll.additional_earnings_total or 0) > 0:
-            earnings_data.append(['Other Earnings', format_currency(float(payroll.additional_earnings_total))])
+            # Try to get detailed earnings from the payroll's employee
+            try:
+                from payroll.models import AdditionalEarning
+                
+                detailed_earnings = AdditionalEarning.objects.filter(
+                    employee=payroll.employee,
+                    is_deleted=False,
+                    approved=True,
+                    earning_date__gte=payroll.week_start,
+                    earning_date__lte=payroll.week_end,
+                ).order_by('earning_date')
+                
+                if detailed_earnings.exists():
+                    for earning in detailed_earnings:
+                        # Build description with category, description and reference
+                        desc_parts = []
+                        if earning.category:
+                            desc_parts.append(f"[{earning.category.upper()}]")
+                        if earning.description:
+                            desc_parts.append(earning.description)
+                        elif earning.reference:
+                            desc_parts.append(earning.reference)
+                        else:
+                            desc_parts.append("Additional Earning")
+                        
+                        # Add reference as second line if both description and reference exist
+                        full_desc = " ".join(desc_parts)
+                        if earning.reference and earning.description:
+                            full_desc += f"<br/><font size=7 color='grey'>Ref: {earning.reference}</font>"
+                        
+                        earnings_data.append([
+                            Paragraph(full_desc, styles['Normal']),
+                            format_currency(float(earning.amount))
+                        ])
+                else:
+                    # Fallback to total if no details available
+                    earnings_data.append(['Other Earnings', format_currency(float(payroll.additional_earnings_total))])
+            except Exception as e:
+                # Fallback to total if error occurs
+                print(f"Error fetching detailed earnings: {e}")
+                earnings_data.append(['Other Earnings', format_currency(float(payroll.additional_earnings_total))])
         
         earnings_table = Table(earnings_data, colWidths=[5.5*inch, 2*inch])
         earnings_table.setStyle(TableStyle([
@@ -207,6 +248,7 @@ def generate_payslip_pdf(payroll):
             ('BACKGROUND', (0, 1), (-1, -1), colors.white),
             ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
             ('ALIGN', (1, 1), (1, -1), 'RIGHT'),
+            ('VALIGN', (0, 1), (0, -1), 'TOP'),
         ]))
         elements.append(earnings_table)
         elements.append(Spacer(1, 0.1*inch))
@@ -241,9 +283,9 @@ def generate_payslip_pdf(payroll):
             elements.append(Spacer(1, 0.1*inch))
     
     # Summary Totals
-    gross_pay = float(payroll.gross_pay) + float(payroll.additional_earnings_total or 0) + \
-                float(payroll.allowances or 0) + float(payroll.approved_ot_pay or 0) + \
-                float(payroll.night_diff_pay or 0) + float(payroll.holiday_pay_total or 0)
+    # gross_pay from backend already includes: base_pay, allowances, additional_earnings_total,
+    # night_diff_pay, approved_ot_pay, and holiday_pay_total
+    gross_pay = float(payroll.gross_pay)
     
     summary_data = [
         ['Gross Pay', format_currency(gross_pay)],

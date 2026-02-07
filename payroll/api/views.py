@@ -47,6 +47,37 @@ from utils.filters.role_filters import get_role_based_filter_response
 from utils.query import filter_by_date_range
 
 # ------------------------------------------------------------------------------
+# Helper Functions
+# ------------------------------------------------------------------------------
+
+def _add_cash_ban_contribution(payroll: WeeklyPayroll):
+    """
+    Add cash ban contribution to employee's balance when payroll is approved.
+    Contribution is a fixed amount per payroll period.
+    """
+    try:
+        settings = PayrollSettings.objects.first()
+        if not settings or not settings.cash_ban_enabled:
+            return
+        
+        employee = payroll.employee
+        
+        # Check if employee has cash ban enabled
+        if not employee.has_cash_ban:
+            return
+        
+        contribution_amount = settings.cash_ban_contribution_amount
+        if contribution_amount <= 0:
+            return
+        
+        # Add fixed contribution to employee's cash ban balance
+        employee.cash_ban_balance += contribution_amount
+        employee.save(update_fields=['cash_ban_balance'])
+    except Exception as e:
+        # Log error but don't fail payroll approval
+        print(f"Error adding cash ban contribution for payroll {payroll.id}: {e}")
+
+# ------------------------------------------------------------------------------
 # Additional Earnings
 # ------------------------------------------------------------------------------
 
@@ -486,8 +517,13 @@ class WeeklyPayrollListCreateView(generics.ListCreateAPIView):
 
 
     def get_queryset(self):
+        qs = super().get_queryset()
+        # Hide draft payrolls from regular employees
+        user = self.request.user
+        if not user.is_staff and user.role not in ['admin', 'manager']:
+            qs = qs.exclude(status='draft')
         return filter_by_date_range(
-            self.request, super().get_queryset(), "week_start"
+            self.request, qs, "week_start"
         )
 
 
@@ -525,6 +561,14 @@ class WeeklyPayrollDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = WeeklyPayrollSerializer
     permission_classes = [permissions.IsAuthenticated]
     queryset = WeeklyPayroll.objects.filter(is_deleted=False).select_related("employee")
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        # Hide draft payrolls from regular employees
+        user = self.request.user
+        if not user.is_staff and user.role not in ['admin', 'manager']:
+            qs = qs.exclude(status='draft')
+        return qs
 
     def get_object(self) -> WeeklyPayroll:
         try:
@@ -579,6 +623,13 @@ class WeeklyPayrollDownloadPDFView(APIView):
         
         try:
             payroll = WeeklyPayroll.objects.select_related("employee").get(pk=pk, is_deleted=False)
+            
+            # Hide draft payrolls from regular employees
+            user = request.user
+            if not user.is_staff and user.role not in ['admin', 'manager']:
+                if payroll.status == 'draft':
+                    raise NotFound(detail="Payroll record not found.")
+            
             return generate_payslip_pdf(payroll)
         except WeeklyPayroll.DoesNotExist:
             raise NotFound(detail="Payroll record not found.")
@@ -632,6 +683,8 @@ class WeeklyPayrollUpdateStatusView(APIView):
         # When approving payroll, finalize deductions (mark one-time deductions as applied)
         if old_status == 'draft' and new_status == 'approved':
             payroll.finalize_deductions()
+            # Add cash ban contribution
+            _add_cash_ban_contribution(payroll)
 
         serializer = WeeklyPayrollSerializer(payroll)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1072,6 +1125,8 @@ class WeeklyPayrollBulkUpdateStatusView(APIView):
             approved_payrolls = WeeklyPayroll.objects.filter(id__in=draft_payroll_ids)
             for payroll in approved_payrolls:
                 payroll.finalize_deductions()
+                # Add cash ban contribution
+                _add_cash_ban_contribution(payroll)
 
         return Response({
             'updated_count': updated_count,
