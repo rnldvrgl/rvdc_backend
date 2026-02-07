@@ -19,9 +19,11 @@ class DailyAttendance(models.Model):
     - Clock in/out managed by Admin and Manager only
     - Standard shift: 8:00 AM - 6:00 PM (10 hours with 2-hour break = 8 paid hours)
     - Break times: 12:00 PM and 3:00 PM (2 hours total, auto-deducted)
+    - Clock-out tolerance: Configurable grace period before shift end (default: 30 min)
     
     Attendance Types:
-    - FULL_DAY: ≥10 clock hours → 8 paid hours
+    - FULL_DAY: Clock in on time + stay until near shift end (with tolerance) + meet minimum hours → 8 paid hours
+      Example: 8:00 AM - 5:30 PM (9.5 hours) with 30-min tolerance = FULL_DAY
     - HALF_DAY: 4-5 clock hours OR ≥30 min late → 4 paid hours
     - PARTIAL: 5-10 clock hours → actual hours minus breaks
     - ABSENT: No clock-in/out
@@ -400,6 +402,7 @@ class DailyAttendance(models.Model):
         afternoon_start = time(13, 0)
         shift_end = time(18, 0)
         grace_minutes = 15
+        clock_out_tolerance_minutes = 30
 
         try:
             settings = PayrollSettings.objects.first()
@@ -407,6 +410,7 @@ class DailyAttendance(models.Model):
                 morning_start = settings.shift_start or morning_start
                 grace_minutes = settings.grace_minutes or grace_minutes
                 shift_end = settings.shift_end or shift_end
+                clock_out_tolerance_minutes = settings.clock_out_tolerance_minutes or clock_out_tolerance_minutes
         except Exception:
             pass
 
@@ -480,10 +484,19 @@ class DailyAttendance(models.Model):
             expected_end = shift_end_dt  # 6:00 PM
             break_hours = Decimal("1.00")
 
-        # FULL DAY (clocked in morning, stayed until 6 PM, worked ≥10 hours)
+        # Calculate effective shift end with tolerance (e.g., 5:30 PM when tolerance is 30 mins)
+        effective_shift_end_dt = shift_end_dt - timedelta(minutes=clock_out_tolerance_minutes)
+        
+        # Calculate minimum hours required for full day based on tolerance
+        # Standard: 10 hours (8:00 AM - 6:00 PM)
+        # With 30 min tolerance: 9.5 hours (8:00 AM - 5:30 PM)
+        min_full_day_hours = Decimal("10.00") - (Decimal(str(clock_out_tolerance_minutes)) / Decimal("60"))
+        
+        # FULL DAY (clocked in morning, stayed until near shift end with tolerance, worked minimum hours)
+        # Example: 8:00 AM - 5:30 PM (9.5 hours) qualifies as full day with 30 min tolerance
         if clock_in_local <= morning_start_dt + timedelta(minutes=grace_minutes) \
-        and clock_out_local >= shift_end_dt \
-        and total_hours >= Decimal("10.00"):
+        and clock_out_local >= effective_shift_end_dt \
+        and total_hours >= min_full_day_hours:
             self.attendance_type = "FULL_DAY"
             self.break_hours = Decimal("2.00")
             self.paid_hours = Decimal("8.00")

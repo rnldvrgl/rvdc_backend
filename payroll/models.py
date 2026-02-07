@@ -1667,6 +1667,11 @@ class PayrollSettings(models.Model):
         help_text="Threshold-only grace minutes for attendance classification.",
     )
 
+    clock_out_tolerance_minutes = models.PositiveIntegerField(
+        default=30,
+        help_text="Grace minutes BEFORE shift_end that still counts as full day (e.g., 30 = clocking out at 5:30 PM still counts as full day when shift ends at 6:00 PM).",
+    )
+
     auto_close_enabled = models.BooleanField(
         default=True,
         help_text="Auto-close sessions missing clock_out at shift_end and mark as auto_closed.",
