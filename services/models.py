@@ -1,4 +1,5 @@
 from clients.models import Client
+from decimal import Decimal, ROUND_HALF_UP
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
@@ -478,18 +479,20 @@ class ServiceAppliance(models.Model):
     def discounted_labor_fee(self):
         """Labor fee after item-level discount"""
         if self.labor_is_free:
-            return 0
+            return Decimal('0.00')
         
-        fee = self.labor_fee
+        fee = Decimal(str(self.labor_fee))
         
         # Apply fixed discount
-        fee = max(fee - self.labor_discount_amount, 0)
+        fee = max(fee - Decimal(str(self.labor_discount_amount)), Decimal('0'))
         
         # Apply percentage discount
         if self.labor_discount_percentage > 0:
-            fee = fee * (1 - (self.labor_discount_percentage / 100))
+            discount_decimal = Decimal(str(self.labor_discount_percentage)) / Decimal('100')
+            fee = fee * (Decimal('1') - discount_decimal)
         
-        return max(fee, 0)
+        # Round to 2 decimal places
+        return max(fee.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP), Decimal('0.00'))
 
     class Meta:
         ordering = ["appliance_type__name", "brand"]
@@ -571,26 +574,30 @@ class ApplianceItemUsed(BaseItemUsed):
     def discounted_price(self):
         """Calculate price per unit after discount"""
         if not self.item:
-            return 0
+            return Decimal('0.00')
         
-        base_price = self.item.retail_price
+        base_price = Decimal(str(self.item.retail_price))
         
         # Apply fixed discount first
-        price = max(base_price - self.discount_amount, 0)
+        price = max(base_price - Decimal(str(self.discount_amount)), Decimal('0'))
         
         # Then apply percentage discount
         if self.discount_percentage > 0:
-            price = price * (1 - (self.discount_percentage / 100))
+            discount_decimal = Decimal(str(self.discount_percentage)) / Decimal('100')
+            price = price * (Decimal('1') - discount_decimal)
         
-        return max(price, 0)  # Never go negative
+        # Round to 2 decimal places
+        return max(price.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP), Decimal('0.00'))
     
     @property
     def line_total(self):
         """Total for this line item after discounts"""
         if self.is_free:
-            return 0
-        charged_qty = self.quantity - self.free_quantity
-        return self.discounted_price * charged_qty
+            return Decimal('0.00')
+        charged_qty = Decimal(str(self.quantity - self.free_quantity))
+        result = self.discounted_price * charged_qty
+        # Round to 2 decimal places
+        return result.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
     # Link to an Expense created automatically when items are consumed from
     # another stall (main stall incurs an expense for parts sourced from

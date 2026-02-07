@@ -10,7 +10,7 @@ This module handles:
 """
 
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
 from django.utils import timezone
@@ -222,6 +222,11 @@ class RevenueCalculator:
                 sub_revenue += item_used.line_total
 
         total_revenue = main_revenue + sub_revenue
+        
+        # Round all revenue values to 2 decimal places to prevent validation errors
+        main_revenue = main_revenue.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        sub_revenue = sub_revenue.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        total_revenue = total_revenue.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
         if save:
             service.main_stall_revenue = main_revenue

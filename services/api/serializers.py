@@ -8,7 +8,7 @@ Features:
 - Promo support (free installation, copper tube promos)
 """
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from clients.models import Client
 from django.db import transaction
@@ -366,7 +366,8 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         for item_used in obj.items_used.all():
             # Use the line_total property which already accounts for discounts
             total += item_used.line_total
-        return total
+        # Round to 2 decimal places to prevent validation errors
+        return total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
     def create(self, validated_data):
         """Create appliance with items and apply promos."""
