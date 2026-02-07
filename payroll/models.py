@@ -1003,22 +1003,47 @@ class WeeklyPayroll(models.Model):
             logger.error(f"Error applying manual deductions: {e}")
 
         # Apply government benefits (SSS, PhilHealth, Pag-IBIG, BIR Tax)
-        # Only apply if employee has has_government_benefits flag set to True
+        # Only apply benefits where employee has the corresponding flag set to True
         try:
             from payroll.models import EmployeeBenefitOverride, GovernmentBenefit, TaxBracket
 
-            # Check if employee has government benefits enabled
-            if self.employee.has_government_benefits:
-                benefit_types = ['sss', 'philhealth', 'pagibig', 'bir_tax']
+            # Check individual government benefit flags per employee
+            benefit_flag_map = {
+                'sss': self.employee.has_sss,
+                'philhealth': self.employee.has_philhealth,
+                'pagibig': self.employee.has_pagibig,
+                'bir_tax': self.employee.has_bir_tax,
+            }
+            
+            benefit_types = ['sss', 'philhealth', 'pagibig', 'bir_tax']
                 
-                for benefit_type in benefit_types:
-                    employee_share = Decimal('0.00')
-                    source_type = None
-                    source_id = None
+            for benefit_type in benefit_types:
+                # Skip this benefit if employee doesn't have this specific benefit enabled
+                if not benefit_flag_map.get(benefit_type, False):
+                    continue
                     
-                    # Priority 1: Check for employee-specific override first (highest priority)
-                    override = EmployeeBenefitOverride.objects.filter(
-                        employee=self.employee,
+                employee_share = Decimal('0.00')
+                source_type = None
+                source_id = None
+                
+                # Priority 1: Check for employee-specific override first (highest priority)
+                override = EmployeeBenefitOverride.objects.filter(
+                    employee=self.employee,
+                    benefit_type=benefit_type,
+                    is_active=True,
+                    effective_start__lte=self.week_start,
+                ).filter(
+                    models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
+                ).first()
+                
+                if override:
+                    # Use override amount (weekly fixed)
+                    employee_share = override.employee_share_amount
+                    source_type = 'EmployeeBenefitOverride'
+                    source_id = override.id
+                else:
+                    # Priority 2: Check GovernmentBenefit configuration
+                    govt_benefit = GovernmentBenefit.objects.filter(
                         benefit_type=benefit_type,
                         is_active=True,
                         effective_start__lte=self.week_start,
@@ -1026,46 +1051,31 @@ class WeeklyPayroll(models.Model):
                         models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
                     ).first()
                     
-                    if override:
-                        # Use override amount (weekly fixed)
-                        employee_share = override.employee_share_amount
-                        source_type = 'EmployeeBenefitOverride'
-                        source_id = override.id
+                    if govt_benefit:
+                        # Use GovernmentBenefit's calculation method
+                        employee_share = govt_benefit.compute_employee_share(self.gross_pay)
+                        source_type = 'GovernmentBenefit'
+                        source_id = govt_benefit.id
                     else:
-                        # Priority 2: Check GovernmentBenefit configuration
-                        govt_benefit = GovernmentBenefit.objects.filter(
-                            benefit_type=benefit_type,
-                            is_active=True,
-                            effective_start__lte=self.week_start,
-                        ).filter(
-                            models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
-                        ).first()
-                        
-                        if govt_benefit:
-                            # Use GovernmentBenefit's calculation method
-                            employee_share = govt_benefit.compute_employee_share(self.gross_pay)
-                            source_type = 'GovernmentBenefit'
-                            source_id = govt_benefit.id
-                        else:
-                            # Priority 3: Fall back to TaxBracket (legacy support)
-                            employee_share = TaxBracket.compute_tax(
-                                gross_income=self.gross_pay,
-                                as_of_date=self.week_start,
-                                bracket_type=benefit_type
-                            )
-                            source_type = 'TaxBracket'
-                            # source_id is None for TaxBracket (multiple brackets may be used)
+                        # Priority 3: Fall back to TaxBracket (legacy support)
+                        employee_share = TaxBracket.compute_tax(
+                            gross_income=self.gross_pay,
+                            as_of_date=self.week_start,
+                            bracket_type=benefit_type
+                        )
+                        source_type = 'TaxBracket'
+                        # source_id is None for TaxBracket (multiple brackets may be used)
+                
+                # Add to deductions if amount is positive
+                if employee_share > 0:
+                    deductions_map[benefit_type] = self._q(employee_share)
                     
-                    # Add to deductions if amount is positive
-                    if employee_share > 0:
-                        deductions_map[benefit_type] = self._q(employee_share)
-                        
-                        category = 'tax' if benefit_type == 'bir_tax' else 'government'
-                        deduction_metadata_map[benefit_type] = {
-                            'source_type': source_type,
-                            'source_id': source_id,
-                            'category': category,
-                        }
+                    category = 'tax' if benefit_type == 'bir_tax' else 'government'
+                    deduction_metadata_map[benefit_type] = {
+                        'source_type': source_type,
+                        'source_id': source_id,
+                        'category': category,
+                    }
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)

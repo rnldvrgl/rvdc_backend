@@ -50,10 +50,25 @@ class CustomUser(AbstractUser):
         default=True,
         help_text="Include this employee in payroll generation"
     )
-    has_government_benefits = models.BooleanField(
+    
+    # Individual government benefit flags for selective application
+    has_sss = models.BooleanField(
         default=True,
-        help_text="Apply government benefits (SSS, PhilHealth, Pag-IBIG, Tax) to this employee"
+        help_text="Apply SSS (Social Security System) deductions"
     )
+    has_philhealth = models.BooleanField(
+        default=True,
+        help_text="Apply PhilHealth deductions"
+    )
+    has_pagibig = models.BooleanField(
+        default=True,
+        help_text="Apply Pag-IBIG (HDMF) deductions"
+    )
+    has_bir_tax = models.BooleanField(
+        default=True,
+        help_text="Apply BIR withholding tax deductions"
+    )
+    
     is_deleted = models.BooleanField(default=False)
 
     USERNAME_FIELD = "username"

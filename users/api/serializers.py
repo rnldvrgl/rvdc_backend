@@ -31,7 +31,10 @@ class EmployeesSerializer(serializers.ModelSerializer):
             "philhealth_number",
             "basic_salary",
             "include_in_payroll",
-            "has_government_benefits",
+            "has_sss",
+            "has_philhealth",
+            "has_pagibig",
+            "has_bir_tax",
         ]
         read_only_fields = ("id",)
     
@@ -122,7 +125,10 @@ class UserSerializer(serializers.ModelSerializer):
             "philhealth_number",
             "basic_salary",
             "include_in_payroll",
-            "has_government_benefits",
+            "has_sss",
+            "has_philhealth",
+            "has_pagibig",
+            "has_bir_tax",
         ]
         read_only_fields = ("id",)
 
