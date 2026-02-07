@@ -304,16 +304,23 @@ class DailyAttendance(models.Model):
         
         # Load settings
         morning_start = time(8, 0)
-        afternoon_start = time(13, 0)
+        shift_end = time(18, 0)
         grace_minutes = 15
         
         try:
             settings = PayrollSettings.objects.first()
             if settings:
                 morning_start = settings.shift_start or morning_start
+                shift_end = settings.shift_end or shift_end
                 grace_minutes = settings.grace_minutes or grace_minutes
         except Exception:
             pass
+        
+        # Calculate dynamic afternoon start (midpoint of shift)
+        morning_hour = morning_start.hour + morning_start.minute / 60
+        shift_end_hour = shift_end.hour + shift_end.minute / 60
+        afternoon_hour = (morning_hour + shift_end_hour) / 2
+        afternoon_start = time(int(afternoon_hour), int((afternoon_hour % 1) * 60))
         
         # Get timezone
         tz = timezone.get_current_timezone()
@@ -399,7 +406,6 @@ class DailyAttendance(models.Model):
 
         # Load settings
         morning_start = time(8, 0)
-        afternoon_start = time(13, 0)
         shift_end = time(18, 0)
         grace_minutes = 15
         clock_out_tolerance_minutes = 30
@@ -413,6 +419,16 @@ class DailyAttendance(models.Model):
                 clock_out_tolerance_minutes = settings.clock_out_tolerance_minutes or clock_out_tolerance_minutes
         except Exception:
             pass
+        
+        # Calculate dynamic half-day cutoff (midpoint of shift)
+        morning_hour = morning_start.hour + morning_start.minute / 60
+        shift_end_hour = shift_end.hour + shift_end.minute / 60
+        half_day_cutoff_hour = (morning_hour + shift_end_hour) / 2
+        afternoon_start = time(int(half_day_cutoff_hour), int((half_day_cutoff_hour % 1) * 60))
+        
+        # Calculate dynamic half-day paid hours
+        shift_duration = shift_end_hour - morning_hour
+        half_day_hours = Decimal(str(shift_duration / 2))
 
         # Get timezone
         tz = timezone.get_current_timezone()
@@ -476,13 +492,39 @@ class DailyAttendance(models.Model):
             self.paid_hours = total_hours
             return
 
-        # Determine which shift based on clock-in time
-        if clock_in_local < afternoon_start_dt:
-            expected_end = afternoon_start_dt  # 1:00 PM
-            break_hours = Decimal("1.00")
+        # Check for approved leave to determine expected shift
+        approved_leave = LeaveRequest.objects.filter(
+            employee=self.employee,
+            date=local_date,
+            status='APPROVED',
+        ).first()
+        
+        # Determine which shift based on approved leave or clock-in time
+        if approved_leave and approved_leave.is_half_day:
+            if approved_leave.shift_period == 'AM':
+                # On leave in morning, works afternoon (cutoff to shift_end)
+                expected_end = shift_end_dt
+                break_hours = Decimal("0.00")  # No lunch break for half day
+            elif approved_leave.shift_period == 'PM':
+                # On leave in afternoon, works morning (start to cutoff)
+                expected_end = afternoon_start_dt
+                break_hours = Decimal("0.00")  # No lunch break for half day
+            else:
+                # Shouldn't happen, but default to standard logic
+                if clock_in_local < afternoon_start_dt:
+                    expected_end = afternoon_start_dt
+                    break_hours = Decimal("1.00")
+                else:
+                    expected_end = shift_end_dt
+                    break_hours = Decimal("1.00")
         else:
-            expected_end = shift_end_dt  # 6:00 PM
-            break_hours = Decimal("1.00")
+            # No approved half-day leave, use clock-in time to determine shift
+            if clock_in_local < afternoon_start_dt:
+                expected_end = afternoon_start_dt  # Morning shift ends at cutoff
+                break_hours = Decimal("1.00")
+            else:
+                expected_end = shift_end_dt  # Afternoon shift
+                break_hours = Decimal("1.00")
 
         # Calculate effective shift end with tolerance (e.g., 5:30 PM when tolerance is 30 mins)
         effective_shift_end_dt = shift_end_dt - timedelta(minutes=clock_out_tolerance_minutes)
@@ -502,11 +544,11 @@ class DailyAttendance(models.Model):
             self.paid_hours = Decimal("8.00")
             return
 
-        # HALF DAY (worked ≥4h and stayed until expected shift end)
-        if total_hours >= Decimal("4.00") and clock_out_local >= expected_end:
+        # HALF DAY (worked ≥ half_day_hours and stayed until expected shift end)
+        if total_hours >= half_day_hours and clock_out_local >= expected_end:
             self.attendance_type = "HALF_DAY"
             self.break_hours = break_hours
-            self.paid_hours = Decimal("4.00")
+            self.paid_hours = half_day_hours
             return
 
         # Fallback PARTIAL
