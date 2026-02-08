@@ -1693,6 +1693,11 @@ class PayrollSettings(models.Model):
         help_text="Threshold-only grace minutes for attendance classification.",
     )
 
+    clock_in_allowance_minutes = models.PositiveIntegerField(
+        default=60,
+        help_text="Minutes BEFORE shift_start employees can clock in (e.g., 60 = can clock in at 7:00 AM for 8:00 AM shift). Paid hours count from shift_start, not early clock-in.",
+    )
+
     clock_out_tolerance_minutes = models.PositiveIntegerField(
         default=30,
         help_text="Grace minutes BEFORE shift_end that still counts as full day (e.g., 30 = clocking out at 5:30 PM still counts as full day when shift ends at 6:00 PM).",

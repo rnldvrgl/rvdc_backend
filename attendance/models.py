@@ -20,6 +20,7 @@ class DailyAttendance(models.Model):
     - Standard shift: 8:00 AM - 6:00 PM (10 hours with 2-hour break = 8 paid hours)
     - Break times: After every 4 work hours (e.g., 12:00-1:00 PM, 5:00-6:00 PM for 8-6 shift)
     - Post-lunch grace: Clock out between 1:00-1:45 PM counts as 4 paid hours (half-day)
+    - Clock-in allowance: Can clock in early (default: 60 min), but paid hours count from shift start
     - Clock-out tolerance: Configurable grace period before shift end (default: 30 min)
     
     Attendance Types:
@@ -410,6 +411,7 @@ class DailyAttendance(models.Model):
         morning_start = time(8, 0)
         shift_end = time(18, 0)
         grace_minutes = 15
+        clock_in_allowance_minutes = 60
         clock_out_tolerance_minutes = 30
 
         try:
@@ -417,6 +419,7 @@ class DailyAttendance(models.Model):
             if settings:
                 morning_start = settings.shift_start or morning_start
                 grace_minutes = settings.grace_minutes or grace_minutes
+                clock_in_allowance_minutes = settings.clock_in_allowance_minutes or clock_in_allowance_minutes
                 shift_end = settings.shift_end or shift_end
                 clock_out_tolerance_minutes = settings.clock_out_tolerance_minutes or clock_out_tolerance_minutes
         except Exception:
@@ -477,11 +480,21 @@ class DailyAttendance(models.Model):
             self.clock_out = clock_out_local
             self.auto_closed = True
 
-        # Calculate hours
+        # Calculate hours for paid time (respect early clock-in allowance)
+        # If employee clocked in before shift_start, count paid hours from shift_start
+        # Example: Clock in 7am (allowed), but shift starts 8am → count from 8am
+        paid_clock_in = max(clock_in_local, morning_start_dt) if clock_in_local < morning_start_dt else clock_in_local
+        
+        # Total hours = actual clock duration (for display/reference)
         delta = clock_out_local - clock_in_local
         total_hours = Decimal(delta.total_seconds()) / Decimal(3600)
         total_hours = self._round(total_hours)
         self.total_hours = total_hours
+        
+        # Paid hours calculation uses the capped clock-in time
+        paid_delta = clock_out_local - paid_clock_in
+        paid_total_hours = Decimal(paid_delta.total_seconds()) / Decimal(3600)
+        paid_total_hours = self._round(paid_total_hours)
 
         # Don't reset attendance_type if already INVALID from late check
         if self.attendance_type != "INVALID":
@@ -494,18 +507,18 @@ class DailyAttendance(models.Model):
             return
         
         # INVALID (<1 hour worked) - Mark as REJECTED
-        if total_hours < Decimal("1.00"):
+        if paid_total_hours < Decimal("1.00"):
             self.attendance_type = "INVALID"
             self.status = 'REJECTED'
             self.paid_hours = Decimal("0.00")
             self.break_hours = Decimal("0.00")
-            self.notes = f"{self.notes}\nRejected: Less than 1 hour worked (total: {total_hours} hours)".strip()
+            self.notes = f"{self.notes}\nRejected: Less than 1 hour worked (paid: {paid_total_hours} hours)".strip()
             return
 
         # PARTIAL (1h - <4h worked)
-        if total_hours < Decimal("4.00"):
+        if paid_total_hours < Decimal("4.00"):
             self.attendance_type = "PARTIAL"
-            self.paid_hours = total_hours
+            self.paid_hours = paid_total_hours
             return
 
         # Check for approved leave to determine expected shift
@@ -580,7 +593,7 @@ class DailyAttendance(models.Model):
         # Example: 8:00 AM - 5:30 PM (9.5 hours) qualifies as full day with 30 min tolerance
         if clock_in_local <= morning_start_dt + timedelta(minutes=grace_minutes) \
         and clock_out_local >= effective_shift_end_dt \
-        and total_hours >= min_full_day_hours:
+        and paid_total_hours >= min_full_day_hours:
             self.attendance_type = "FULL_DAY"
             self.break_hours = Decimal("2.00")
             self.paid_hours = Decimal("8.00")
@@ -593,7 +606,7 @@ class DailyAttendance(models.Model):
         break_end_time = expected_end + timedelta(hours=1)
         if clock_in_local < expected_end \
         and break_end_time <= clock_out_local <= grace_end \
-        and total_hours >= min_half_day_clock_hours:
+        and paid_total_hours >= min_half_day_clock_hours:
             self.attendance_type = "HALF_DAY"
             self.break_hours = break_hours
             self.paid_hours = half_day_paid_hours
@@ -601,7 +614,7 @@ class DailyAttendance(models.Model):
 
         # HALF DAY - Standard Rule
         # Worked ≥ 4 hours and stayed until expected shift end (or within grace)
-        if total_hours >= min_half_day_clock_hours and clock_out_local >= expected_end:
+        if paid_total_hours >= min_half_day_clock_hours and clock_out_local >= expected_end:
             self.attendance_type = "HALF_DAY"
             self.break_hours = break_hours
             self.paid_hours = half_day_paid_hours
@@ -609,7 +622,7 @@ class DailyAttendance(models.Model):
 
         # Fallback PARTIAL
         self.attendance_type = "PARTIAL"
-        self.paid_hours = total_hours
+        self.paid_hours = paid_total_hours
 
 class LeaveBalance(models.Model):
     """
