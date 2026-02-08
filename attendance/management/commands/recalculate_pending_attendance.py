@@ -7,9 +7,10 @@ Usage:
 This command recalculates paid hours for all pending attendance records
 to ensure they use the latest business logic (e.g., half-day = 4 hours).
 """
+import traceback
 from decimal import Decimal
 from django.core.management.base import BaseCommand
-from django.db import transaction
+from django.db import transaction, connection
 from attendance.models import DailyAttendance
 
 
@@ -27,10 +28,16 @@ class Command(BaseCommand):
             action='store_true',
             help='Recalculate all attendance records (not just pending)',
         )
+        parser.add_argument(
+            '--verbose',
+            action='store_true',
+            help='Show detailed error information',
+        )
 
     def handle(self, *args, **options):
         dry_run = options['dry_run']
         recalculate_all = options['all']
+        verbose = options.get('verbose', False)
 
         if dry_run:
             self.stdout.write(self.style.WARNING('DRY RUN MODE - No changes will be saved'))
@@ -62,6 +69,9 @@ class Command(BaseCommand):
         partial_fixed = 0
         error_count = 0
 
+        # Ensure we're in autocommit mode
+        connection.set_autocommit(True)
+
         for attendance in qs:
             # Store identifying info first (in case of errors)
             attendance_id = attendance.id
@@ -71,12 +81,13 @@ class Command(BaseCommand):
                 employee_name = f"Employee ID {attendance.employee_id}"
             date_str = str(attendance.date)
             
+            # Store old values before transaction
+            old_paid_hours = attendance.paid_hours
+            old_type = attendance.attendance_type
+            old_break_hours = attendance.break_hours
+            
             try:
-                # Store old values before transaction
-                old_paid_hours = attendance.paid_hours
-                old_type = attendance.attendance_type
-                old_break_hours = attendance.break_hours
-                
+                # Use atomic to create a savepoint that can be rolled back independently
                 with transaction.atomic():
                     # Reload object inside transaction with all related data
                     fresh_attendance = DailyAttendance.objects.select_related('employee').get(id=attendance_id)
@@ -114,10 +125,15 @@ class Command(BaseCommand):
                             )
             except Exception as e:
                 error_count += 1
-                self.stdout.write(
-                    self.style.ERROR(f'  ERROR [{employee_name}] {date_str}: {str(e)}')
-                )
-                continue
+                # Force rollback and close connection to reset state
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                error_msg = f'  ERROR [{employee_name}] {date_str}: {str(e)}'
+                self.stdout.write(self.style.ERROR(error_msg))
+                if verbose:
+                    self.stdout.write(self.style.ERROR(traceback.format_exc()))
         
         if dry_run:
             self.stdout.write(self.style.WARNING('\nDRY RUN - No changes were saved'))

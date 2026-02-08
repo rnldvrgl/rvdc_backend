@@ -498,12 +498,6 @@ class DailyAttendance(models.Model):
         paid_total_hours = Decimal(paid_delta.total_seconds()) / Decimal(3600)
         paid_total_hours = self._round(paid_total_hours)
 
-        # Don't reset attendance_type if already INVALID from late check
-        if self.attendance_type != "INVALID":
-            self.attendance_type = "INVALID"
-            self.break_hours = Decimal("0.00")
-            self.paid_hours = Decimal("0.00")
-
         # If already marked INVALID from lateness check, don't continue
         if self.status == 'REJECTED':
             return
