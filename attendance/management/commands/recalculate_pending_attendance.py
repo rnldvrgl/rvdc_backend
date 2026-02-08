@@ -41,7 +41,7 @@ class Command(BaseCommand):
                 clock_in__isnull=False,
                 clock_out__isnull=False,
                 attendance_type__in=['FULL_DAY', 'HALF_DAY', 'PARTIAL'],
-            ).exclude(is_deleted=True)
+            ).exclude(is_deleted=True).select_related('employee')
             self.stdout.write(f'Found {qs.count()} total attendance records to recalculate')
         else:
             qs = DailyAttendance.objects.filter(
@@ -49,7 +49,7 @@ class Command(BaseCommand):
                 clock_in__isnull=False,
                 clock_out__isnull=False,
                 attendance_type__in=['FULL_DAY', 'HALF_DAY', 'PARTIAL'],
-            ).exclude(is_deleted=True)
+            ).exclude(is_deleted=True).select_related('employee')
             self.stdout.write(f'Found {qs.count()} pending attendance records to recalculate')
 
         if not qs.exists():
@@ -60,49 +60,55 @@ class Command(BaseCommand):
         half_day_fixed = 0
         full_day_fixed = 0
         partial_fixed = 0
+        error_count = 0
 
-        with transaction.atomic():
-            for attendance in qs:
-                old_paid_hours = attendance.paid_hours
-                old_type = attendance.attendance_type
-                old_break_hours = attendance.break_hours
+        for attendance in qs:
+            try:
+                with transaction.atomic():
+                    old_paid_hours = attendance.paid_hours
+                    old_type = attendance.attendance_type
+                    old_break_hours = attendance.break_hours
 
-                # Recalculate metrics
-                attendance.compute_attendance_metrics()
+                    # Recalculate metrics
+                    attendance.compute_attendance_metrics()
 
-                # Check if anything changed
-                if (old_paid_hours != attendance.paid_hours or
-                    old_type != attendance.attendance_type or
-                    old_break_hours != attendance.break_hours):
-                    
-                    updated_count += 1
-                    
-                    if attendance.attendance_type == 'HALF_DAY' and old_paid_hours != Decimal('4.00'):
-                        half_day_fixed += 1
-                    elif attendance.attendance_type == 'FULL_DAY' and old_paid_hours != Decimal('8.00'):
-                        full_day_fixed += 1
-                    elif attendance.attendance_type == 'PARTIAL':
-                        partial_fixed += 1
+                    # Check if anything changed
+                    if (old_paid_hours != attendance.paid_hours or
+                        old_type != attendance.attendance_type or
+                        old_break_hours != attendance.break_hours):
+                        
+                        updated_count += 1
+                        
+                        if attendance.attendance_type == 'HALF_DAY' and old_paid_hours != Decimal('4.00'):
+                            half_day_fixed += 1
+                        elif attendance.attendance_type == 'FULL_DAY' and old_paid_hours != Decimal('8.00'):
+                            full_day_fixed += 1
+                        elif attendance.attendance_type == 'PARTIAL':
+                            partial_fixed += 1
 
-                    self.stdout.write(
-                        f'  [{attendance.employee.get_full_name()}] {attendance.date}: '
-                        f'{old_type} ({old_paid_hours}h paid, {old_break_hours}h break) → '
-                        f'{attendance.attendance_type} ({attendance.paid_hours}h paid, {attendance.break_hours}h break)'
-                    )
-
-                    if not dry_run:
-                        # Save without triggering save() method to avoid recalculating late penalties
-                        DailyAttendance.objects.filter(id=attendance.id).update(
-                            attendance_type=attendance.attendance_type,
-                            paid_hours=attendance.paid_hours,
-                            break_hours=attendance.break_hours,
-                            total_hours=attendance.total_hours,
+                        self.stdout.write(
+                            f'  [{attendance.employee.get_full_name()}] {attendance.date}: '
+                            f'{old_type} ({old_paid_hours}h paid, {old_break_hours}h break) → '
+                            f'{attendance.attendance_type} ({attendance.paid_hours}h paid, {attendance.break_hours}h break)'
                         )
 
-            if dry_run:
-                self.stdout.write(self.style.WARNING('DRY RUN - No changes were saved'))
-            else:
-                self.stdout.write(self.style.SUCCESS(f'\nSuccessfully updated {updated_count} records'))
+                        if not dry_run:
+                            # Save without triggering save() method to avoid recalculating late penalties
+                            DailyAttendance.objects.filter(id=attendance.id).update(
+                                attendance_type=attendance.attendance_type,
+                                paid_hours=attendance.paid_hours,
+                                break_hours=attendance.break_hours,
+                                total_hours=attendance.total_hours,
+                            )
+            except Exception as e:
+                error_count += 1
+                self.stdout.write(
+                    self.style.ERROR(
+        
+        if dry_run:
+            self.stdout.write(self.style.WARNING('\nDRY RUN - No changes were saved'))
+        else:
+            self.stdout.write(self.style.SUCCESS(f'\nSuccessfully updated {updated_count} records'))
 
         # Summary
         self.stdout.write('\n' + '='*60)
@@ -110,6 +116,13 @@ class Command(BaseCommand):
         self.stdout.write(f'  Total records processed: {qs.count()}')
         self.stdout.write(f'  Records updated: {updated_count}')
         if half_day_fixed:
+            self.stdout.write(f'  Half-day records fixed: {half_day_fixed}')
+        if full_day_fixed:
+            self.stdout.write(f'  Full-day records fixed: {full_day_fixed}')
+        if partial_fixed:
+            self.stdout.write(f'  Partial records fixed: {partial_fixed}')
+        if error_count:
+            self.stdout.write(self.style.ERROR(f'  Errors encountered: {error_count}')
             self.stdout.write(f'  Half-day records fixed: {half_day_fixed}')
         if full_day_fixed:
             self.stdout.write(f'  Full-day records fixed: {full_day_fixed}')
