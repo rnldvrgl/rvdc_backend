@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.contrib import messages
+from django.db import transaction
 from django.utils.html import format_html
 from django.utils import timezone
 from .models import DailyAttendance, LeaveBalance, LeaveRequest, Offense, OvertimeRequest
@@ -199,6 +201,24 @@ class DailyAttendanceAdmin(admin.ModelAdmin):
         return '-'
     awol_flag_display.short_description = 'AWOL Status'
     
+    def save_model(self, request, obj, form, change):
+        """
+        Override save_model to handle transaction errors gracefully.
+        Wraps the save operation in an atomic transaction with proper error handling.
+        """
+        try:
+            with transaction.atomic():
+                super().save_model(request, obj, form, change)
+        except Exception as e:
+            # Log the error and display a user-friendly message
+            messages.error(
+                request,
+                f"Error saving attendance record: {str(e)}. "
+                f"Please check the data and try again."
+            )
+            # Re-raise to prevent silent failures
+            raise
+    
     actions = [
         'approve_attendance',
         'reject_attendance',
@@ -208,22 +228,48 @@ class DailyAttendanceAdmin(admin.ModelAdmin):
     
     def approve_attendance(self, request, queryset):
         count = 0
+        errors = []
+        
         for attendance in queryset:
             if attendance.status == 'PENDING':
-                attendance.approve(request.user)
-                count += 1
+                try:
+                    with transaction.atomic():
+                        attendance.approve(request.user)
+                        count += 1
+                except Exception as e:
+                    errors.append(f"{attendance.employee.get_full_name()} ({attendance.date}): {str(e)}")
         
-        self.message_user(request, f'{count} attendance record(s) approved.')
+        if count:
+            self.message_user(request, f'{count} attendance record(s) approved.')
+        if errors:
+            self.message_user(
+                request,
+                'Errors occurred: ' + '; '.join(errors),
+                level=messages.ERROR
+            )
     approve_attendance.short_description = 'Approve selected attendance'
     
     def reject_attendance(self, request, queryset):
         count = 0
+        errors = []
+        
         for attendance in queryset:
             if attendance.status == 'PENDING':
-                attendance.reject(request.user, reason='Rejected via admin')
-                count += 1
+                try:
+                    with transaction.atomic():
+                        attendance.reject(request.user, reason='Rejected via admin')
+                        count += 1
+                except Exception as e:
+                    errors.append(f"{attendance.employee.get_full_name()} ({attendance.date}): {str(e)}")
         
-        self.message_user(request, f'{count} attendance record(s) rejected.')
+        if count:
+            self.message_user(request, f'{count} attendance record(s) rejected.')
+        if errors:
+            self.message_user(
+                request,
+                'Errors occurred: ' + '; '.join(errors),
+                level=messages.ERROR
+            )
     reject_attendance.short_description = 'Reject selected attendance'
     
     def reset_auto_close_warnings(self, request, queryset):

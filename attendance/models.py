@@ -2,7 +2,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from rest_framework import  status
@@ -201,33 +201,39 @@ class DailyAttendance(models.Model):
         Marks the attendance as ABSENT if no approved leave and no clock in/out.
         Also updates consecutive absences and AWOL status.
         """
-        # Check for approved leave
-        leave_exists = LeaveRequest.objects.filter(
-            employee=self.employee,
-            status='APPROVED',
-            date=self.date,
-        ).exists()
-
-        if leave_exists:
-            self.attendance_type = 'LEAVE'
-            self.consecutive_absences = 0
-            self.is_awol = False
-        else:
-            self.attendance_type = 'ABSENT'
-            # Get previous day's attendance
-            yesterday = self.date - timedelta(days=1)
-            prev_attendance = DailyAttendance.objects.filter(
+        try:
+            # Check for approved leave
+            leave_exists = LeaveRequest.objects.filter(
                 employee=self.employee,
-                date=yesterday
-            ).first()
-            if prev_attendance and prev_attendance.attendance_type == 'ABSENT':
-                self.consecutive_absences = prev_attendance.consecutive_absences + 1
+                status='APPROVED',
+                date=self.date,
+            ).exists()
+
+            if leave_exists:
+                self.attendance_type = 'LEAVE'
+                self.consecutive_absences = 0
+                self.is_awol = False
             else:
-                self.consecutive_absences = 1
-            
-            # Flag AWOL after 3 consecutive absences
-            if self.consecutive_absences >= 3:
-                self.is_awol = True
+                self.attendance_type = 'ABSENT'
+                # Get previous day's attendance
+                yesterday = self.date - timedelta(days=1)
+                prev_attendance = DailyAttendance.objects.filter(
+                    employee=self.employee,
+                    date=yesterday
+                ).first()
+                if prev_attendance and prev_attendance.attendance_type == 'ABSENT':
+                    self.consecutive_absences = prev_attendance.consecutive_absences + 1
+                else:
+                    self.consecutive_absences = 1
+                
+                # Flag AWOL after 3 consecutive absences
+                if self.consecutive_absences >= 3:
+                    self.is_awol = True
+        except Exception as e:
+            # If any database query fails, default to basic ABSENT marking
+            self.attendance_type = 'ABSENT'
+            self.consecutive_absences = 1
+            self.is_awol = False
         
         self.total_hours = Decimal('0.00')
         self.paid_hours = Decimal('0.00')
@@ -238,19 +244,21 @@ class DailyAttendance(models.Model):
 
     def approve(self, approved_by_user):
         """Approve the attendance record."""
-        self.status = 'APPROVED'
-        self.approved_by = approved_by_user
-        self.approved_at = timezone.now()
-        self.save()
+        with transaction.atomic():
+            self.status = 'APPROVED'
+            self.approved_by = approved_by_user
+            self.approved_at = timezone.now()
+            self.save()
     
     def reject(self, rejected_by_user, reason=''):
         """Reject the attendance record."""
-        self.status = 'REJECTED'
-        self.approved_by = rejected_by_user
-        self.approved_at = timezone.now()
-        if reason:
-            self.notes = f"{self.notes}\nRejected: {reason}".strip()
-        self.save()
+        with transaction.atomic():
+            self.status = 'REJECTED'
+            self.approved_by = rejected_by_user
+            self.approved_at = timezone.now()
+            if reason:
+                self.notes = f"{self.notes}\nRejected: {reason}".strip()
+            self.save()
     
     @staticmethod
     def _round(value: Decimal, places=2) -> Decimal:
@@ -276,22 +284,29 @@ class DailyAttendance(models.Model):
         IMPORTANT: Late penalty is calculated IMMEDIATELY when clock_in is recorded,
         NOT when clock_out happens.
         """
-        # Calculate uniform penalties
-        self.calculate_uniform_penalty()
-        
-        # Auto-mark as ABSENT if no clock in/out and not LEAVE
-        if not self.clock_in and not self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
-            self.mark_absent()
-        else:
-            # Calculate LATENESS immediately when clock_in exists (even without clock_out)
-            if self.clock_in and self.attendance_type not in ['LEAVE', 'ABSENT']:
-                self.calculate_lateness()
-            
-            # Only compute full attendance metrics when BOTH clock_in and clock_out exist
-            if self.clock_in and self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
-                self.compute_attendance_metrics()
-        
-        super().save(*args, **kwargs)
+        try:
+            with transaction.atomic():
+                # Calculate uniform penalties
+                self.calculate_uniform_penalty()
+                
+                # Auto-mark as ABSENT if no clock in/out and not LEAVE
+                if not self.clock_in and not self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
+                    self.mark_absent()
+                else:
+                    # Calculate LATENESS immediately when clock_in exists (even without clock_out)
+                    if self.clock_in and self.attendance_type not in ['LEAVE', 'ABSENT']:
+                        self.calculate_lateness()
+                    
+                    # Only compute full attendance metrics when BOTH clock_in and clock_out exist
+                    if self.clock_in and self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
+                        self.compute_attendance_metrics()
+                
+                super().save(*args, **kwargs)
+        except Exception as e:
+            # If any error occurs, ensure we still save with minimal data
+            # This prevents transaction abort errors
+            super().save(*args, **kwargs)
+            raise
 
     def calculate_lateness(self):
         """
@@ -312,12 +327,14 @@ class DailyAttendance(models.Model):
         settings = None
         
         try:
-            settings = PayrollSettings.objects.first()
-            if settings:
-                morning_start = settings.shift_start or morning_start
-                shift_end = settings.shift_end or shift_end
-                grace_minutes = settings.grace_minutes or grace_minutes
+            with transaction.atomic():
+                settings = PayrollSettings.objects.first()
+                if settings:
+                    morning_start = settings.shift_start or morning_start
+                    shift_end = settings.shift_end or shift_end
+                    grace_minutes = settings.grace_minutes or grace_minutes
         except Exception:
+            # Use default settings if query fails
             pass
         
         # Calculate dynamic afternoon start (midpoint of shift)
@@ -417,14 +434,16 @@ class DailyAttendance(models.Model):
         settings = None
 
         try:
-            settings = PayrollSettings.objects.first()
-            if settings:
-                morning_start = settings.shift_start or morning_start
-                grace_minutes = settings.grace_minutes or grace_minutes
-                clock_in_allowance_minutes = settings.clock_in_allowance_minutes or clock_in_allowance_minutes
-                shift_end = settings.shift_end or shift_end
-                clock_out_tolerance_minutes = settings.clock_out_tolerance_minutes or clock_out_tolerance_minutes
+            with transaction.atomic():
+                settings = PayrollSettings.objects.first()
+                if settings:
+                    morning_start = settings.shift_start or morning_start
+                    grace_minutes = settings.grace_minutes or grace_minutes
+                    clock_in_allowance_minutes = settings.clock_in_allowance_minutes or clock_in_allowance_minutes
+                    shift_end = settings.shift_end or shift_end
+                    clock_out_tolerance_minutes = settings.clock_out_tolerance_minutes or clock_out_tolerance_minutes
         except Exception:
+            # Use default settings if query fails
             pass
         
         # Calculate dynamic half-day cutoff (midpoint of shift)
@@ -518,11 +537,17 @@ class DailyAttendance(models.Model):
             return
 
         # Check for approved leave to determine expected shift
-        approved_leave = LeaveRequest.objects.filter(
-            employee=self.employee,
-            date=local_date,
-            status='APPROVED',
-        ).first()
+        approved_leave = None
+        try:
+            with transaction.atomic():
+                approved_leave = LeaveRequest.objects.filter(
+                    employee=self.employee,
+                    date=local_date,
+                    status='APPROVED',
+                ).first()
+        except Exception:
+            # If query fails, continue without leave data
+            pass
         
         # Determine which shift based on approved leave or clock-in time
         if approved_leave and approved_leave.is_half_day:
