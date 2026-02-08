@@ -196,6 +196,78 @@ class DailyAttendance(models.Model):
                     'LEAVE and ABSENT attendance types should not have clock-in/out times.'
                 )
 
+    def is_unexcused_absence(self):
+        """
+        Determines if this attendance record counts as an unexcused absence for AWOL tracking.
+        
+        Returns:
+            True if this should count toward consecutive absences (no appropriate leave coverage)
+            False if this is excused (proper leave coverage) or worked full day
+        
+        Rules:
+        - ABSENT with no leave → Unexcused ✓
+        - ABSENT with full-day leave → Excused (becomes LEAVE type)
+        - LEAVE type → Excused
+        - FULL_DAY → Excused (worked full day)
+        - HALF_DAY with matching half-day leave → Excused
+        - HALF_DAY without leave or mismatched leave → Unexcused ✓
+        - PARTIAL → Unexcused ✓
+        - INVALID/REJECTED → Unexcused ✓
+        """
+        # Full day work or full day leave with approval → Excused
+        if self.attendance_type in ['FULL_DAY', 'LEAVE']:
+            return False
+        
+        # Full absence without leave → Unexcused
+        if self.attendance_type == 'ABSENT':
+            return True
+        
+        # Invalid attendance → Unexcused
+        if self.attendance_type == 'INVALID' or self.status == 'REJECTED':
+            return True
+        
+        # HALF_DAY or PARTIAL - Check if they have appropriate leave coverage
+        if self.attendance_type in ['HALF_DAY', 'PARTIAL']:
+            try:
+                # Check for approved half-day leave
+                half_day_leave = LeaveRequest.objects.filter(
+                    employee=self.employee,
+                    date=self.date,
+                    status='APPROVED',
+                    is_half_day=True,
+                ).first()
+                
+                if half_day_leave:
+                    # They have half-day leave - check if it covers the non-worked period
+                    # If clock_in exists, determine which shift they worked
+                    if self.clock_in:
+                        tz = timezone.get_current_timezone()
+                        clock_in_local = self.clock_in
+                        if not timezone.is_aware(clock_in_local):
+                            clock_in_local = timezone.make_aware(clock_in_local, tz)
+                        
+                        # Determine worked shift based on clock-in time
+                        # Morning shift typically before 1 PM
+                        worked_morning = clock_in_local.astimezone(tz).hour < 13
+                        
+                        # Check if leave covers the non-worked period
+                        if worked_morning and half_day_leave.shift_period == 'PM':
+                            # Worked morning, has PM leave → Properly covered
+                            return False
+                        elif not worked_morning and half_day_leave.shift_period == 'AM':
+                            # Worked afternoon, has AM leave → Properly covered
+                            return False
+                
+                # No matching leave coverage → Unexcused
+                return True
+                
+            except Exception:
+                # If query fails, assume unexcused to be safe
+                return True
+        
+        # Default to unexcused for safety
+        return True
+
     def mark_absent(self):
         """
         Marks the attendance as ABSENT if no approved leave and no clock in/out.
@@ -221,7 +293,9 @@ class DailyAttendance(models.Model):
                     employee=self.employee,
                     date=yesterday
                 ).first()
-                if prev_attendance and prev_attendance.attendance_type == 'ABSENT':
+                
+                # Check if previous day was an unexcused absence
+                if prev_attendance and prev_attendance.is_unexcused_absence():
                     self.consecutive_absences = prev_attendance.consecutive_absences + 1
                 else:
                     self.consecutive_absences = 1
@@ -519,6 +593,7 @@ class DailyAttendance(models.Model):
 
         # If already marked INVALID from lateness check, don't continue
         if self.status == 'REJECTED':
+            self._update_awol_tracking()
             return
         
         # INVALID (<1 hour worked) - Mark as REJECTED
@@ -528,12 +603,14 @@ class DailyAttendance(models.Model):
             self.paid_hours = Decimal("0.00")
             self.break_hours = Decimal("0.00")
             self.notes = f"{self.notes}\nRejected: Less than 1 hour worked (paid: {paid_total_hours} hours)".strip()
+            self._update_awol_tracking()
             return
 
         # PARTIAL (1h - <4h worked)
         if paid_total_hours < Decimal("4.00"):
             self.attendance_type = "PARTIAL"
             self.paid_hours = paid_total_hours
+            self._update_awol_tracking()
             return
 
         # Check for approved leave to determine expected shift
@@ -618,6 +695,7 @@ class DailyAttendance(models.Model):
             self.attendance_type = "FULL_DAY"
             self.break_hours = Decimal("2.00")
             self.paid_hours = Decimal("8.00")
+            self._update_awol_tracking()
             return
 
         # HALF DAY - Grace Period Rule
@@ -631,6 +709,7 @@ class DailyAttendance(models.Model):
             self.attendance_type = "HALF_DAY"
             self.break_hours = break_hours
             self.paid_hours = half_day_paid_hours
+            self._update_awol_tracking()
             return
 
         # HALF DAY - Standard Rule
@@ -639,11 +718,51 @@ class DailyAttendance(models.Model):
             self.attendance_type = "HALF_DAY"
             self.break_hours = break_hours
             self.paid_hours = half_day_paid_hours
+            self._update_awol_tracking()
             return
 
         # Fallback PARTIAL
         self.attendance_type = "PARTIAL"
         self.paid_hours = paid_total_hours
+        
+        # Update consecutive absences and AWOL status after attendance type is determined
+        self._update_awol_tracking()
+    
+    def _update_awol_tracking(self):
+        """
+        Updates consecutive absences and AWOL status based on previous day's attendance.
+        Should be called after attendance_type is determined in compute_attendance_metrics().
+        """
+        try:
+            # Get previous day's attendance
+            yesterday = self.date - timedelta(days=1)
+            prev_attendance = DailyAttendance.objects.filter(
+                employee=self.employee,
+                date=yesterday
+            ).first()
+            
+            # Check if current attendance is unexcused
+            if self.is_unexcused_absence():
+                # Current day is unexcused absence
+                if prev_attendance and prev_attendance.is_unexcused_absence():
+                    # Previous day was also unexcused → increment counter
+                    self.consecutive_absences = prev_attendance.consecutive_absences + 1
+                else:
+                    # Previous day was OK → start new counter
+                    self.consecutive_absences = 1
+                
+                # Flag AWOL after 3 consecutive unexcused absences
+                if self.consecutive_absences >= 3:
+                    self.is_awol = True
+                else:
+                    self.is_awol = False
+            else:
+                # Current day is excused or full work → reset counter
+                self.consecutive_absences = 0
+                self.is_awol = False
+        except Exception:
+            # If query fails, don't update AWOL tracking
+            pass
 
 class LeaveBalance(models.Model):
     """
