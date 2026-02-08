@@ -18,14 +18,16 @@ class DailyAttendance(models.Model):
     - Default status is PENDING; only APPROVED attendance counts for payroll
     - Clock in/out managed by Admin and Manager only
     - Standard shift: 8:00 AM - 6:00 PM (10 hours with 2-hour break = 8 paid hours)
-    - Break times: 12:00 PM and 3:00 PM (2 hours total, auto-deducted)
+    - Break times: After every 4 work hours (e.g., 12:00-1:00 PM, 5:00-6:00 PM for 8-6 shift)
+    - Post-lunch grace: Clock out between 1:00-1:45 PM counts as 4 paid hours (half-day)
     - Clock-out tolerance: Configurable grace period before shift end (default: 30 min)
     
     Attendance Types:
     - FULL_DAY: Clock in on time + stay until near shift end (with tolerance) + meet minimum hours → 8 paid hours
       Example: 8:00 AM - 5:30 PM (9.5 hours) with 30-min tolerance = FULL_DAY
-    - HALF_DAY: 4-5 clock hours OR ≥30 min late → 4 paid hours
-    - PARTIAL: 5-10 clock hours → actual hours minus breaks
+    - HALF_DAY: 4+ clock hours OR ≥30 min late → 4 paid hours
+      Post-lunch grace: 8:00 AM - 1:00-1:45 PM = 4 paid hours (1 hour lunch break deducted)
+    - PARTIAL: 1-4 clock hours → actual hours worked
     - ABSENT: No clock-in/out
     - LEAVE: Approved leave (unpaid)
     
@@ -424,11 +426,20 @@ class DailyAttendance(models.Model):
         morning_hour = morning_start.hour + morning_start.minute / 60
         shift_end_hour = shift_end.hour + shift_end.minute / 60
         half_day_cutoff_hour = (morning_hour + shift_end_hour) / 2
-        afternoon_start = time(int(half_day_cutoff_hour), int((half_day_cutoff_hour % 1) * 60))
-        
-        # Calculate dynamic half-day paid hours
-        shift_duration = shift_end_hour - morning_hour
-        half_day_hours = Decimal(str(shift_duration / 2))
+        afternoon_start = time(
+            int(half_day_cutoff_hour),
+            int((half_day_cutoff_hour % 1) * 60),
+        )
+
+        # Standard unpaid breaks (used for half-day deductions)
+        # Breaks start after each 4-hour work block.
+        # Example (08:00-18:00): 12:00-13:00 and 17:00-18:00
+        first_break_start_offset = timedelta(hours=4)
+        second_break_start_offset = timedelta(hours=9)
+
+        # Fixed half-day paid hours (4 hours for 8-hour paid day)
+        min_half_day_clock_hours = Decimal("4.00")
+        half_day_paid_hours = Decimal("4.00")
 
         # Get timezone
         tz = timezone.get_current_timezone()
@@ -454,6 +465,11 @@ class DailyAttendance(models.Model):
         morning_start_dt = timezone.make_aware(morning_start_dt, tz)
         afternoon_start_dt = timezone.make_aware(afternoon_start_dt, tz)
         shift_end_dt = timezone.make_aware(shift_end_dt, tz)
+
+        lunch_break_dt = morning_start_dt + first_break_start_offset
+        lunch_break_end_dt = lunch_break_dt + timedelta(hours=1)
+        lunch_break_grace_end_dt = lunch_break_end_dt + timedelta(minutes=45)
+        afternoon_break_dt = morning_start_dt + second_break_start_offset
 
         # Auto-close if enabled
         if settings and settings.auto_close_enabled and clock_in_local and not clock_out_local:
@@ -503,28 +519,54 @@ class DailyAttendance(models.Model):
         if approved_leave and approved_leave.is_half_day:
             if approved_leave.shift_period == 'AM':
                 # On leave in morning, works afternoon (cutoff to shift_end)
+                # Grace: clock out 45 min after afternoon break end still counts as half-day
                 expected_end = shift_end_dt
-                break_hours = Decimal("0.00")  # No lunch break for half day
+                grace_end = afternoon_break_dt + timedelta(hours=1, minutes=45)
+                if clock_out_local > afternoon_break_dt:
+                    break_hours = Decimal("1.00")
+                else:
+                    break_hours = Decimal("0.00")
             elif approved_leave.shift_period == 'PM':
-                # On leave in afternoon, works morning (start to cutoff)
-                expected_end = afternoon_start_dt
-                break_hours = Decimal("0.00")  # No lunch break for half day
+                # On leave in afternoon, works morning (start to lunch)
+                # Grace: clock out 45 min after lunch ends still counts as half-day
+                expected_end = lunch_break_dt
+                grace_end = lunch_break_grace_end_dt
+                if clock_out_local > lunch_break_dt:
+                    break_hours = Decimal("1.00")
+                else:
+                    break_hours = Decimal("0.00")
             else:
                 # Shouldn't happen, but default to standard logic
                 if clock_in_local < afternoon_start_dt:
-                    expected_end = afternoon_start_dt
-                    break_hours = Decimal("1.00")
+                    expected_end = lunch_break_dt
+                    grace_end = lunch_break_grace_end_dt
+                    if clock_out_local > lunch_break_dt:
+                        break_hours = Decimal("1.00")
+                    else:
+                        break_hours = Decimal("0.00")
                 else:
                     expected_end = shift_end_dt
-                    break_hours = Decimal("1.00")
+                    grace_end = afternoon_break_dt + timedelta(hours=1, minutes=45)
+                    if clock_out_local > afternoon_break_dt:
+                        break_hours = Decimal("1.00")
+                    else:
+                        break_hours = Decimal("0.00")
         else:
             # No approved half-day leave, use clock-in time to determine shift
             if clock_in_local < afternoon_start_dt:
-                expected_end = afternoon_start_dt  # Morning shift ends at cutoff
-                break_hours = Decimal("1.00")
+                expected_end = lunch_break_dt  # Morning shift ends at lunch
+                grace_end = lunch_break_grace_end_dt  # Grace: 45 min after lunch
+                if clock_out_local > lunch_break_dt:
+                    break_hours = Decimal("1.00")
+                else:
+                    break_hours = Decimal("0.00")
             else:
                 expected_end = shift_end_dt  # Afternoon shift
-                break_hours = Decimal("1.00")
+                grace_end = afternoon_break_dt + timedelta(hours=1, minutes=45)
+                if clock_out_local > afternoon_break_dt:
+                    break_hours = Decimal("1.00")
+                else:
+                    break_hours = Decimal("0.00")
 
         # Calculate effective shift end with tolerance (e.g., 5:30 PM when tolerance is 30 mins)
         effective_shift_end_dt = shift_end_dt - timedelta(minutes=clock_out_tolerance_minutes)
@@ -544,11 +586,25 @@ class DailyAttendance(models.Model):
             self.paid_hours = Decimal("8.00")
             return
 
-        # HALF DAY (worked ≥ half_day_hours and stayed until expected shift end)
-        if total_hours >= half_day_hours and clock_out_local >= expected_end:
+        # HALF DAY - Grace Period Rule
+        # If clocked in before break start and clocked out within 45 min after break ends,
+        # count as half-day (4 paid hours) with 1 hour break deducted.
+        # This applies to both morning shift (8am-1:45pm) and afternoon shift on half-day leave.
+        break_end_time = expected_end + timedelta(hours=1)
+        if clock_in_local < expected_end \
+        and break_end_time <= clock_out_local <= grace_end \
+        and total_hours >= min_half_day_clock_hours:
             self.attendance_type = "HALF_DAY"
             self.break_hours = break_hours
-            self.paid_hours = half_day_hours
+            self.paid_hours = half_day_paid_hours
+            return
+
+        # HALF DAY - Standard Rule
+        # Worked ≥ 4 hours and stayed until expected shift end (or within grace)
+        if total_hours >= min_half_day_clock_hours and clock_out_local >= expected_end:
+            self.attendance_type = "HALF_DAY"
+            self.break_hours = break_hours
+            self.paid_hours = half_day_paid_hours
             return
 
         # Fallback PARTIAL
