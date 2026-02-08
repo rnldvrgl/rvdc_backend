@@ -309,6 +309,7 @@ class DailyAttendance(models.Model):
         morning_start = time(8, 0)
         shift_end = time(18, 0)
         grace_minutes = 15
+        settings = None
         
         try:
             settings = PayrollSettings.objects.first()
@@ -413,6 +414,7 @@ class DailyAttendance(models.Model):
         grace_minutes = 15
         clock_in_allowance_minutes = 60
         clock_out_tolerance_minutes = 30
+        settings = None
 
         try:
             settings = PayrollSettings.objects.first()
