@@ -32,6 +32,21 @@ class Command(BaseCommand):
         else:
             target_date = (timezone.now() - timedelta(days=1)).date()
         
+        # Check if system has started yet (don't mark absences before attendance system was in use)
+        from payroll.models import PayrollSettings
+        try:
+            settings = PayrollSettings.objects.first()
+            if settings and settings.attendance_system_start_date:
+                if target_date < settings.attendance_system_start_date:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f'Skipping date before attendance system start ({settings.attendance_system_start_date}): {target_date}'
+                        )
+                    )
+                    return
+        except Exception:
+            pass  # If settings don't exist or error, continue
+        
         # Skip weekends (optional - adjust based on your business rules)
         if target_date.weekday() >= 5:  # Saturday = 5, Sunday = 6
             self.stdout.write(

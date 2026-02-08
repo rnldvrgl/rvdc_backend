@@ -1786,6 +1786,12 @@ class PayrollSettings(models.Model):
         help_text="Last day of payroll week (0=Monday, 4=Friday). Week starts the day after this cutoff.",
     )
 
+    attendance_system_start_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date when attendance system started. Absences will not be marked before this date.",
+    )
+
     class Meta:
         verbose_name = "Payroll Settings"
         verbose_name_plural = "Payroll Settings"
