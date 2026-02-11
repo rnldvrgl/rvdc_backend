@@ -18,24 +18,30 @@ class DailyAttendance(models.Model):
     - Default status is PENDING; only APPROVED attendance counts for payroll
     - Clock in/out managed by Admin and Manager only
     - Standard shift: 8:00 AM - 6:00 PM (10 hours with 2-hour break = 8 paid hours)
-    - Break times: After every 4 work hours (e.g., 12:00-1:00 PM, 5:00-6:00 PM for 8-6 shift)
-    - Post-lunch grace: Clock out between 1:00-1:45 PM counts as 4 paid hours (half-day)
     - Clock-in allowance: Can clock in early (default: 60 min), but paid hours count from shift start
-    - Clock-out tolerance: Configurable grace period before shift end (default: 30 min)
+    - Clock-out tolerance: Configurable grace period before shift end (default: 30 min, e.g., 5:30 PM)
     
     Attendance Types:
-    - FULL_DAY: Clock in on time + stay until near shift end (with tolerance) + meet minimum hours → 8 paid hours
-      Example: 8:00 AM - 5:30 PM (9.5 hours) with 30-min tolerance = FULL_DAY
-    - HALF_DAY: 4+ clock hours OR ≥30 min late → 4 paid hours
-      Post-lunch grace: 8:00 AM - 1:00-1:45 PM = 4 paid hours (1 hour lunch break deducted)
-    - PARTIAL: 1-4 clock hours → actual hours worked
+    - FULL_DAY: Stayed until shift end (with tolerance) OR worked 8+ hours after breaks → 8 paid hours
+      Example 1: 8:00 AM - 5:30 PM = FULL_DAY (with 30-min tolerance)
+      Example 2: 8:25 AM - 6:00 PM = FULL_DAY (late but stayed full shift, late penalty applies)
+      Example 3: 10:00 AM - 8:00 PM = FULL_DAY (10 hrs - 2 break = 8 paid hours)
+    - HALF_DAY: Only for approved half-day leave scenarios → 4 paid hours
+    - PARTIAL: Worked < 8 hours and left early → actual rounded hours (45-min rounding rule)
+      Example: 8:00 AM - 3:15 PM = 7.25 hrs - 1 hr break = 6.25 hrs → 6 paid hours (rounded down)
     - ABSENT: No clock-in/out
     - LEAVE: Approved leave (unpaid)
+    - INVALID: < 1 hour worked → REJECTED
     
     Late Policy:
     - 0-15 min late: grace period (no penalty)
-    - 16-29 min late: ₱2 per minute penalty
-    - ≥30 min late: automatic HALF_DAY classification
+    - 16-60 min late: ₱2 per minute penalty (beyond grace period)
+    - >60 min late: INVALID → REJECTED (no pay)
+    - Late penalties don't affect attendance type (can still be FULL_DAY if stayed full shift)
+    
+    Rounding Rule (for PARTIAL hours):
+    - 0-44 minutes: round down (e.g., 6h 44m = 6 hours)
+    - 45-59 minutes: round up (e.g., 6h 45m = 7 hours)
     """
     
     ATTENDANCE_TYPE_CHOICES = [
@@ -494,8 +500,18 @@ class DailyAttendance(models.Model):
         NOTE: Lateness is already calculated in calculate_lateness().
         This method only determines attendance type and paid hours.
         
-        RULES:
-        - Less than 1 hour worked → INVALID + REJECTED
+        SIMPLIFIED RULES:
+        - FULL_DAY: Stayed until shift end (with tolerance) OR worked 8+ hours after breaks → 8 paid hours
+        - HALF_DAY: Only for approved half-day leave scenarios → 4 paid hours
+        - PARTIAL: Worked < 8 hours → actual rounded hours (45-min rule)
+        - INVALID: < 1 hour worked → REJECTED
+        
+        Examples:
+        - 8:00 AM - 6:00 PM = FULL_DAY (8 paid hours)
+        - 8:25 AM - 6:00 PM = FULL_DAY (8 paid hours) + late penalty
+        - 8:00 AM - 5:30 PM = FULL_DAY (8 paid hours, within tolerance)
+        - 8:00 AM - 3:15 PM = PARTIAL (~6 paid hours after rounding)
+        - 10:00 AM - 8:00 PM = FULL_DAY (8 paid hours, max cap)
         """
         from payroll.models import PayrollSettings
 
@@ -682,48 +698,61 @@ class DailyAttendance(models.Model):
         # Calculate effective shift end with tolerance (e.g., 5:30 PM when tolerance is 30 mins)
         effective_shift_end_dt = shift_end_dt - timedelta(minutes=clock_out_tolerance_minutes)
         
-        # Calculate minimum hours required for full day based on tolerance
-        # Standard: 10 hours (8:00 AM - 6:00 PM)
-        # With 30 min tolerance: 9.5 hours (8:00 AM - 5:30 PM)
-        min_full_day_hours = Decimal("10.00") - (Decimal(str(clock_out_tolerance_minutes)) / Decimal("60"))
+        # Minimum hours for full day after breaks: 8 paid hours
+        min_paid_hours_for_full_day = Decimal("8.00")
         
-        # FULL DAY (clocked in morning, stayed until near shift end with tolerance, worked minimum hours)
-        # Example: 8:00 AM - 5:30 PM (9.5 hours) qualifies as full day with 30 min tolerance
-        if clock_in_local <= morning_start_dt + timedelta(minutes=grace_minutes) \
-        and clock_out_local >= effective_shift_end_dt \
-        and paid_total_hours >= min_full_day_hours:
+        # FULL DAY - Two scenarios qualify (regardless of late clock-in):
+        # 1. Stayed until near shift end with tolerance (e.g., 8:25 AM - 5:30 PM or later)
+        # 2. Worked 8+ paid hours after breaks (e.g., 10:00 AM - 8:00 PM = 10 hrs - 2 break = 8 paid)
+        # Late penalties are calculated separately and don't affect this classification
+        # Maximum paid hours capped at 8 regardless of overtime worked
+        hours_after_breaks = paid_total_hours - Decimal("2.00")  # Deduct 2-hour break
+        
+        if clock_out_local >= effective_shift_end_dt or hours_after_breaks >= min_paid_hours_for_full_day:
             self.attendance_type = "FULL_DAY"
             self.break_hours = Decimal("2.00")
-            self.paid_hours = Decimal("8.00")
+            self.paid_hours = Decimal("8.00")  # Fixed 8 hours for full day
             self._update_awol_tracking()
             return
 
-        # HALF DAY - Grace Period Rule
-        # If clocked in before break start and clocked out within 45 min after break ends,
-        # count as half-day (4 paid hours) with 1 hour break deducted.
-        # This applies to both morning shift (8am-1:45pm) and afternoon shift on half-day leave.
-        break_end_time = expected_end + timedelta(hours=1)
-        if clock_in_local < expected_end \
-        and break_end_time <= clock_out_local <= grace_end \
-        and paid_total_hours >= min_half_day_clock_hours:
-            self.attendance_type = "HALF_DAY"
-            self.break_hours = break_hours
-            self.paid_hours = half_day_paid_hours
-            self._update_awol_tracking()
-            return
+        # HALF DAY - Only for approved half-day leave scenarios
+        # If employee has approved half-day leave and worked the other half
+        if approved_leave and approved_leave.is_half_day:
+            # Check if they worked the appropriate shift
+            if paid_total_hours >= min_half_day_clock_hours and clock_out_local >= expected_end:
+                self.attendance_type = "HALF_DAY"
+                self.break_hours = break_hours
+                self.paid_hours = half_day_paid_hours
+                self._update_awol_tracking()
+                return
 
-        # HALF DAY - Standard Rule
-        # Worked ≥ 4 hours and stayed until expected shift end (or within grace)
-        if paid_total_hours >= min_half_day_clock_hours and clock_out_local >= expected_end:
-            self.attendance_type = "HALF_DAY"
-            self.break_hours = break_hours
-            self.paid_hours = half_day_paid_hours
-            self._update_awol_tracking()
-            return
-
-        # Fallback PARTIAL
+        # PARTIAL - Worked less than full day and no approved leave
+        # Apply 45-minute rounding rule: 0-44 min = round down, 45-59 min = round up
         self.attendance_type = "PARTIAL"
-        self.paid_hours = paid_total_hours
+        
+        # Calculate hours with break deduction and rounding
+        actual_work_hours = paid_total_hours
+        
+        # Deduct break proportionally based on hours worked
+        if actual_work_hours >= Decimal("6.00"):
+            # Worked 6+ hours, deduct 1 hour break
+            actual_work_hours -= Decimal("1.00")
+        elif actual_work_hours >= Decimal("4.00"):
+            # Worked 4-6 hours, deduct 30 min break
+            actual_work_hours -= Decimal("0.50")
+        # Less than 4 hours, no break deduction
+        
+        # Apply 45-minute rounding rule
+        hours_int = int(actual_work_hours)
+        minutes_decimal = actual_work_hours - Decimal(hours_int)
+        minutes = int(minutes_decimal * 60)
+        
+        if minutes >= 45:
+            self.paid_hours = Decimal(hours_int + 1)
+        else:
+            self.paid_hours = Decimal(hours_int)
+        
+        self.break_hours = paid_total_hours - actual_work_hours
         
         # Update consecutive absences and AWOL status after attendance type is determined
         self._update_awol_tracking()
