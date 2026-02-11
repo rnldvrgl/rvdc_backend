@@ -2,7 +2,6 @@ from django_filters import rest_framework as filters
 from django.db.models import Q
 from installations.models import (
     AirconModel,
-    AirconInstallation,
     AirconUnit,
 )
 
@@ -30,13 +29,14 @@ class AirconModelFilter(filters.FilterSet):
 class AirconUnitFilter(filters.FilterSet):
     is_reserved = filters.BooleanFilter(method="filter_is_reserved")
     is_available_for_sale = filters.BooleanFilter(method="filter_is_available_for_sale")
+    is_available_for_installation = filters.BooleanFilter(method="filter_is_available_for_installation")
 
     class Meta:
         model = AirconUnit
         fields = [
             "model",
             "sale",
-            "installation",
+            "installation_service",
             "reserved_by",
         ]
 
@@ -46,8 +46,14 @@ class AirconUnitFilter(filters.FilterSet):
     def filter_is_available_for_sale(self, queryset, name, value):
         return queryset.filter(sale__isnull=value, reserved_by__isnull=value)
 
-
-class AirconInstallationFilter(filters.FilterSet):
-    class Meta:
-        model = AirconInstallation
-        fields = ["service"]
+    def filter_is_available_for_installation(self, queryset, name, value):
+        """
+        Units available for installation: units that don't already have an installation service.
+        This includes available units, reserved units, and sold units without installation.
+        """
+        if value:
+            # Units available for installation = units without an installation service
+            return queryset.filter(installation_service__isnull=True)
+        else:
+            # Units not available = units that already have an installation service
+            return queryset.filter(installation_service__isnull=False)

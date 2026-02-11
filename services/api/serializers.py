@@ -338,12 +338,12 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         required=False
     )
 
-    # Promo fields
-    apply_free_installation = serializers.BooleanField(
+    # Aircon installation data (optional)
+    aircon_installation_data = serializers.DictField(
         write_only=True,
         required=False,
-        default=False,
-        help_text="Apply free installation promo (sets labor_fee to 0)"
+        allow_null=True,
+        help_text="Aircon installation details for creating installation records"
     )
 
     # Read-only computed fields
@@ -357,6 +357,8 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         decimal_places=2,
         read_only=True
     )
+    is_labor_warranty_active = serializers.BooleanField(read_only=True)
+    is_unit_warranty_active = serializers.BooleanField(read_only=True)
     total_parts_cost = serializers.SerializerMethodField()
 
     class Meta:
@@ -368,6 +370,7 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "appliance_type_id",
             "brand",
             "model",
+            "serial_number",
             "issue_reported",
             "diagnosis_notes",
             "status",
@@ -379,13 +382,29 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "labor_discount_amount",
             "labor_discount_percentage",
             "labor_discount_reason",
+            "labor_warranty_months",
+            "unit_warranty_months",
+            "warranty_notes",
+            "warranty_start_date",
+            "labor_warranty_end_date",
+            "unit_warranty_end_date",
+            "is_labor_warranty_active",
+            "is_unit_warranty_active",
             "discounted_labor_fee",
-            "apply_free_installation",
+            "aircon_installation_data",
             "items_used",
             "technician_assignments",
             "total_parts_cost",
         ]
-        read_only_fields = ["labor_original_amount", "discounted_labor_fee"]
+        read_only_fields = [
+            "labor_original_amount",
+            "discounted_labor_fee",
+            "warranty_start_date",
+            "labor_warranty_end_date",
+            "unit_warranty_end_date",
+            "is_labor_warranty_active",
+            "is_unit_warranty_active",
+        ]
 
     def get_total_parts_cost(self, obj):
         """Calculate total cost of parts including discounts (excluding free items/quantities)."""
@@ -397,17 +416,16 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         return total.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
     def create(self, validated_data):
-        """Create appliance with items and apply promos."""
+        """Create appliance with items."""
         items_data = validated_data.pop("items_used", [])
-        apply_free_install = validated_data.pop("apply_free_installation", False)
+        aircon_install_data = validated_data.pop("aircon_installation_data", None)
 
         with transaction.atomic():
             appliance = ServiceAppliance.objects.create(**validated_data)
-
-            # Apply free installation promo if requested
-            if apply_free_install:
-                PromoManager.apply_free_installation(appliance)
-                appliance.save(update_fields=["labor_fee", "labor_is_free", "labor_original_amount"])
+            
+            # Create aircon installation if data provided
+            if aircon_install_data:
+                self._create_aircon_installation(appliance, aircon_install_data)
 
             # Create items used (reserves stock)
             for item_data in items_data:
@@ -424,16 +442,11 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         """Update appliance and items."""
         items_data = validated_data.pop("items_used", None)
-        apply_free_install = validated_data.pop("apply_free_installation", False)
+        aircon_install_data = validated_data.pop("aircon_installation_data", None)
 
         with transaction.atomic():
             # Update appliance fields
             instance = super().update(instance, validated_data)
-
-            # Apply/remove free installation promo
-            if apply_free_install and not instance.labor_is_free:
-                PromoManager.apply_free_installation(instance)
-                instance.save(update_fields=["labor_fee", "labor_is_free", "labor_original_amount"])
 
             # Handle items update if provided
             if items_data is not None:
@@ -458,6 +471,73 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
                     serializer.save()
 
         return instance
+    
+    def _create_aircon_installation(self, appliance, install_data):
+        """
+        Link aircon unit to installation service.
+        Units are linked directly to the service without intermediate AirconInstallation model.
+        """
+        from installations.models import AirconUnit
+        from django.utils import timezone
+        
+        unit_type = install_data.get('unit_type')
+        service = appliance.service
+        
+        if unit_type == 'brand_new':
+            # Get unit from inventory
+            unit_id = install_data.get('unit_id')
+            if not unit_id:
+                raise serializers.ValidationError({
+                    'aircon_installation_data': 'unit_id is required for brand_new units'
+                })
+            
+            try:
+                unit = AirconUnit.objects.get(id=unit_id)
+            except AirconUnit.DoesNotExist:
+                raise serializers.ValidationError({
+                    'aircon_installation_data': f'Aircon unit {unit_id} not found'
+                })
+            
+            # Update service notes with unit information
+            unit_info = f"Brand New Unit: {unit.serial_number}, Model: {unit.model}"
+            if service.notes:
+                service.notes = f"{service.notes}\n{unit_info}"
+            else:
+                service.notes = unit_info
+            service.save(update_fields=['notes', 'updated_at'])
+            
+            # Link unit to installation service and reserve it for the client
+            unit.installation_service = service
+            unit.reserved_by = service.client
+            unit.reserved_at = timezone.now()
+            unit.save(update_fields=['installation_service', 'reserved_by', 'reserved_at', 'updated_at'])
+            
+            # Update appliance with unit details
+            appliance.brand = unit.model.brand.name if unit.model and unit.model.brand else ''
+            appliance.model = unit.model.name if unit.model else ''
+            appliance.serial_number = unit.serial_number
+            appliance.save(update_fields=['brand', 'model', 'serial_number'])
+            
+            # Recalculate service revenue to include unit price
+            RevenueCalculator.calculate_service_revenue(service, save=True)
+            
+        elif unit_type == 'second_hand':
+            # Use manual entry data from appliance - not currently used in frontend
+            if not appliance.brand or not appliance.model or not appliance.serial_number:
+                raise serializers.ValidationError({
+                    'aircon_installation_data': 'brand, model, and serial_number are required for second_hand units'
+                })
+            
+            # Add notes to service about second-hand unit
+            unit_info = f"Second-Hand Unit: {appliance.brand} {appliance.model}, SN: {appliance.serial_number}"
+            if service.notes:
+                service.notes = f"{service.notes}\n{unit_info}"
+            else:
+                service.notes = unit_info
+            service.save(update_fields=['notes', 'updated_at'])
+            
+            # Recalculate service revenue to include unit price
+            RevenueCalculator.calculate_service_revenue(service, save=True)
 
 
 class NestedClientSerializer(serializers.ModelSerializer):
@@ -482,16 +562,22 @@ class ServiceSerializer(serializers.ModelSerializer):
     - Service creation with stock reservation
     - Revenue calculation and attribution
     - Service completion workflow
+    - Aircon installation (brand new and second-hand units)
     """
 
     appliances = ServiceApplianceSerializer(many=True, required=False)
     payments = serializers.SerializerMethodField()
+    installation_units = serializers.SerializerMethodField()
 
     # Write-only fields for datetime inputs from frontend
     appointment_datetime = serializers.DateTimeField(write_only=True, required=False, allow_null=True)
     pickup_date = serializers.DateTimeField(required=False, allow_null=True)
     delivery_date = serializers.DateTimeField(required=False, allow_null=True)
     received_at = serializers.DateTimeField(required=False, allow_null=True)
+    
+    # Aircon installation fields (write-only)
+    aircon_installation_data = serializers.DictField(write_only=True, required=False, allow_null=True,
+        help_text="Installation data for aircon units (brand new or second-hand)")
 
     # Read-only fields
     client_name = serializers.CharField(source="client.full_name", read_only=True)
@@ -571,6 +657,8 @@ class ServiceSerializer(serializers.ModelSerializer):
             "service_discount_amount",
             "service_discount_percentage",
             "discount_reason",
+            "aircon_installation_data",
+            "installation_units",
             "appliances",
             "technician_assignments",
             "payments",
@@ -638,6 +726,15 @@ class ServiceSerializer(serializers.ModelSerializer):
         payments = obj.payments.all()
         return ServicePaymentSerializer(payments, many=True).data
 
+    def get_installation_units(self, obj):
+        """Get all aircon units for installation services."""
+        if obj.service_type != 'installation':
+            return []
+        
+        from installations.api.serializers import AirconUnitSerializer
+        units = obj.installation_units.all()
+        return AirconUnitSerializer(units, many=True).data
+
     def get_next_schedule(self, obj):
         """Get the next upcoming or most recent schedule for this service."""
         from datetime import date
@@ -686,13 +783,19 @@ class ServiceSerializer(serializers.ModelSerializer):
         Create service with appliances, technician assignments, and reserve stock.
         Revenue is calculated but transactions are created on completion.
         Auto-creates Schedule records for field work (home_service, pull_out).
+        Supports aircon installation for brand new and second-hand units.
         """
         appliances_data = validated_data.pop("appliances", [])
         technician_assignments_data = validated_data.pop("technician_assignments", [])
         appointment_datetime = validated_data.pop("appointment_datetime", None)
+        aircon_installation_data = validated_data.pop("aircon_installation_data", None)
 
         with transaction.atomic():
             service = Service.objects.create(**validated_data)
+            
+            # Handle aircon installation if this is an installation service
+            if service.service_type == 'installation' and aircon_installation_data:
+                self._create_aircon_installation(service, aircon_installation_data)
 
             # Create appliances (which reserves stock)
             for appliance_data in appliances_data:
@@ -846,6 +949,80 @@ class ServiceSerializer(serializers.ModelSerializer):
 
         return instance
 
+    def _create_aircon_installation(self, service, installation_data):
+        """
+        Create aircon installation for brand new units.
+        Unit sale and payment will be handled during service payment recording.
+        
+        Args:
+            service: Service instance
+            installation_data: Dict with installation details:
+                - unit_type: 'brand_new' or 'second_hand'
+                - unit_id: (if brand_new) AirconUnit ID
+                - labor_fee: Labor fee amount
+        """
+        from installations.models import AirconInstallation, AirconUnit
+        
+        unit_type = installation_data.get('unit_type', 'brand_new')
+        labor_fee = Decimal(str(installation_data.get('labor_fee', 0)))
+        
+        if unit_type == 'brand_new':
+            # Handle brand new unit from inventory
+            unit_id = installation_data.get('unit_id')
+            if not unit_id:
+                raise ValidationError("unit_id is required for brand new installations")
+            
+            try:
+                unit = AirconUnit.objects.get(id=unit_id)
+            except AirconUnit.DoesNotExist:
+                raise ValidationError(f"Aircon unit with ID {unit_id} not found")
+            
+            # Create installation record
+            installation = AirconInstallation.objects.create(
+                service=service,
+                notes=f"Brand New Unit: {unit.serial_number}, Model: {unit.model}"
+            )
+            
+            # Link unit to installation
+            unit.installation = installation
+            unit.save(update_fields=['installation', 'updated_at'])
+            
+            # Create service appliance
+            appliance = ServiceAppliance.objects.create(
+                service=service,
+                appliance_type=None,
+                brand=unit.model.brand.name if unit.model and unit.model.brand else None,
+                model=unit.model.name if unit.model else None,
+                serial_number=unit.serial_number,
+                labor_fee=labor_fee,
+            )
+        else:
+            # Handle second-hand unit (manual entry) - not currently used in frontend
+            brand = installation_data.get('brand')
+            model = installation_data.get('model')
+            serial_number = installation_data.get('serial_number')
+            
+            if not all([brand, model, serial_number]):
+                raise ValidationError(
+                    "brand, model, and serial_number are required for second-hand installations"
+                )
+            
+            # Create installation record
+            installation = AirconInstallation.objects.create(
+                service=service,
+                notes=f"Second-Hand Unit: {brand} {model}, SN: {serial_number}"
+            )
+            
+            # Create service appliance for second-hand unit
+            appliance = ServiceAppliance.objects.create(
+                service=service,
+                appliance_type=None,  # Aircon installation
+                brand=brand,
+                model=model,
+                serial_number=serial_number,
+                labor_fee=labor_fee,
+            )
+    
     def _create_schedules_for_service(self, service, technician_ids, appointment_datetime=None):
         """
         Auto-create Schedule records based on service_mode.

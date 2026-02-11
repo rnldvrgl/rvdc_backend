@@ -5,7 +5,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 from services.models import Service
-from utils.enums import AirconType, ServiceType
+from utils.enums import AirconType, HorsePower, ServiceType
 
 
 class AirconBrand(models.Model):
@@ -31,6 +31,12 @@ class AirconModel(models.Model):
     aircon_type = models.CharField(
         max_length=30, choices=AirconType.choices, default=AirconType.WINDOW
     )
+    horsepower = models.CharField(
+        max_length=10,
+        choices=HorsePower.choices,
+        default=HorsePower.HP_1_0,
+        help_text="Horsepower/capacity of the air conditioner"
+    )
     is_inverter = models.BooleanField(
         default=False, help_text="Uses inverter technology."
     )
@@ -54,26 +60,6 @@ class AirconModel(models.Model):
             discount_amount = self.retail_price * discount_fraction
             return self.retail_price - discount_amount
         return self.retail_price
-
-
-class AirconInstallation(models.Model):
-    service = models.OneToOneField(
-        Service, on_delete=models.CASCADE, related_name="aircon_installation", null=True
-    )
-    notes = models.TextField(blank=True, null=True)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def clean(self):
-        if self.service.service_type != ServiceType.INSTALLATION:
-            raise ValidationError(
-                "Installation must be linked to an INSTALLATION service."
-            )
-
-    def __str__(self):
-        client = getattr(self.service.client, "full_name", "Unknown Client")
-        return f"Installation for {client}"
 
 
 class AirconUnit(models.Model):
@@ -110,12 +96,13 @@ class AirconUnit(models.Model):
         related_name="aircon_units_sold",
     )
 
-    installation = models.OneToOneField(
-        AirconInstallation,
+    installation_service = models.ForeignKey(
+        Service,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="aircon_unit",
+        related_name="installation_units",
+        help_text="Installation service this unit is part of"
     )
 
     reserved_by = models.ForeignKey(
@@ -147,17 +134,21 @@ class AirconUnit(models.Model):
                 {"stall": "Aircon units can only be owned by Main stall."}
             )
 
-        if self.installation:
-            tx = self.installation.service.related_transaction
+        if self.installation_service:
+            # Validate installation_service is actually an installation service
+            if self.installation_service.service_type != ServiceType.INSTALLATION:
+                raise ValidationError(
+                    {"installation_service": "Service must be an INSTALLATION service."}
+                )
+            tx = self.installation_service.related_transaction
             if tx and self.sale != tx:
                 raise ValidationError(
                     {"sale": "Sale must match the installation's transaction."}
                 )
-            if not self.sale:
-                raise ValidationError({"sale": "Installed units must be sold first."})
+            # Installation doesn't require sale - unit can be reserved
 
-        if self.warranty_start_date and not self.sale:
-            raise ValidationError({"warranty_start_date": "Warranty requires a sale."})
+        if self.warranty_start_date and not (self.sale or self.installation_service):
+            raise ValidationError({"warranty_start_date": "Warranty requires a sale or installation."})
 
     def save(self, *args, **kwargs):
         run_clean = kwargs.pop("clean", True)
@@ -174,15 +165,16 @@ class AirconUnit(models.Model):
                 self.stall = main_stall
 
         # Determine warranty start logic
-        if self.installation and hasattr(self.installation, 'date_installed') and self.installation.date_installed:
-            self.warranty_start_date = self.installation.date_installed
-        elif self.sale and self.sale.created_at:
+        if self.sale and self.sale.created_at:
             self.warranty_start_date = self.sale.created_at.date()
+        elif self.installation_service and self.installation_service.created_at:
+            self.warranty_start_date = self.installation_service.created_at.date()
         else:
             self.warranty_start_date = None  # Not yet started
 
-        # Mark as sold and clear reservation once sold or installed
-        if self.sale or self.installation:
+        # Mark as sold and clear reservation once sold
+        # Units with installation but no sale should remain reserved
+        if self.sale:
             self.is_sold = True
             self.reserved_by = None
             self.reserved_at = None
@@ -237,25 +229,6 @@ class AirconUnit(models.Model):
 
     def __str__(self):
         return f"{self.model} (SN: {self.serial_number})"
-
-
-class AirconItemUsed(models.Model):
-    unit = models.ForeignKey(
-        AirconUnit, on_delete=models.CASCADE, related_name="items_used"
-    )
-    item = models.ForeignKey("inventory.Item", on_delete=models.SET_NULL, null=True)
-    total_quantity_used = models.PositiveIntegerField()
-    free_quantity = models.PositiveIntegerField(default=0)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def clean(self):
-        if self.total_quantity_used < self.free_quantity:
-            raise ValidationError("Free quantity cannot exceed total quantity used.")
-
-    def __str__(self):
-        return f"{self.item.name} x{self.total_quantity_used} for unit {self.unit.serial_number}"
 
 
 class WarrantyClaim(models.Model):

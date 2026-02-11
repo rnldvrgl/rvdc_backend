@@ -62,12 +62,13 @@ class ServiceApplianceAdmin(admin.ModelAdmin):
         "appliance_type",
         "brand",
         "model",
+        "serial_number",
         "status",
         "labor_fee",
         "labor_is_free",
     )
     list_filter = ("appliance_type", "status", "labor_is_free")
-    search_fields = ("brand", "model", "service__client__full_name")
+    search_fields = ("brand", "model", "serial_number", "service__client__full_name")
     ordering = ("appliance_type__name", "brand")
     list_select_related = ("service", "appliance_type")
     list_per_page = 25

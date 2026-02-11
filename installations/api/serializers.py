@@ -1,7 +1,5 @@
 from installations.models import (
     AirconBrand,
-    AirconInstallation,
-    AirconItemUsed,
     AirconModel,
     AirconUnit,
     WarrantyClaim,
@@ -27,6 +25,7 @@ class AirconModelSerializer(serializers.ModelSerializer):
         source="brand", queryset=AirconBrand.objects.all(), write_only=True
     )
     has_discount = serializers.ReadOnlyField()
+    promo_price = serializers.ReadOnlyField()
 
     class Meta:
         model = AirconModel
@@ -37,9 +36,11 @@ class AirconModelSerializer(serializers.ModelSerializer):
             "name",
             "retail_price",
             "aircon_type",
+            "horsepower",
             "discount_percentage",
             "is_inverter",
             "has_discount",
+            "promo_price",
         ]
 
     def validate(self, data):
@@ -82,7 +83,7 @@ class AirconUnitSerializer(serializers.ModelSerializer):
             "stall",
             "stall_name",
             "sale",
-            "installation",
+            "installation_service",
             "reserved_by",
             "reserved_at",
             "warranty_start_date",
@@ -105,7 +106,7 @@ class AirconUnitSerializer(serializers.ModelSerializer):
             "reserved_by", 
             "reserved_at", 
             "sale", 
-            "installation", 
+            "installation_service", 
             "warranty_start_date",
             "free_cleaning_redeemed"
         ]
@@ -179,41 +180,11 @@ class AirconUnitSerializer(serializers.ModelSerializer):
         Allow toggling free_cleaning_redeemed only if the unit is installed.
         """
         instance = self.instance  # available when updating
-        if value and instance and not instance.installation:
+        if value and instance and not instance.installation_service:
             raise serializers.ValidationError(
                 "Cannot redeem free cleaning before the unit is installed."
             )
         return value
-
-
-class AirconItemUsedSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = AirconItemUsed
-        fields = "__all__"
-
-
-class AirconInstallationSerializer(serializers.ModelSerializer):
-    service_id = serializers.PrimaryKeyRelatedField(
-        source="service", queryset=Service.objects.all()
-    )
-    aircon_unit = AirconUnitSerializer(many=True, read_only=True)
-
-    class Meta:
-        model = AirconInstallation
-        fields = "__all__"
-
-    def validate(self, data):
-        service = data.get("service")
-        unit = data.get("unit", None)
-
-        if (
-            unit
-            and AirconInstallation.objects.filter(service=service, unit=unit).exists()
-        ):
-            raise serializers.ValidationError(
-                f"Aircon unit '{unit}' is already linked to this service."
-            )
-        return data
 
 
 class AirconSaleSerializer(serializers.Serializer):
@@ -350,10 +321,22 @@ class AirconReservationSerializer(serializers.Serializer):
 
 class AirconInstallationCreateSerializer(serializers.Serializer):
     """
-    Serializer for creating an installation service for a sold aircon unit.
+    Serializer for creating an installation service for an aircon unit.
+    
+    Workflow:
+    - If unit not sold and sell_unit_now=False: Unit is RESERVED for the client
+    - If unit not sold and sell_unit_now=True: Unit is SOLD first, then installation scheduled
+    - If unit already sold: Installation is scheduled directly
+    
+    Note: Units don't need to be sold before installation - they can be reserved.
     """
 
     unit_id = serializers.IntegerField(help_text="AirconUnit ID to install")
+    client_id = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        help_text="Client ID (required if unit not sold - will reserve unit for this client)"
+    )
     scheduled_date = serializers.DateField(required=False, allow_null=True)
     scheduled_time = serializers.TimeField(required=False, allow_null=True)
     labor_fee = serializers.DecimalField(
@@ -362,17 +345,22 @@ class AirconInstallationCreateSerializer(serializers.Serializer):
         default=0,
         help_text="Labor fee for installation"
     )
-    apply_free_installation = serializers.BooleanField(
+    labor_is_free = serializers.BooleanField(
         default=False,
-        help_text="Apply free installation promo"
+        help_text="Mark labor as free (promotional)"
     )
-    copper_tube_length = serializers.IntegerField(
-        default=0,
-        help_text="Length of copper tube needed (ft)"
+    sell_unit_now = serializers.BooleanField(
+        default=False,
+        help_text="If True, sell the unit first (optional - units can be reserved without selling)"
+    )
+    payment_type = serializers.ChoiceField(
+        choices=['cash', 'gcash', 'credit', 'debit', 'cheque'],
+        default='cash',
+        help_text="Payment method if selling unit now"
     )
 
     def validate_unit_id(self, value):
-        """Validate unit exists and is sold."""
+        """Validate unit exists."""
         from installations.models import AirconUnit
 
         try:
@@ -380,24 +368,34 @@ class AirconInstallationCreateSerializer(serializers.Serializer):
         except AirconUnit.DoesNotExist:
             raise serializers.ValidationError("Unit not found.")
 
-        if not unit.is_sold:
-            raise serializers.ValidationError(
-                "Unit must be sold before installation can be scheduled."
-            )
-
-        if unit.installation:
+        if unit.installation_service:
             raise serializers.ValidationError("Unit already has an installation scheduled.")
 
         return value
 
-    def validate_copper_tube_length(self, value):
-        """Validate copper tube length is non-negative."""
-        if value < 0:
-            raise serializers.ValidationError("Copper tube length cannot be negative.")
-        return value
+    def validate(self, data):
+        """Validate the complete installation request."""
+        from installations.models import AirconUnit
+        
+        unit = AirconUnit.objects.get(id=data['unit_id'])
+        
+        # If selling unit now, it shouldn't already be sold
+        if data.get('sell_unit_now') and unit.is_sold:
+            raise serializers.ValidationError(
+                {"sell_unit_now": "Unit is already sold. Set sell_unit_now to False."}
+            )
+        
+        # If not selling, client_id is required to reserve the unit
+        if not data.get('sell_unit_now') and not unit.is_sold and not data.get('client_id'):
+            raise serializers.ValidationError(
+                {"client_id": "Client ID is required to reserve unit for installation."}
+            )
+        
+        return data
 
     def save(self):
         """Create installation service."""
+        from clients.models import Client
         from installations.business_logic import AirconInstallationHandler
         from installations.models import AirconUnit
 
@@ -405,23 +403,36 @@ class AirconInstallationCreateSerializer(serializers.Serializer):
         unit = AirconUnit.objects.get(id=unit_id)
 
         user = self.context.get('request').user if self.context.get('request') else None
+        
+        # Determine client
+        if unit.is_sold and unit.sale:
+            client = unit.sale.client
+        else:
+            # When selling unit now, client_id must be provided in context or validated_data
+            client_id = self.validated_data.get('client_id') or self.context.get('client_id')
+            if not client_id:
+                raise serializers.ValidationError(
+                    "client_id is required when creating installation for unsold unit."
+                )
+            client = Client.objects.get(id=client_id)
 
         result = AirconInstallationHandler.create_installation_service(
             unit=unit,
-            client=unit.sale.client if unit.sale else None,
+            client=client,
             scheduled_date=self.validated_data.get('scheduled_date'),
             scheduled_time=self.validated_data.get('scheduled_time'),
             labor_fee=self.validated_data.get('labor_fee'),
-            apply_free_installation=self.validated_data.get('apply_free_installation', False),
-            copper_tube_length=self.validated_data.get('copper_tube_length', 0),
-            user=user
+            labor_is_free=self.validated_data.get('labor_is_free', False),
+            user=user,
+            sell_unit_now=self.validated_data.get('sell_unit_now', False),
+            payment_type=self.validated_data.get('payment_type', 'cash'),
         )
 
         return result
 
 
 class AirconInstallationCompleteSerializer(serializers.Serializer):
-    """Serializer for completing an aircon installation."""
+    """Serializer for completing an aircon installation service."""
 
     completion_date = serializers.DateField(
         required=False,
@@ -430,17 +441,17 @@ class AirconInstallationCompleteSerializer(serializers.Serializer):
     )
 
     def save(self):
-        """Complete the installation."""
+        """Complete the installation service."""
         from installations.business_logic import AirconInstallationHandler
 
-        installation = self.context.get('installation')
-        if not installation:
-            raise serializers.ValidationError("Installation instance required in context.")
+        service = self.context.get('service')
+        if not service:
+            raise serializers.ValidationError("Service instance required in context.")
 
         user = self.context.get('request').user if self.context.get('request') else None
 
         result = AirconInstallationHandler.complete_installation(
-            installation=installation,
+            service=service,
             completion_date=self.validated_data.get('completion_date'),
             user=user
         )

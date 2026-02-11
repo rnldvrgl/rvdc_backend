@@ -12,6 +12,7 @@ This module handles:
 from decimal import Decimal
 
 from django.db import transaction
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 
@@ -319,42 +320,55 @@ class AirconInstallationHandler:
     @staticmethod
     def create_installation_service(unit, client, scheduled_date=None,
                                    scheduled_time=None, labor_fee=None,
-                                   apply_free_installation=False,
-                                   copper_tube_length=0,
-                                   user=None):
+                                   labor_is_free=False,
+                                   user=None,
+                                   sell_unit_now=False,
+                                   payment_type='cash'):
         """
-        Create installation service for a sold aircon unit.
+        Create installation service for an aircon unit.
 
         Args:
-            unit: AirconUnit instance (must be sold)
+            unit: AirconUnit instance
             client: Client for the installation
             scheduled_date: Date of installation
             scheduled_time: Time of installation
-            labor_fee: Labor fee for installation (if not free)
-            apply_free_installation: Apply free installation promo
-            copper_tube_length: Length of copper tube needed (ft)
+            labor_fee: Labor fee for installation
+            labor_is_free: Mark labor as free (promotional)
             user: User creating the service
+            sell_unit_now: If True, sell the unit now (if not already sold)
+            payment_type: Payment method if selling unit now
 
         Returns:
             dict with service and installation details
         """
-        from inventory.models import Item
         from services.business_logic import (
-            PromoManager,
             RevenueCalculator,
-            StockReservationManager,
         )
-        from services.models import ApplianceItemUsed, Service, ServiceAppliance
+        from services.models import Service, ServiceAppliance
         from utils.enums import ServiceMode, ServiceStatus, ServiceType
-
-        from installations.models import AirconInstallation
-
-        if not unit.is_sold:
-            raise ValidationError("Unit must be sold before installation can be scheduled.")
 
         main_stall = get_main_stall()
         if not main_stall:
             raise ValidationError("Main stall not configured in system.")
+
+        # Check if unit needs to be sold first (optional)
+        sale_transaction = None
+        if sell_unit_now and not unit.is_sold:
+            # Sell the unit now
+            sale_result = AirconSalesHandler.sell_unit(
+                unit=unit,
+                client=client,
+                sales_clerk=user,
+                payment_type=payment_type,
+                create_transaction=True
+            )
+            unit = sale_result['unit']  # Get updated unit
+            sale_transaction = sale_result.get('sale_transaction')
+        elif not unit.is_sold:
+            # Reserve the unit for this client
+            unit.reserved_by = client
+            unit.reserved_at = timezone.now()
+            unit.save(update_fields=['reserved_by', 'reserved_at', 'updated_at'])
 
         with transaction.atomic():
             # Create installation service
@@ -367,17 +381,12 @@ class AirconInstallationHandler:
                 scheduled_time=scheduled_time,
                 status=ServiceStatus.PENDING,
                 description=f"Installation for Aircon Unit: {unit.model} (SN: {unit.serial_number})",
-            )
-
-            # Create aircon installation record
-            installation = AirconInstallation.objects.create(
-                service=service,
                 notes=f"Unit: {unit.serial_number}, Model: {unit.model}",
             )
 
-            # Link unit to installation
-            unit.installation = installation
-            unit.save(update_fields=['installation', 'updated_at'])
+            # Link unit to installation service
+            unit.installation_service = service
+            unit.save(update_fields=['installation_service', 'updated_at'])
 
             # Create service appliance for the aircon
             appliance = ServiceAppliance.objects.create(
@@ -385,64 +394,30 @@ class AirconInstallationHandler:
                 appliance_type=None,  # This is an aircon installation
                 brand=unit.model.brand.name if unit.model else None,
                 model=unit.model.name if unit.model else None,
+                serial_number=unit.serial_number,  # Add serial number
                 labor_fee=labor_fee or Decimal('0.00'),
+                labor_is_free=labor_is_free,
+                labor_original_amount=labor_fee if labor_is_free and labor_fee > 0 else None,
             )
-
-            # Apply free installation promo if requested
-            if apply_free_installation:
-                PromoManager.apply_free_installation(appliance)
-                appliance.save(update_fields=[
-                    'labor_fee', 'labor_is_free', 'labor_original_amount'
-                ])
-
-            # Add copper tube if needed
-            if copper_tube_length > 0:
-                # Find copper tube item
-                copper_tube = Item.objects.filter(
-                    name__icontains='copper',
-                    unit_of_measure='ft',
-                    is_deleted=False
-                ).first()
-
-                if copper_tube:
-                    # Reserve stock
-                    stock = StockReservationManager.reserve_stock(
-                        item=copper_tube,
-                        quantity=copper_tube_length
-                    )
-
-                    # Create item usage
-                    item_used = ApplianceItemUsed.objects.create(
-                        appliance=appliance,
-                        item=copper_tube,
-                        quantity=copper_tube_length,
-                        stall_stock=stock,
-                    )
-
-                    # Apply copper tube promo (first 10ft free)
-                    free_qty, charged_qty, applied = PromoManager.apply_copper_tube_free_10ft(
-                        item_used
-                    )
-                    if applied:
-                        item_used.save(update_fields=['free_quantity', 'promo_name'])
 
             # Calculate initial revenue
             RevenueCalculator.calculate_service_revenue(service, save=True)
 
             return {
                 'service': service,
-                'installation': installation,
+                'sale_transaction': sale_transaction,  # Include sale transaction if created
+                'unit_price': unit.sale_price,  # Include unit price for reference
                 'unit': unit,
                 'appliance': appliance,
             }
 
     @staticmethod
-    def complete_installation(installation, completion_date=None, user=None):
+    def complete_installation(service, completion_date=None, user=None):
         """
-        Complete an aircon installation.
+        Complete an aircon installation service.
 
         Args:
-            installation: AirconInstallation instance
+            service: Service instance (must be INSTALLATION type)
             completion_date: Date of completion
             user: User completing the installation
 
@@ -450,9 +425,10 @@ class AirconInstallationHandler:
             dict with completion details
         """
         from services.business_logic import ServiceCompletionHandler
-        from utils.enums import ServiceStatus
+        from utils.enums import ServiceStatus, ServiceType
 
-        service = installation.service
+        if service.service_type != ServiceType.INSTALLATION:
+            raise ValidationError("Service must be an INSTALLATION service.")
 
         if service.status == ServiceStatus.COMPLETED:
             raise ValidationError("Installation is already completed.")
@@ -465,21 +441,24 @@ class AirconInstallationHandler:
                 create_receipt=True
             )
 
-            # Update installation date if provided
-            if completion_date and hasattr(installation, 'date_installed'):
-                installation.date_installed = completion_date
-                installation.save(update_fields=['date_installed', 'updated_at'])
-
-            # Warranty starts on installation date
-            unit = installation.aircon_unit
-            if unit and completion_date:
-                unit.warranty_start_date = completion_date
+            # Warranty starts on installation completion date
+            warranty_date = completion_date if completion_date else timezone.now().date()
+            
+            # Activate warranties for aircon units
+            units = service.installation_units.all()
+            for unit in units:
+                unit.warranty_start_date = warranty_date
                 unit.save(update_fields=['warranty_start_date', 'updated_at'])
+            
+            # Activate warranties for service appliances (labor and unit warranties)
+            appliances = service.appliances.all()
+            for appliance in appliances:
+                appliance.activate_warranties(start_date=warranty_date)
 
             return {
-                'installation': installation,
                 'service': service,
                 'completion_result': result,
+                'units': list(units),
             }
 
 

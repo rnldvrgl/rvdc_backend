@@ -1,13 +1,11 @@
 from django_filters.rest_framework import DjangoFilterBackend
 from installations.api.filters import (
-    AirconInstallationFilter,
     AirconModelFilter,
     AirconUnitFilter,
 )
 from installations.api.serializers import (
     AirconBrandSerializer,
     AirconInstallationCreateSerializer,
-    AirconInstallationSerializer,
     AirconModelSerializer,
     AirconReservationSerializer,
     AirconSaleSerializer,
@@ -23,7 +21,6 @@ from installations.api.serializers import (
 )
 from installations.models import (
     AirconBrand,
-    AirconInstallation,
     AirconModel,
     AirconUnit,
     WarrantyClaim,
@@ -109,6 +106,10 @@ class AirconUnitViewSet(viewsets.ModelViewSet):
 
     Endpoints:
     - GET /aircon-units/ - List all units in inventory
+          Query params:
+          - is_available_for_sale=true: Units available to purchase
+          - is_available_for_installation=true: Units available for installation scheduling
+          - is_reserved=true/false: Filter by reservation status
     - POST /aircon-units/ - Add new unit to inventory
     - GET /aircon-units/{id}/ - Get unit details
     - PUT/PATCH /aircon-units/{id}/ - Update unit information
@@ -117,7 +118,7 @@ class AirconUnitViewSet(viewsets.ModelViewSet):
     - POST /aircon-units/sell/ - Sell one or more units (creates sale transaction)
     - POST /aircon-units/{id}/reserve/ - Reserve a unit for a client
     - POST /aircon-units/{id}/release-reservation/ - Release reservation
-    - POST /aircon-units/{id}/create-installation/ - Create installation service
+    - POST /aircon-units/{id}/create-installation/ - Create installation service (reserves unit if not sold)
     - GET /aircon-units/stock-report/ - Get inventory stock report
     """
 
@@ -324,6 +325,12 @@ class AirconUnitViewSet(viewsets.ModelViewSet):
                     {"label": "Not Available", "value": "false"},
                 ]
             },
+            "is_available_for_installation": {
+                "options": lambda: [
+                    {"label": "Available", "value": "true"},
+                    {"label": "Not Available", "value": "false"},
+                ]
+            },
             "is_sold": {
                 "options": lambda: [
                     {"label": "Sold", "value": "true"},
@@ -334,33 +341,6 @@ class AirconUnitViewSet(viewsets.ModelViewSet):
         ordering_config = [
             {"label": "Serial Number", "value": "serial_number"},
             {"label": "Created At", "value": "created_at"},
-        ]
-        return get_role_based_filter_response(request, filters_config, ordering_config)
-
-
-class AirconInstallationViewSet(viewsets.ModelViewSet):
-    queryset = AirconInstallation.objects.all()
-    serializer_class = AirconInstallationSerializer
-    permission_classes = [IsAuthenticated]
-    filter_backends = [
-        DjangoFilterBackend,
-        drf_filters.SearchFilter,
-        drf_filters.OrderingFilter,
-    ]
-    filterset_class = AirconInstallationFilter
-    search_fields = ["service__client__full_name", "service__reference_code"]
-    ordering_fields = ["id"]
-
-    def get_queryset(self):
-        return get_role_filtered_queryset(self.request, super().get_queryset())
-
-    @action(detail=False, methods=["get"], url_path="filters")
-    def get_filters(self, request):
-        filters_config = {
-            "service": {"options": lambda: []},
-        }
-        ordering_config = [
-            {"label": "ID", "value": "id"},
         ]
         return get_role_based_filter_response(request, filters_config, ordering_config)
 

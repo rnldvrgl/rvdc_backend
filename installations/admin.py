@@ -2,8 +2,6 @@ from django.contrib import admin
 
 from installations.models import (
     AirconBrand,
-    AirconInstallation,
-    AirconItemUsed,
     AirconModel,
     AirconUnit,
     WarrantyClaim,
@@ -23,6 +21,7 @@ class AirconModelAdmin(admin.ModelAdmin):
         "id",
         "brand",
         "name",
+        "horsepower",
         "retail_price",
         "promo_price",
         "aircon_type",
@@ -30,7 +29,7 @@ class AirconModelAdmin(admin.ModelAdmin):
         "discount_percentage",
         "has_discount",
     ]
-    list_filter = ["brand", "aircon_type", "is_inverter"]
+    list_filter = ["brand", "aircon_type", "horsepower", "is_inverter"]
     search_fields = ["name", "brand__name"]
     ordering = ["brand__name", "name"]
 
@@ -62,6 +61,8 @@ class AirconUnitAdmin(admin.ModelAdmin):
         "is_reserved",
         "is_available_for_sale",
         "sale_price",
+        "created_at",
+        "updated_at",
     ]
     ordering = ["-created_at"]
 
@@ -70,7 +71,7 @@ class AirconUnitAdmin(admin.ModelAdmin):
             "fields": ("model", "serial_number", "stall")
         }),
         ("Sale Information", {
-            "fields": ("sale", "installation", "is_sold", "reserved_by", "reserved_at")
+            "fields": ("sale", "installation_service", "is_sold", "reserved_by", "reserved_at")
         }),
         ("Warranty Information", {
             "fields": (
@@ -90,21 +91,6 @@ class AirconUnitAdmin(admin.ModelAdmin):
             "classes": ("collapse",)
         }),
     )
-
-
-@admin.register(AirconInstallation)
-class AirconInstallationAdmin(admin.ModelAdmin):
-    list_display = ["id", "service", "created_at"]
-    search_fields = ["service__client__name"]
-    ordering = ["-created_at"]
-
-
-@admin.register(AirconItemUsed)
-class AirconItemUsedAdmin(admin.ModelAdmin):
-    list_display = ["id", "unit", "item", "total_quantity_used", "free_quantity"]
-    list_filter = ["item"]
-    search_fields = ["unit__serial_number", "item__name"]
-    ordering = ["-created_at"]
 
 
 @admin.register(WarrantyClaim)
@@ -136,8 +122,6 @@ class WarrantyClaimAdmin(admin.ModelAdmin):
         "is_pending",
         "is_approved",
         "warranty_days_remaining_at_claim",
-        "created_at",
-        "updated_at",
     ]
     ordering = ["-claim_date"]
 

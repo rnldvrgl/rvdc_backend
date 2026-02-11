@@ -445,6 +445,7 @@ class ServiceAppliance(models.Model):
     )
     brand = models.CharField(max_length=100, blank=True, null=True)
     model = models.CharField(max_length=100, blank=True, null=True)
+    serial_number = models.CharField(max_length=100, blank=True, null=True, help_text="Serial number of the appliance (optional)")
     issue_reported = models.TextField(blank=True, null=True)
     diagnosis_notes = models.TextField(blank=True, null=True)
     status = models.CharField(
@@ -493,6 +494,35 @@ class ServiceAppliance(models.Model):
         help_text="Reason for labor discount"
     )
     
+    # Warranty information
+    labor_warranty_months = models.PositiveIntegerField(
+        default=0,
+        help_text="Labor warranty period in months (0 = no warranty)"
+    )
+    unit_warranty_months = models.PositiveIntegerField(
+        default=0,
+        help_text="Unit warranty period in months (0 = no warranty)"
+    )
+    warranty_notes = models.TextField(
+        blank=True,
+        help_text="Warranty details and notes (e.g., compressor warranty, parts coverage)"
+    )
+    warranty_start_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date when warranty becomes active (set when installation is completed)"
+    )
+    labor_warranty_end_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date when labor warranty expires"
+    )
+    unit_warranty_end_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date when unit warranty expires"
+    )
+    
     @property
     def discounted_labor_fee(self):
         """Labor fee after item-level discount"""
@@ -511,6 +541,49 @@ class ServiceAppliance(models.Model):
         
         # Round to 2 decimal places
         return max(fee.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP), Decimal('0.00'))
+
+    def activate_warranties(self, start_date=None):
+        """
+        Activate warranties by setting start date and calculating end dates.
+        Should be called when installation is completed.
+        """
+        from datetime import date
+        from dateutil.relativedelta import relativedelta
+        
+        if start_date is None:
+            start_date = date.today()
+        
+        self.warranty_start_date = start_date
+        
+        # Calculate labor warranty end date
+        if self.labor_warranty_months > 0:
+            self.labor_warranty_end_date = start_date + relativedelta(months=self.labor_warranty_months)
+        else:
+            self.labor_warranty_end_date = None
+        
+        # Calculate unit warranty end date
+        if self.unit_warranty_months > 0:
+            self.unit_warranty_end_date = start_date + relativedelta(months=self.unit_warranty_months)
+        else:
+            self.unit_warranty_end_date = None
+        
+        self.save(update_fields=['warranty_start_date', 'labor_warranty_end_date', 'unit_warranty_end_date'])
+    
+    @property
+    def is_labor_warranty_active(self):
+        """Check if labor warranty is currently active"""
+        from datetime import date
+        if not self.warranty_start_date or not self.labor_warranty_end_date:
+            return False
+        return self.warranty_start_date <= date.today() <= self.labor_warranty_end_date
+    
+    @property
+    def is_unit_warranty_active(self):
+        """Check if unit warranty is currently active"""
+        from datetime import date
+        if not self.warranty_start_date or not self.unit_warranty_end_date:
+            return False
+        return self.warranty_start_date <= date.today() <= self.unit_warranty_end_date
 
     class Meta:
         ordering = ["appliance_type__name", "brand"]
