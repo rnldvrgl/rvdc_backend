@@ -20,6 +20,7 @@ class DailyAttendance(models.Model):
     - Clock in/out managed by Admin and Manager only
     - Standard shift: 8:00 AM - 6:00 PM (10 hours with 2-hour break = 8 paid hours)
     - Clock-in allowance: Can clock in early (default: 60 min), but paid hours count from shift start
+      Example: Clock in 7:00 AM, shift starts 8:00 AM → paid time starts from 8:00 AM (7am-8am NOT counted)
     - Clock-out tolerance: Configurable grace period before shift end (default: 30 min, e.g., 5:30 PM)
     
     Attendance Types:
@@ -27,7 +28,9 @@ class DailyAttendance(models.Model):
       Example 1: 8:00 AM - 5:30 PM = FULL_DAY (with 30-min tolerance)
       Example 2: 8:25 AM - 6:00 PM = FULL_DAY (late but stayed full shift, late penalty applies)
       Example 3: 10:00 AM - 8:00 PM = FULL_DAY (10 hrs - 2 break = 8 paid hours)
-    - HALF_DAY: Only for approved half-day leave scenarios → 4 paid hours
+    - HALF_DAY: Approved half-day leave scenarios OR worked 3.5-4.5 hours → 4 paid hours
+      Example 1: With approved leave + worked other half → 4 paid hours
+      Example 2: Sundays/manual half-day (e.g., 8am-1pm = 4hrs after break) → 4 paid hours
     - PARTIAL: Worked < 8 hours and left early → actual hours minus break deduction
       Example: 8:00 AM - 12:00 PM = 4.00 hrs (no break) → 4.00 paid hours
       Example: 8:00 AM - 12:30 PM = 4.50 hrs - 0.50 hr break = 4.00 paid hours
@@ -93,19 +96,19 @@ class DailyAttendance(models.Model):
         max_digits=5,
         decimal_places=2,
         default=Decimal('0.00'),
-        help_text='Total clock hours (clock_out - clock_in)',
+        help_text='Total clock hours (actual clock_out - clock_in for reference only, NOT paid hours)',
     )
     break_hours = models.DecimalField(
         max_digits=5,
         decimal_places=2,
         default=Decimal('2.00'),
-        help_text='Unpaid break hours (auto-deducted)',
+        help_text='Unpaid break hours (auto-deducted from overlap with break periods)',
     )
     paid_hours = models.DecimalField(
         max_digits=5,
         decimal_places=2,
         default=Decimal('0.00'),
-        help_text='Hours counted for payroll',
+        help_text='Hours counted for payroll (excludes early clock-in and break time)',
     )
     
     # Late tracking
@@ -515,7 +518,7 @@ class DailyAttendance(models.Model):
         
         SIMPLIFIED RULES:
         - FULL_DAY: Stayed until shift end (with tolerance) OR worked 8+ hours after breaks → 8 paid hours
-        - HALF_DAY: Only for approved half-day leave scenarios → 4 paid hours
+        - HALF_DAY: Approved half-day leave scenarios OR worked 3.5-4.5 hours → 4 paid hours
         - PARTIAL: Worked < 8 hours → actual hours minus break overlap (per hour payment)
         - INVALID: < 1 hour worked → REJECTED
         
@@ -529,6 +532,7 @@ class DailyAttendance(models.Model):
         - 8:00 AM - 6:00 PM = FULL_DAY (8 paid hours, 2hr break deducted)
         - 8:25 AM - 6:00 PM = FULL_DAY (8 paid hours) + late penalty
         - 8:00 AM - 5:30 PM = FULL_DAY (8 paid hours, within tolerance)
+        - 8:00 AM - 1:00 PM = HALF_DAY (4 paid hours, manual designation)
         - 8:00 AM - 12:00 PM = PARTIAL (4.00 paid hours, no break overlap)
         - 8:00 AM - 12:30 PM = PARTIAL (4.00 paid hours after 0.5hr break)
         - 8:00 AM - 1:30 PM = PARTIAL (4.50 paid hours after 1hr break)
@@ -614,16 +618,19 @@ class DailyAttendance(models.Model):
 
         # Calculate hours for paid time (respect early clock-in allowance)
         # If employee clocked in before shift_start, count paid hours from shift_start
-        # Example: Clock in 7am (allowed), but shift starts 8am → count from 8am
-        paid_clock_in = max(clock_in_local, morning_start_dt) if clock_in_local < morning_start_dt else clock_in_local
+        # Example: Clock in 7:00 AM (allowed early), shift starts 8:00 AM → paid time starts from 8:00 AM
+        # This ensures early clock-ins (7am-8am) are NOT counted as work hours
+        paid_clock_in = max(clock_in_local, morning_start_dt)
         
-        # Total hours = actual clock duration (for display/reference)
+        # Total hours = actual clock duration (for display/reference only)
+        # This shows physical presence but NOT what they'll be paid for
         delta = clock_out_local - clock_in_local
         total_hours = Decimal(delta.total_seconds()) / Decimal(3600)
         total_hours = self._round(total_hours)
         self.total_hours = total_hours
         
-        # Paid hours calculation uses the capped clock-in time
+        # Paid hours calculation uses the capped clock-in time (NOT the actual clock-in time)
+        # This ensures work before shift_start is excluded from payment
         paid_delta = clock_out_local - paid_clock_in
         paid_total_hours = Decimal(paid_delta.total_seconds()) / Decimal(3600)
         paid_total_hours = self._round(paid_total_hours)
@@ -652,7 +659,8 @@ class DailyAttendance(models.Model):
         evening_break_start = morning_start_dt + second_break_start_offset
         evening_break_end = evening_break_start + timedelta(hours=1)
         
-        # Calculate overlap with lunch break (12pm-1pm)
+        # Calculate overlap with lunch break using paid_clock_in (not actual clock_in)
+        # This ensures early clock-ins don't affect break calculations
         lunch_overlap = Decimal("0.00")
         if clock_out_local > lunch_break_start and paid_clock_in < lunch_break_end:
             overlap_start = max(paid_clock_in, lunch_break_start)
@@ -662,7 +670,7 @@ class DailyAttendance(models.Model):
                 lunch_overlap = Decimal(lunch_overlap_seconds) / Decimal(3600)
                 lunch_overlap = self._round(lunch_overlap)
         
-        # Calculate overlap with evening break (5pm-6pm)
+        # Calculate overlap with evening break using paid_clock_in (not actual clock_in)
         evening_overlap = Decimal("0.00")
         if clock_out_local > evening_break_start and paid_clock_in < evening_break_end:
             overlap_start = max(paid_clock_in, evening_break_start)
@@ -764,8 +772,9 @@ class DailyAttendance(models.Model):
             self._update_awol_tracking()
             return
 
-        # HALF DAY - Only for approved half-day leave scenarios
-        # If employee has approved half-day leave and worked the other half
+        # HALF DAY - Two scenarios:
+        # 1. Approved half-day leave (worked the other half)
+        # 2. Manual half-day (worked ~4 hours, common on Sundays)
         if approved_leave and approved_leave.is_half_day:
             # Check if they worked the appropriate shift
             if paid_total_hours >= min_half_day_clock_hours and clock_out_local >= expected_end:
@@ -774,6 +783,17 @@ class DailyAttendance(models.Model):
                 self.paid_hours = half_day_paid_hours
                 self._update_awol_tracking()
                 return
+        
+        # Manual half-day designation (no approved leave required)
+        # If paid hours after break deduction are close to 4 hours, mark as HALF_DAY
+        # Common scenarios: Sundays, half-day work schedules
+        # Range: 3.5 - 4.5 paid hours = HALF_DAY (fixed at 4.00 paid hours)
+        if Decimal("3.50") <= work_hours_after_break <= Decimal("4.50"):
+            self.attendance_type = "HALF_DAY"
+            self.break_hours = total_break
+            self.paid_hours = Decimal("4.00")  # Fixed 4 hours for half day
+            self._update_awol_tracking()
+            return
 
         # PARTIAL - Worked less than full day and no approved leave
         # Break time already calculated based on actual time periods
