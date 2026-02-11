@@ -377,16 +377,30 @@ class DailyAttendance(models.Model):
         """
         Save method that calculates penalties and attendance metrics.
         
-        IMPORTANT: Late penalty is calculated IMMEDIATELY when clock_in is recorded,
-        NOT when clock_out happens.
+        IMPORTANT: 
+        - Late penalty is calculated IMMEDIATELY when clock_in is recorded, NOT when clock_out happens
+        - If marked as ABSENT/LEAVE or REJECTED status, all hours and penalties are cleared
+        - Clock times are preserved for audit trail even when marked absent
         """
         try:
             with transaction.atomic():
                 # Calculate uniform penalties
                 self.calculate_uniform_penalty()
                 
+                # If manually marked as ABSENT or LEAVE, clear all hours and penalties
+                # This handles cases where employee clocked in/out but admin marks them absent
+                # Also clear hours if status is REJECTED
+                if self.attendance_type in ['ABSENT', 'LEAVE'] or self.status == 'REJECTED':
+                    self.total_hours = Decimal('0.00')
+                    self.paid_hours = Decimal('0.00')
+                    self.break_hours = Decimal('0.00')
+                    self.is_late = False
+                    self.late_minutes = 0
+                    self.late_penalty_amount = Decimal('0.00')
+                    # Note: Clock times are preserved for audit trail
+                
                 # Auto-mark as ABSENT if no clock in/out and not LEAVE
-                if not self.clock_in and not self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
+                elif not self.clock_in and not self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
                     self.mark_absent()
                 else:
                     # Calculate LATENESS immediately when clock_in exists (even without clock_out)
