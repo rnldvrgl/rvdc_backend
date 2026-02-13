@@ -743,7 +743,7 @@ class WeeklyPayroll(models.Model):
             settings = PayrollSettings.objects.first()
             if settings and settings.night_diff_multiplier:
                 night_diff_rate = Decimal(settings.night_diff_multiplier)
-        except Exception:
+        except (ImportError, LookupError, AttributeError):
             pass
 
         for attendance in attendance_qs:
@@ -806,7 +806,7 @@ class WeeklyPayroll(models.Model):
 
             self.approved_ot_hours = self._q(approved_ot_hours_total, places=2)
             self.approved_ot_pay = self._q(self.approved_ot_hours * hr * Decimal('1.25'))
-        except Exception:
+        except (ImportError, LookupError, AttributeError):
             self.approved_ot_hours = Decimal('0.00')
             self.approved_ot_pay = Decimal('0.00')
 
@@ -817,7 +817,7 @@ class WeeklyPayroll(models.Model):
         # Holiday premiums (compute based on worked days from DailyAttendance)
         try:
             settings_obj = PayrollSettings.objects.first()
-        except Exception:
+        except (ImportError, LookupError, AttributeError):
             settings_obj = None
 
         day_hours = Decimal(getattr(settings_obj, 'holiday_day_hours', Decimal('8.00')) or '8.00')
@@ -844,7 +844,7 @@ class WeeklyPayroll(models.Model):
                 date__gte=self.week_start,
                 date__lte=self.week_end
             )
-        except Exception:
+        except (ImportError, LookupError, AttributeError):
             holidays = []
 
         for h in holidays:
@@ -1171,28 +1171,21 @@ class WeeklyPayroll(models.Model):
 
     def create_deduction_records_legacy(self):
         """
-        Create structured PayrollDeduction records for this payroll.
-        Should be called after save() to ensure payroll has an ID.
-        Clears existing records and recreates them.
-        Also updates the payroll's deductions and total_deductions fields.
-
-        Note: Does NOT mark deductions as applied if payroll is still draft.
+        LEGACY METHOD - Use compute_from_daily_attendance instead.
+        
+        This method is deprecated. Deductions are now computed directly in
+        compute_from_daily_attendance and stored in JSON fields (deductions, deduction_metadata).
+        
+        Kept for backward compatibility but does minimal work.
         """
-        # Clear existing deduction records
-        self.deduction_items.all().delete()
-
         # Call the helper to get deduction records (without marking as applied)
-        deductions_map, deduction_records = self._apply_all_deductions(mark_as_applied=False)
+        deductions_map = self._apply_all_deductions(mark_as_applied=False)
 
         # Update the payroll's deductions and total_deductions fields
         self.deductions = {k: float(self._q(v)) for k, v in deductions_map.items()}
         self.total_deductions = self._q(sum(deductions_map.values()))
         self.net_pay = self._q(self.gross_pay - self.total_deductions)
         self.save(update_fields=['deductions', 'total_deductions', 'net_pay'])
-
-        # Bulk create all deduction records
-        if deduction_records:
-            PayrollDeduction.objects.bulk_create(deduction_records)
 
     def finalize_deductions(self):
         """
@@ -1368,8 +1361,8 @@ class WeeklyPayroll(models.Model):
 
     def _apply_all_deductions(self, mark_as_applied=False):
         """
-        Apply all applicable deductions and create PayrollDeduction records.
-        This method computes deductions from all sources and creates structured records.
+        Apply all applicable deductions and compute deductions map.
+        This method computes deductions from all sources.
 
         Sources:
         1. Existing deductions from compute_from_daily_attendance (late penalties, statutory)
@@ -1381,7 +1374,7 @@ class WeeklyPayroll(models.Model):
             mark_as_applied: If True, marks one-time deductions as applied immediately.
                            If False (default), deductions are only marked when payroll is approved.
 
-        Returns: tuple of (deductions_map, deduction_records_to_create)
+        Returns: deductions_map dict
         """
         from payroll.models import (
             GovernmentBenefit,
@@ -1395,44 +1388,6 @@ class WeeklyPayroll(models.Model):
         deductions_map: dict[str, Decimal] = {
             k: self._q(Decimal(v)) for k, v in existing_deductions.items()
         }
-        deduction_records = []
-
-        # Create PayrollDeduction records for existing deductions (late penalties, statutory)
-        # These were already computed in compute_from_daily_attendance
-        for key, amount in existing_deductions.items():
-            amount_decimal = self._q(Decimal(amount))
-
-            # Determine category and name
-            if key == 'late_penalty':
-                category = 'late_penalty'
-                name = 'Late Penalty'
-                description = 'Automatic late penalty from attendance'
-                source_type = 'DailyAttendance'
-            elif key in ['sss', 'philhealth', 'pagibig']:
-                category = 'government'
-                name = key.upper() if key != 'philhealth' else 'PhilHealth'
-                if key == 'pagibig':
-                    name = 'Pag-IBIG'
-                description = f'Statutory {name} contribution'
-                source_type = 'DeductionRate'
-            else:
-                # Other deductions (custom percentage, extra flat, etc.)
-                category = 'other'
-                name = key.replace('_', ' ').title()
-                description = ''
-                source_type = 'Other'
-
-            deduction_records.append(PayrollDeduction(
-                payroll=self,
-                category=category,
-                name=name,
-                description=description,
-                employee_share=amount_decimal,
-                employer_share=Decimal("0.00"),
-                source_type=source_type,
-                source_id=None,
-                calculation_method='fixed',
-            ))
 
         # Now overlay manual deductions and government benefits
         # These will override any duplicate keys from existing deductions
@@ -1465,22 +1420,6 @@ class WeeklyPayroll(models.Model):
                         amount = self._q(Decimal(deduction.amount))
                         deductions_map[key] = amount
 
-                        # Remove any existing record with this key (we'll replace it)
-                        deduction_records = [r for r in deduction_records if r.name != key]
-
-                        # Create structured record
-                        deduction_records.append(PayrollDeduction(
-                            payroll=self,
-                            category='manual',
-                            name=deduction.name,
-                            description=deduction.description,
-                            employee_share=amount,
-                            employer_share=Decimal("0.00"),
-                            source_type='ManualDeduction',
-                            source_id=deduction.id,
-                            calculation_method='fixed',
-                        ))
-
                         # Only mark as applied if explicitly requested (when payroll is approved)
                         if mark_as_applied:
                             deduction.applied_date = self.week_start
@@ -1492,21 +1431,6 @@ class WeeklyPayroll(models.Model):
                             key = self._generate_deduction_key(deduction.name, deductions_map)
                             amount = self._q(Decimal(deduction.amount))
                             deductions_map[key] = amount
-
-                            # Remove any existing record with this key
-                            deduction_records = [r for r in deduction_records if r.name != key]
-
-                            deduction_records.append(PayrollDeduction(
-                                payroll=self,
-                                category='manual',
-                                name=deduction.name,
-                                description=deduction.description,
-                                employee_share=amount,
-                                employer_share=Decimal("0.00"),
-                                source_type='ManualDeduction',
-                                source_id=deduction.id,
-                                calculation_method='fixed',
-                            ))
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
@@ -1529,21 +1453,6 @@ class WeeklyPayroll(models.Model):
                 key = self._generate_deduction_key(deduction.name, deductions_map)
                 amount = self._q(Decimal(deduction.amount))
                 deductions_map[key] = amount
-
-                # Remove any existing record with this key
-                deduction_records = [r for r in deduction_records if r.name != key]
-
-                deduction_records.append(PayrollDeduction(
-                    payroll=self,
-                    category='manual',
-                    name=deduction.name,
-                    description=f"Company-wide: {deduction.description}",
-                    employee_share=amount,
-                    employer_share=Decimal("0.00"),
-                    source_type='ManualDeduction',
-                    source_id=deduction.id,
-                    calculation_method='fixed',
-                ))
 
             # One-time for all
             onetime_all = ManualDeduction.objects.filter(
@@ -1568,21 +1477,6 @@ class WeeklyPayroll(models.Model):
                     key = self._generate_deduction_key(deduction.name, deductions_map)
                     amount = self._q(Decimal(deduction.amount))
                     deductions_map[key] = amount
-
-                    # Remove any existing record with this key
-                    deduction_records = [r for r in deduction_records if r.name != key]
-
-                    deduction_records.append(PayrollDeduction(
-                        payroll=self,
-                        category='manual',
-                        name=deduction.name,
-                        description=f"One-time (all): {deduction.description}",
-                        employee_share=amount,
-                        employer_share=Decimal("0.00"),
-                        source_type='ManualDeduction',
-                        source_id=deduction.id,
-                        calculation_method='fixed',
-                    ))
 
                     # Only mark as applied if explicitly requested (when payroll is approved)
                     if mark_as_applied and not deduction.applied_date:
@@ -1609,25 +1503,6 @@ class WeeklyPayroll(models.Model):
                 if employee_share > 0:
                     key = benefit.benefit_type
                     deductions_map[key] = employee_share
-
-                    category = 'tax' if benefit.benefit_type == 'bir_tax' else 'government'
-
-                    # Remove any existing record with this key (replace statutory with computed)
-                    deduction_records = [r for r in deduction_records if r.name != benefit.name and not (r.category == category and r.source_type == 'DeductionRate')]
-
-                    deduction_records.append(PayrollDeduction(
-                        payroll=self,
-                        category=category,
-                        name=benefit.name,
-                        description=benefit.description,
-                        employee_share=employee_share,
-                        employer_share=employer_share,
-                        source_type='GovernmentBenefit',
-                        source_id=benefit.id,
-                        calculation_method=benefit.calculation_method,
-                        basis_amount=self.gross_pay if benefit.calculation_method in ['percentage', 'progressive_tax'] else None,
-                        rate=benefit.employee_share_rate if benefit.calculation_method == 'percentage' else None,
-                    ))
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
@@ -1647,29 +1522,12 @@ class WeeklyPayroll(models.Model):
                 if key not in deductions_map:
                     amount = self._q(self.gross_pay * Decimal(pct_deduction.rate))
                     deductions_map[key] = amount
-
-                    # Remove any existing record with this key
-                    deduction_records = [r for r in deduction_records if r.name != pct_deduction.name]
-
-                    deduction_records.append(PayrollDeduction(
-                        payroll=self,
-                        category='other',
-                        name=pct_deduction.name,
-                        description=pct_deduction.description,
-                        employee_share=amount,
-                        employer_share=Decimal("0.00"),
-                        source_type='PercentageDeduction',
-                        source_id=pct_deduction.id,
-                        calculation_method='percentage',
-                        basis_amount=self.gross_pay,
-                        rate=pct_deduction.rate,
-                    ))
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
             logger.error(f"Error applying percentage deductions: {e}")
 
-        return deductions_map, deduction_records
+        return deductions_map
 
 
 
