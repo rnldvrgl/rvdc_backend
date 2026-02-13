@@ -6,6 +6,7 @@ from users.models import CustomUser as User
 
 from attendance.models import (
     DailyAttendance,
+    HalfDaySchedule,
     LeaveBalance,
     LeaveRequest,
     Offense,
@@ -346,3 +347,34 @@ class OvertimeRequestApproveSerializer(serializers.ModelSerializer):
             instance.approved_at = timezone.now()
         instance.save(update_fields=["approved", "approved_by", "approved_at", "updated_at"])
         return instance
+
+
+class HalfDayScheduleSerializer(serializers.ModelSerializer):
+    """Serializer for HalfDaySchedule model."""
+    
+    created_by_name = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = HalfDaySchedule
+        fields = [
+            'id',
+            'date',
+            'reason',
+            'created_by',
+            'created_by_name',
+            'created_at',
+            'updated_at',
+            'is_deleted',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'created_by_name']
+    
+    def get_created_by_name(self, obj):
+        """Get full name of the user who created the schedule."""
+        if obj.created_by:
+            return obj.created_by.get_full_name()
+        return None
+    
+    def create(self, validated_data):
+        """Set created_by to current user."""
+        validated_data['created_by'] = self.context['request'].user
+        return super().create(validated_data)

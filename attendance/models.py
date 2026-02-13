@@ -702,6 +702,20 @@ class DailyAttendance(models.Model):
         work_hours_after_break = paid_total_hours - total_break
         work_hours_after_break = min(work_hours_after_break, Decimal("8.00"))
 
+        # Check if this date is a forced half-day schedule (admin-designated)
+        is_forced_half_day = HalfDaySchedule.objects.filter(
+            date=local_date,
+            is_deleted=False,
+        ).exists()
+        
+        if is_forced_half_day:
+            # Cap at half-day regardless of hours worked
+            self.attendance_type = "HALF_DAY"
+            self.break_hours = total_break
+            self.paid_hours = min(work_hours_after_break, Decimal("4.00"))
+            self._update_awol_tracking()
+            return
+
         # Check for approved leave to determine expected shift
         approved_leave = None
         try:
@@ -1341,3 +1355,38 @@ class OvertimeRequest(models.Model):
 
     def __str__(self):
         return f"OT {self.employee_id} | {self.date} | {self.time_start}—{self.time_end}"
+
+
+class HalfDaySchedule(models.Model):
+    """
+    Admin-designated half-day schedule.
+    
+    When an admin marks a specific date as a half-day, all employees'
+    attendance on that date will be capped at 4 paid hours (half-day),
+    regardless of how long they actually worked.
+    
+    This is used for occasions like company events, holidays-eve,
+    or any date the admin decides should only be a half-day work schedule.
+    """
+    
+    date = models.DateField(unique=True)
+    reason = models.CharField(max_length=200, blank=True, default='')
+    created_by = models.ForeignKey(
+        'users.CustomUser',
+        on_delete=models.CASCADE,
+        related_name='half_day_schedules'
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+    updated_at = models.DateTimeField(auto_now=True)
+    is_deleted = models.BooleanField(default=False)
+    
+    class Meta:
+        db_table = 'half_day_schedules'
+        ordering = ['-date']
+        indexes = [
+            models.Index(fields=['date']),
+            models.Index(fields=['is_deleted']),
+        ]
+    
+    def __str__(self):
+        return f"Half Day - {self.date} ({self.reason})"

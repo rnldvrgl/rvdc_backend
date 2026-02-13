@@ -14,6 +14,7 @@ from attendance.api.serializers import (
     ClockInSerializer,
     ClockOutSerializer,
     DailyAttendanceSerializer,
+    HalfDayScheduleSerializer,
     LeaveBalanceSerializer,
     LeaveRequestSerializer,
     OffenseSerializer,
@@ -25,6 +26,7 @@ from attendance.api.serializers import (
 )
 from attendance.models import (
     DailyAttendance,
+    HalfDaySchedule,
     LeaveBalance,
     LeaveRequest,
     Offense,
@@ -991,3 +993,54 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
             )
 
         return Response(serializer.data)
+
+
+class HalfDayScheduleViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing half-day schedules.
+    
+    Admin can mark specific dates as forced half-days.
+    On those dates, all employees' attendance will be capped at 4 paid hours.
+    
+    Permissions:
+    - Admin/Manager: Full access (create, update, delete, view all)
+    - Others: Read-only access
+    
+    Endpoints:
+    - GET /api/attendance/half-day-schedules/ - List all half-day schedules
+    - POST /api/attendance/half-day-schedules/ - Create (admin/manager only)
+    - GET /api/attendance/half-day-schedules/{id}/ - Get detail
+    - PUT/PATCH /api/attendance/half-day-schedules/{id}/ - Update (admin/manager only)
+    - DELETE /api/attendance/half-day-schedules/{id}/ - Soft delete (admin/manager only)
+    """
+    serializer_class = HalfDayScheduleSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        """Get non-deleted half-day schedules."""
+        queryset = HalfDaySchedule.objects.filter(is_deleted=False).select_related('created_by')
+        
+        # Filter by date range if provided
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        date = self.request.query_params.get('date')
+        
+        if date:
+            queryset = queryset.filter(date=date)
+        if start_date:
+            queryset = queryset.filter(date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(date__lte=end_date)
+        
+        return queryset
+    
+    def get_permissions(self):
+        """Only admin/manager can create, update, delete."""
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [IsAdminOrManager()]
+        return [IsAuthenticated()]
+    
+    def perform_destroy(self, instance):
+        """Soft delete half-day schedule."""
+        instance.is_deleted = True
+        instance.save(update_fields=['is_deleted'])

@@ -12,7 +12,7 @@ from analytics.business_logic import (
     get_date_range_from_request,
     get_stall_from_request,
 )
-from attendance.models import LeaveRequest
+from attendance.models import LeaveRequest, HalfDaySchedule
 from clients.models import Client
 from django.db.models import (
     Count,
@@ -1029,6 +1029,31 @@ class CalendarEventsView(APIView):
                     'description': custom_event['description'],
                     'event_type': custom_event['event_type'],
                     'created_by': f"{custom_event['created_by__first_name']} {custom_event['created_by__last_name']}",
+                }
+            })
+
+        # Fetch half-day schedules
+        half_day_schedules = HalfDaySchedule.objects.filter(
+            is_deleted=False,
+            date__gte=start_date,
+            date__lte=end_date
+        ).select_related('created_by').values(
+            'id', 'date', 'reason', 'created_by__first_name', 'created_by__last_name'
+        )
+        
+        for half_day in half_day_schedules:
+            reason = half_day['reason'] or 'Half Day'
+            events.append({
+                'id': f"halfday-{half_day['id']}",
+                'title': f"Half Day - {reason}",
+                'start': half_day['date'].isoformat(),
+                'end': half_day['date'].isoformat(),
+                'allDay': True,
+                'extendedProps': {
+                    'type': 'half_day',
+                    'half_day_id': half_day['id'],
+                    'reason': reason,
+                    'created_by': f"{half_day['created_by__first_name']} {half_day['created_by__last_name']}",
                 }
             })
 
