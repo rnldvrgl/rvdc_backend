@@ -6,6 +6,7 @@ from installations.models import (
 )
 from rest_framework import serializers
 from services.models import Service
+from clients.api.serializers import ClientSerializer
 
 
 class AirconBrandSerializer(serializers.ModelSerializer):
@@ -64,6 +65,7 @@ class AirconUnitSerializer(serializers.ModelSerializer):
     model_id = serializers.PrimaryKeyRelatedField(
         source="model", queryset=AirconModel.objects.all(), write_only=True, required=True
     )
+    reserved_by = ClientSerializer(read_only=True)
     stall_name = serializers.CharField(source="stall.name", read_only=True)
     warranty_end_date = serializers.ReadOnlyField()
     warranty_status = serializers.ReadOnlyField()
