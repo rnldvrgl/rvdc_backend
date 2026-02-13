@@ -158,11 +158,13 @@ class WeeklyPayrollGenerateView(APIView):
     POST to generate a new payroll for an employee for a specific week.
     Request body:
     - employee_id: int (required)
+    - week_start: string YYYY-MM-DD (optional - if provided, used as week start)
+    - week_end: string YYYY-MM-DD (optional - if provided, used as week end)
     - notes: string (optional)
     - include_unapproved: bool (optional, default False)
 
-    Week is auto-calculated based on PayrollSettings.payroll_cutoff_day.
-    Generates payroll for the most recent completed week.
+    If week_start/week_end are not provided, the week is auto-calculated
+    based on PayrollSettings.payroll_cutoff_day.
     """
     permission_classes = [permissions.IsAdminUser]
 
@@ -194,22 +196,43 @@ class WeeklyPayrollGenerateView(APIView):
 
         cutoff_day = getattr(settings_obj, 'payroll_cutoff_day', 4)  # Default Friday
 
-        # Calculate most recent completed week
-        # If today is Thursday and cutoff is Friday, use week ending last Friday
-        today = datetime.now().date()
-        current_weekday = today.weekday()  # 0=Monday, 6=Sunday
+        # Use provided dates or auto-calculate
+        week_start_str = request.data.get('week_start')
+        week_end_str = request.data.get('week_end')
 
-        # Days since last cutoff day
-        days_since_cutoff = (current_weekday - cutoff_day) % 7
-        if days_since_cutoff == 0 and datetime.now().time().hour < 23:
-            # Today is cutoff day but not end of day yet - use previous week
-            days_since_cutoff = 7
-
-        # Last completed cutoff date
-        last_cutoff = today - timedelta(days=days_since_cutoff)
-
-        # Week starts the day after last week's cutoff (7 days before this cutoff)
-        week_start = last_cutoff - timedelta(days=6)
+        if week_start_str and week_end_str:
+            try:
+                week_start = datetime.strptime(str(week_start_str), '%Y-%m-%d').date()
+                week_end = datetime.strptime(str(week_end_str), '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                return Response(
+                    {'detail': 'Invalid date format. Use YYYY-MM-DD.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if week_end < week_start:
+                return Response(
+                    {'detail': 'week_end must be on or after week_start.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        elif week_start_str:
+            try:
+                week_start = datetime.strptime(str(week_start_str), '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                return Response(
+                    {'detail': 'Invalid date format. Use YYYY-MM-DD.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            week_end = week_start + timedelta(days=6)
+        else:
+            # Auto-calculate from cutoff day
+            today = datetime.now().date()
+            current_weekday = today.weekday()
+            days_since_cutoff = (current_weekday - cutoff_day) % 7
+            if days_since_cutoff == 0 and datetime.now().time().hour < 23:
+                days_since_cutoff = 7
+            last_cutoff = today - timedelta(days=days_since_cutoff)
+            week_start = last_cutoff - timedelta(days=6)
+            week_end = week_start + timedelta(days=6)
 
         # Get employee
         try:
@@ -856,11 +879,15 @@ class WeeklyPayrollRecomputeView(APIView):
 
 class WeeklyPayrollBulkGenerateView(APIView):
     """
-    POST to generate payroll for all active employees for the most recent completed week.
+    POST to generate payroll for all active employees for a specific week.
     Request body (all optional):
+    - week_start: string YYYY-MM-DD (optional - if provided, used as week start)
+    - week_end: string YYYY-MM-DD (optional - if provided, used as week end)
     - include_unapproved: bool (default False)
     - notes: string
     - employee_ids: list[int] (optional - if provided, only generate for these employees)
+
+    If week_start/week_end are not provided, the week is auto-calculated.
 
     Returns:
     - created: list of created payroll objects
@@ -886,16 +913,43 @@ class WeeklyPayrollBulkGenerateView(APIView):
 
         cutoff_day = getattr(settings_obj, 'payroll_cutoff_day', 4)
 
-        # Calculate week range
-        today = datetime.now().date()
-        current_weekday = today.weekday()
-        days_since_cutoff = (current_weekday - cutoff_day) % 7
-        if days_since_cutoff == 0 and datetime.now().time().hour < 23:
-            days_since_cutoff = 7
+        # Use provided dates or auto-calculate
+        week_start_str = request.data.get('week_start')
+        week_end_str = request.data.get('week_end')
 
-        last_cutoff = today - timedelta(days=days_since_cutoff)
-        week_start = last_cutoff - timedelta(days=6)
-        week_end = week_start + timedelta(days=6)
+        if week_start_str and week_end_str:
+            try:
+                week_start = datetime.strptime(str(week_start_str), '%Y-%m-%d').date()
+                week_end = datetime.strptime(str(week_end_str), '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                return Response(
+                    {'detail': 'Invalid date format. Use YYYY-MM-DD.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if week_end < week_start:
+                return Response(
+                    {'detail': 'week_end must be on or after week_start.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        elif week_start_str:
+            try:
+                week_start = datetime.strptime(str(week_start_str), '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                return Response(
+                    {'detail': 'Invalid date format. Use YYYY-MM-DD.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            week_end = week_start + timedelta(days=6)
+        else:
+            # Auto-calculate from cutoff day
+            today = datetime.now().date()
+            current_weekday = today.weekday()
+            days_since_cutoff = (current_weekday - cutoff_day) % 7
+            if days_since_cutoff == 0 and datetime.now().time().hour < 23:
+                days_since_cutoff = 7
+            last_cutoff = today - timedelta(days=days_since_cutoff)
+            week_start = last_cutoff - timedelta(days=6)
+            week_end = week_start + timedelta(days=6)
 
         # Get employees (only those with include_in_payroll=True)
         employees_qs = User.objects.filter(is_deleted=False, is_active=True, include_in_payroll=True)
