@@ -181,58 +181,113 @@ class SystemSettings(models.Model):
         return "System Settings"
 
 
-class CashAdvance(models.Model):
+class CashAdvanceMovement(models.Model):
     """
-    Track cash advances taken from employee's cash ban balance.
-    Cash ban is a fund per employee that accumulates and can be:
-    1. Received at year-end
-    2. Cash advanced (with deduction from total balance)
+    Tracks all movements (credits and debits) to an employee's cash ban balance.
+
+    Movement types:
+    - CREDIT (+): Adds to cash ban balance
+      Examples: payroll cash ban deduction, manual addition, initial balance setup
+    - DEBIT (-): Deducts from cash ban balance
+      Examples: cash advance taken by employee
+
+    Each movement updates the employee's cash_ban_balance and records
+    a snapshot of the balance after the movement for audit trail.
     """
-    
+
+    class MovementType(models.TextChoices):
+        CREDIT = 'credit', 'Credit (+)'
+        DEBIT = 'debit', 'Debit (-)'
+
     employee = models.ForeignKey(
         CustomUser,
         on_delete=models.CASCADE,
-        related_name='cash_advances',
-        help_text="Employee who took the cash advance"
+        related_name='cash_advance_movements',
+        help_text="Employee whose cash ban balance is affected"
+    )
+    movement_type = models.CharField(
+        max_length=10,
+        choices=MovementType.choices,
+        help_text="Credit (+) adds to balance, Debit (-) deducts from balance"
     )
     amount = models.DecimalField(
         max_digits=10,
         decimal_places=2,
-        help_text="Amount of cash advance taken from cash ban balance"
+        help_text="Amount of the movement (always positive, sign determined by movement_type)"
+    )
+    balance_after = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Snapshot of the employee's cash ban balance after this movement"
     )
     date = models.DateField(
-        help_text="Date when cash advance was given"
+        help_text="Date of the movement"
     )
-    reason = models.TextField(
+    description = models.TextField(
         blank=True,
-        help_text="Reason or notes for the cash advance"
+        help_text="Notes or reason for the movement (e.g., 'Initial cash ban balance', 'Cash advance for personal use')"
+    )
+    reference = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Optional reference (e.g., 'payroll-123', 'manual')"
     )
     created_by = models.ForeignKey(
         CustomUser,
         on_delete=models.SET_NULL,
         null=True,
-        related_name='created_cash_advances',
-        help_text="User who approved/recorded this cash advance"
+        related_name='created_cash_advance_movements',
+        help_text="User who recorded this movement"
+    )
+    is_pending = models.BooleanField(
+        default=False,
+        help_text="If True, movement is pending (linked to draft payroll) and not yet applied to balance"
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_deleted = models.BooleanField(default=False)
-    
+
     class Meta:
         ordering = ['-date', '-created_at']
         indexes = [
             models.Index(fields=['employee', 'date']),
             models.Index(fields=['-date']),
+            models.Index(fields=['employee', 'movement_type']),
         ]
-    
+
     def __str__(self):
-        return f"Cash Advance - {self.employee.get_full_name()} - ₱{self.amount} ({self.date})"
-    
+        sign = '+' if self.movement_type == self.MovementType.CREDIT else '-'
+        return f"Cash Ban {sign}₱{self.amount} - {self.employee.get_full_name()} ({self.date})"
+
     def save(self, *args, **kwargs):
-        """Automatically deduct from employee's cash ban balance on creation"""
+        """Update employee's cash_ban_balance and record balance snapshot (only if not pending)."""
         is_new = self.pk is None
         if is_new:
-            # Deduct from employee's cash ban balance
-            self.employee.cash_ban_balance -= self.amount
-            self.employee.save(update_fields=['cash_ban_balance'])
+            if not self.is_pending:
+                # Apply to balance and record final balance after movement
+                if self.movement_type == self.MovementType.CREDIT:
+                    self.employee.cash_ban_balance += self.amount
+                else:
+                    self.employee.cash_ban_balance -= self.amount
+                self.employee.save(update_fields=['cash_ban_balance'])
+                self.balance_after = self.employee.cash_ban_balance
+            else:
+                # For pending movements, record current balance (before movement)
+                # This will be updated to the actual balance after when applied
+                self.balance_after = self.employee.cash_ban_balance
         super().save(*args, **kwargs)
+    
+    def apply_to_balance(self):
+        """Apply this pending movement to the employee's balance."""
+        if not self.is_pending:
+            return  # Already applied
+        
+        if self.movement_type == self.MovementType.CREDIT:
+            self.employee.cash_ban_balance += self.amount
+        else:
+            self.employee.cash_ban_balance -= self.amount
+        self.employee.save(update_fields=['cash_ban_balance'])
+        self.balance_after = self.employee.cash_ban_balance
+        self.is_pending = False
+        self.save(update_fields=['balance_after', 'is_pending'])

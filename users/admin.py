@@ -1,5 +1,5 @@
 from django.contrib import admin
-from users.models import CustomUser, SystemSettings, CashAdvance
+from users.models import CustomUser, SystemSettings, CashAdvanceMovement
 
 
 @admin.register(SystemSettings)
@@ -44,12 +44,12 @@ class SystemSettingsAdmin(admin.ModelAdmin):
         return False
 
 
-@admin.register(CashAdvance)
-class CashAdvanceAdmin(admin.ModelAdmin):
-    list_display = ['employee', 'amount', 'date', 'created_by', 'created_at']
-    list_filter = ['date', 'created_at']
-    search_fields = ['employee__first_name', 'employee__last_name', 'reason']
-    readonly_fields = ['created_at', 'updated_at', 'created_by']
+@admin.register(CashAdvanceMovement)
+class CashAdvanceMovementAdmin(admin.ModelAdmin):
+    list_display = ['employee', 'movement_type', 'amount', 'balance_after', 'date', 'created_by', 'created_at']
+    list_filter = ['movement_type', 'date', 'created_at']
+    search_fields = ['employee__first_name', 'employee__last_name', 'description', 'reference']
+    readonly_fields = ['created_at', 'updated_at', 'created_by', 'balance_after']
     date_hierarchy = 'date'
     
     def save_model(self, request, obj, form, change):
