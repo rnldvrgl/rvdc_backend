@@ -2,7 +2,7 @@ name: Build & Deploy Backend
 
 on:
   push:
-    branches: [ "master" ]
+    branches: ["master"]
 
 jobs:
   build-and-deploy:
