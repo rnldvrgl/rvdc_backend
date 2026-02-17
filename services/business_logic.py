@@ -214,6 +214,9 @@ class RevenueCalculator:
         for appliance in service.appliances.all():
             # Use discounted_labor_fee which accounts for labor discounts
             main_revenue += appliance.discounted_labor_fee or Decimal('0.00')
+            # Add custom unit_price for second-hand or manually priced units
+            if appliance.unit_price:
+                main_revenue += appliance.unit_price
 
         # Add aircon unit prices for installation services (Main stall revenue)
         if service.service_type == 'installation':
@@ -366,6 +369,14 @@ class ServiceCompletionHandler:
                 if appliance.labor_warranty_months > 0 or appliance.unit_warranty_months > 0:
                     appliance.activate_warranties(start_date=completion_date)
             
+            # For installation services, set warranty_start_date on all aircon units
+            from utils.enums import ServiceType
+            if service.service_type == ServiceType.INSTALLATION:
+                for unit in service.installation_units.all():
+                    if not unit.warranty_start_date:
+                        unit.warranty_start_date = completion_date
+                        unit.save(update_fields=['warranty_start_date', 'updated_at'])
+
             # Update payment status (sets to NOT_APPLICABLE for complementary services)
             service.update_payment_status()
 

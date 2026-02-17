@@ -466,6 +466,14 @@ class ServiceAppliance(models.Model):
     labor_is_free = models.BooleanField(
         default=False, help_text="Mark labor for this appliance as free."
     )
+    # Unit price for second-hand or custom-priced units
+    unit_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Custom unit price (used for second-hand units or overrides)"
+    )
     # Promo support - track original amount before discount
     labor_original_amount = models.DecimalField(
         max_digits=10,

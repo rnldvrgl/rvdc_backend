@@ -95,6 +95,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
                 "appliances__items_used__stall_stock__stall",
                 "appliances__appliance_type",
                 "technician_assignments__technician",
+                "schedules",
             )
         )
         

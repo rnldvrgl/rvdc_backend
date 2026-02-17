@@ -379,6 +379,7 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "labor_fee",
             "labor_is_free",
             "labor_original_amount",
+            "unit_price",
             "labor_discount_amount",
             "labor_discount_percentage",
             "labor_discount_reason",
@@ -440,11 +441,15 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         return appliance
 
     def update(self, instance, validated_data):
-        """Update appliance and items."""
+        """Update appliance and items, handling unit type changes."""
         items_data = validated_data.pop("items_used", None)
         aircon_install_data = validated_data.pop("aircon_installation_data", None)
 
         with transaction.atomic():
+            # Handle aircon installation data changes (unit type switch, new unit, etc.)
+            if aircon_install_data is not None:
+                self._handle_aircon_update(instance, aircon_install_data)
+
             # Update appliance fields
             instance = super().update(instance, validated_data)
 
@@ -471,6 +476,87 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
                     serializer.save()
 
         return instance
+
+    def _handle_aircon_update(self, appliance, install_data):
+        """
+        Handle aircon installation changes on update.
+        Releases old brand_new unit if switching to second_hand or a different unit.
+        Links new brand_new unit if specified.
+        """
+        from installations.models import AirconUnit
+        from django.utils import timezone
+
+        service = appliance.service
+        new_unit_type = install_data.get('unit_type')
+        new_unit_id = install_data.get('unit_id')
+
+        # Find old linked unit (if any) by matching serial number
+        old_unit = None
+        if appliance.serial_number:
+            old_unit = AirconUnit.objects.filter(
+                installation_service=service,
+                serial_number=appliance.serial_number,
+            ).first()
+
+        # Release old unit if switching away from it
+        if old_unit and (
+            new_unit_type == 'second_hand'
+            or (new_unit_type == 'brand_new' and new_unit_id and new_unit_id != old_unit.id)
+        ):
+            old_unit.installation_service = None
+            old_unit.reserved_by = None
+            old_unit.reserved_at = None
+            old_unit.save(update_fields=[
+                'installation_service', 'reserved_by', 'reserved_at', 'updated_at'
+            ])
+
+        if new_unit_type == 'brand_new':
+            unit_id = new_unit_id
+            if not unit_id:
+                raise serializers.ValidationError({
+                    'aircon_installation_data': 'unit_id is required for brand_new units'
+                })
+
+            try:
+                unit = AirconUnit.objects.get(id=unit_id)
+            except AirconUnit.DoesNotExist:
+                raise serializers.ValidationError({
+                    'aircon_installation_data': f'Aircon unit {unit_id} not found'
+                })
+
+            # Skip if same unit already linked
+            if old_unit and old_unit.id == unit.id:
+                return
+
+            # Link new unit to service
+            unit.installation_service = service
+            unit.reserved_by = service.client
+            unit.reserved_at = timezone.now()
+            unit.save(update_fields=[
+                'installation_service', 'reserved_by', 'reserved_at', 'updated_at'
+            ])
+
+            # Update appliance with unit details
+            appliance.brand = unit.model.brand.name if unit.model and unit.model.brand else ''
+            appliance.model = unit.model.name if unit.model else ''
+            appliance.serial_number = unit.serial_number
+            appliance.unit_price = None  # brand_new uses model retail price
+            appliance.save(update_fields=['brand', 'model', 'serial_number', 'unit_price'])
+
+            # Recalculate revenue
+            RevenueCalculator.calculate_service_revenue(service, save=True)
+
+        elif new_unit_type == 'second_hand':
+            # Clear unit_price if not provided, or set it
+            unit_price = install_data.get('unit_price')
+            if unit_price is not None:
+                appliance.unit_price = Decimal(str(unit_price))
+            else:
+                appliance.unit_price = None
+            appliance.save(update_fields=['unit_price'])
+
+            # Recalculate revenue
+            RevenueCalculator.calculate_service_revenue(service, save=True)
     
     def _create_aircon_installation(self, appliance, install_data):
         """
@@ -522,11 +608,17 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             RevenueCalculator.calculate_service_revenue(service, save=True)
             
         elif unit_type == 'second_hand':
-            # Use manual entry data from appliance - not currently used in frontend
+            # Use manual entry data from appliance
             if not appliance.brand or not appliance.model or not appliance.serial_number:
                 raise serializers.ValidationError({
                     'aircon_installation_data': 'brand, model, and serial_number are required for second_hand units'
                 })
+            
+            # Save custom unit price if provided
+            unit_price = install_data.get('unit_price')
+            if unit_price is not None:
+                appliance.unit_price = Decimal(str(unit_price))
+                appliance.save(update_fields=['unit_price'])
             
             # Add notes to service about second-hand unit
             unit_info = f"Second-Hand Unit: {appliance.brand} {appliance.model}, SN: {appliance.serial_number}"
@@ -614,6 +706,7 @@ class ServiceSerializer(serializers.ModelSerializer):
     )
     has_refunds = serializers.BooleanField(read_only=True)
     payment_status = serializers.SerializerMethodField()
+    next_schedule = serializers.SerializerMethodField()
 
     class Meta:
         model = Service
@@ -662,6 +755,7 @@ class ServiceSerializer(serializers.ModelSerializer):
             "appliances",
             "technician_assignments",
             "payments",
+            "next_schedule",
         ]
         read_only_fields = [
             "main_stall_revenue",

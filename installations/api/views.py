@@ -57,7 +57,7 @@ class AirconBrandViewSet(viewsets.ModelViewSet):
 
 
 class AirconModelViewSet(viewsets.ModelViewSet):
-    queryset = AirconModel.objects.all()
+    queryset = AirconModel.objects.select_related('brand').all()
     serializer_class = AirconModelSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [
@@ -122,7 +122,9 @@ class AirconUnitViewSet(viewsets.ModelViewSet):
     - GET /aircon-units/stock-report/ - Get inventory stock report
     """
 
-    queryset = AirconUnit.objects.all()
+    queryset = AirconUnit.objects.select_related(
+        'model__brand', 'stall', 'installation_service', 'reserved_by', 'sale__client'
+    ).all()
     serializer_class = AirconUnitSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [
@@ -316,25 +318,22 @@ class AirconUnitViewSet(viewsets.ModelViewSet):
     def get_filters(self, request):
         filters_config = {
             "model": {"options": get_aircon_model_options},
-            "sale": {"options": lambda: []},
-            "installation": {"options": lambda: []},
-            "reserved_by": {"options": lambda: []},
-            "is_available_for_sale": {
-                "options": lambda: [
-                    {"label": "Available", "value": "true"},
-                    {"label": "Not Available", "value": "false"},
-                ]
-            },
-            "is_available_for_installation": {
-                "options": lambda: [
-                    {"label": "Available", "value": "true"},
-                    {"label": "Not Available", "value": "false"},
-                ]
-            },
             "is_sold": {
                 "options": lambda: [
                     {"label": "Sold", "value": "true"},
                     {"label": "Not Sold", "value": "false"},
+                ]
+            },
+            "is_installed": {
+                "options": lambda: [
+                    {"label": "Installed", "value": "true"},
+                    {"label": "Not Installed", "value": "false"},
+                ]
+            },
+            "is_available": {
+                "options": lambda: [
+                    {"label": "Available", "value": "true"},
+                    {"label": "Not Available", "value": "false"},
                 ]
             },
         }
@@ -561,6 +560,39 @@ class WarrantyClaimViewSet(viewsets.ModelViewSet):
         return Response({
             'service': ServiceSerializer(result['service']).data,
             'unit': AirconUnitSerializer(result['unit']).data,
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"], url_path="redeem-free-cleaning-batch")
+    def redeem_free_cleaning_batch(self, request):
+        """
+        Redeem free cleaning for multiple aircon units under one client.
+        Creates a single cleaning service with all units as appliances.
+
+        Request body:
+        {
+            "client_id": 1,
+            "unit_ids": [1, 2, 3],
+            "scheduled_date": "2024-01-20",
+            "scheduled_time": "14:00:00"
+        }
+
+        Response:
+        {
+            "service": {...},
+            "units": [...]
+        }
+        """
+        from installations.api.serializers import FreeCleaningBatchRedemptionSerializer
+
+        serializer = FreeCleaningBatchRedemptionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = serializer.save()
+
+        from services.api.serializers import ServiceSerializer
+
+        return Response({
+            'service': ServiceSerializer(result['service']).data,
+            'units': AirconUnitSerializer(result['units'], many=True).data,
         }, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=["post"], url_path="check-free-cleaning")

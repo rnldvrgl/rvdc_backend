@@ -41,11 +41,31 @@ class AirconModel(models.Model):
         default=False, help_text="Uses inverter technology."
     )
 
+    # Warranty configuration per model
+    parts_warranty_months = models.PositiveIntegerField(
+        default=60,
+        help_text="Parts (unit) warranty duration in months (default: 60 = 5 years)",
+    )
+    labor_warranty_months = models.PositiveIntegerField(
+        default=12,
+        help_text="Labor warranty duration in months (default: 12 = 1 year)",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return f"{self.brand.name} {self.name} ({self.get_aircon_type_display()})"
+
+    @property
+    def parts_warranty_years(self) -> float:
+        """Parts warranty in years (for display)."""
+        return round(self.parts_warranty_months / 12, 1)
+
+    @property
+    def labor_warranty_years(self) -> float:
+        """Labor warranty in years (for display)."""
+        return round(self.labor_warranty_months / 12, 1)
 
     @property
     def has_discount(self) -> bool:
@@ -117,6 +137,14 @@ class AirconUnit(models.Model):
     warranty_start_date = models.DateField(null=True, blank=True)
     warranty_period_months = models.PositiveIntegerField(default=12)
     free_cleaning_redeemed = models.BooleanField(default=False)
+    free_cleaning_service = models.ForeignKey(
+        Service,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="free_cleaning_units",
+        help_text="The cleaning service created when free cleaning was redeemed"
+    )
 
     # Track if unit is sold (convenience field)
     is_sold = models.BooleanField(
@@ -165,11 +193,11 @@ class AirconUnit(models.Model):
                 self.stall = main_stall
 
         # Determine warranty start logic
-        if self.sale and self.sale.created_at:
+        # Warranty for direct sales (no installation) starts at sale date.
+        # Warranty for installations is set by complete_installation() — NOT here.
+        if self.sale and not self.installation_service and self.sale.created_at:
             self.warranty_start_date = self.sale.created_at.date()
-        elif self.installation_service and self.installation_service.created_at:
-            self.warranty_start_date = self.installation_service.created_at.date()
-        else:
+        elif not self.sale and not self.installation_service:
             self.warranty_start_date = None  # Not yet started
 
         # Mark as sold and clear reservation once sold
@@ -216,9 +244,97 @@ class AirconUnit(models.Model):
             else 0
         )
 
+    # --- Per-type warranty properties (based on AirconModel's parts/labor warranty months) ---
+
+    @property
+    def parts_warranty_end_date(self):
+        if self.warranty_start_date and self.model and self.model.parts_warranty_months:
+            return self.warranty_start_date + relativedelta(months=self.model.parts_warranty_months)
+        return None
+
+    @property
+    def labor_warranty_end_date(self):
+        if self.warranty_start_date and self.model and self.model.labor_warranty_months:
+            return self.warranty_start_date + relativedelta(months=self.model.labor_warranty_months)
+        return None
+
+    @property
+    def parts_warranty_days_left(self):
+        end = self.parts_warranty_end_date
+        if end and timezone.now().date() <= end:
+            return max((end - timezone.now().date()).days, 0)
+        return 0
+
+    @property
+    def labor_warranty_days_left(self):
+        end = self.labor_warranty_end_date
+        if end and timezone.now().date() <= end:
+            return max((end - timezone.now().date()).days, 0)
+        return 0
+
+    @property
+    def parts_warranty_status(self):
+        if not self.model or not self.model.parts_warranty_months:
+            return "No Warranty"
+        if not self.warranty_start_date:
+            return "Not Started"
+        return "Active" if self.parts_warranty_days_left > 0 else "Expired"
+
+    @property
+    def labor_warranty_status(self):
+        if not self.model or not self.model.labor_warranty_months:
+            return "No Warranty"
+        if not self.warranty_start_date:
+            return "Not Started"
+        return "Active" if self.labor_warranty_days_left > 0 else "Expired"
+
+    @property
+    def free_cleaning_status(self):
+        """Return the free cleaning status: available, pending, or redeemed.
+        - available: Not yet redeemed
+        - pending: Redeemed but service not completed
+        - redeemed: Redeemed and service completed
+        """
+        if not self.free_cleaning_redeemed:
+            return "available"
+        if self.free_cleaning_service:
+            from utils.enums import ServiceStatus
+            if self.free_cleaning_service.status == ServiceStatus.COMPLETED:
+                return "redeemed"
+            if self.free_cleaning_service.status == ServiceStatus.CANCELLED:
+                return "available"  # Cancelled cleaning = still available
+            return "pending"  # Redeemed but not completed yet
+        return "pending"  # Redeemed but no service record yet
+
+    @property
+    def free_cleaning_redemption_date(self):
+        """Return the date when free cleaning was redeemed."""
+        if self.free_cleaning_redeemed and self.free_cleaning_service:
+            return self.free_cleaning_service.created_at
+        return None
+
+    @property
+    def free_cleaning_service_id(self):
+        """Return the service ID for free cleaning."""
+        return self.free_cleaning_service_id if self.free_cleaning_service else None
+
     @property
     def is_available_for_sale(self):
         return self.sale is None and self.reserved_by is None and not self.is_sold
+
+    @property
+    def unit_status(self):
+        """Computed status reflecting the full lifecycle of the unit."""
+        from utils.enums import ServiceStatus
+        if self.installation_service:
+            if self.installation_service.status == ServiceStatus.COMPLETED:
+                return "Installed"
+            return "For Installation"
+        if self.is_sold:
+            return "Sold"
+        if self.is_reserved:
+            return "Reserved"
+        return "Available"
 
     @property
     def sale_price(self):

@@ -27,6 +27,8 @@ class AirconModelSerializer(serializers.ModelSerializer):
     )
     has_discount = serializers.ReadOnlyField()
     promo_price = serializers.ReadOnlyField()
+    parts_warranty_years = serializers.ReadOnlyField()
+    labor_warranty_years = serializers.ReadOnlyField()
 
     class Meta:
         model = AirconModel
@@ -42,6 +44,10 @@ class AirconModelSerializer(serializers.ModelSerializer):
             "is_inverter",
             "has_discount",
             "promo_price",
+            "parts_warranty_months",
+            "labor_warranty_months",
+            "parts_warranty_years",
+            "labor_warranty_years",
         ]
 
     def validate(self, data):
@@ -72,7 +78,21 @@ class AirconUnitSerializer(serializers.ModelSerializer):
     warranty_days_left = serializers.ReadOnlyField()
     is_reserved = serializers.ReadOnlyField()
     is_available_for_sale = serializers.ReadOnlyField()
+    unit_status = serializers.ReadOnlyField()
     sale_price = serializers.ReadOnlyField()
+    # Per-type warranty fields
+    parts_warranty_end_date = serializers.ReadOnlyField()
+    labor_warranty_end_date = serializers.ReadOnlyField()
+    parts_warranty_days_left = serializers.ReadOnlyField()
+    labor_warranty_days_left = serializers.ReadOnlyField()
+    parts_warranty_status = serializers.ReadOnlyField()
+    labor_warranty_status = serializers.ReadOnlyField()
+    free_cleaning_status = serializers.ReadOnlyField()
+    free_cleaning_redemption_date = serializers.ReadOnlyField()
+    free_cleaning_service_id = serializers.ReadOnlyField()
+    client_name = serializers.SerializerMethodField()
+    sold_date = serializers.SerializerMethodField()
+    installed_date = serializers.SerializerMethodField()
 
     class Meta:
         model = AirconUnit
@@ -91,13 +111,27 @@ class AirconUnitSerializer(serializers.ModelSerializer):
             "warranty_start_date",
             "warranty_period_months",
             "free_cleaning_redeemed",
+            "free_cleaning_service",
             "is_sold",
             "warranty_end_date",
             "warranty_status",
             "warranty_days_left",
+            "parts_warranty_end_date",
+            "labor_warranty_end_date",
+            "parts_warranty_days_left",
+            "labor_warranty_days_left",
+            "parts_warranty_status",
+            "labor_warranty_status",
+            "free_cleaning_status",
+            "free_cleaning_redemption_date",
+            "free_cleaning_service_id",
             "is_reserved",
             "is_available_for_sale",
+            "unit_status",
             "sale_price",
+            "client_name",
+            "sold_date",
+            "installed_date",
             "created_at",
             "updated_at",
         ]
@@ -110,9 +144,30 @@ class AirconUnitSerializer(serializers.ModelSerializer):
             "sale", 
             "installation_service", 
             "warranty_start_date",
-            "free_cleaning_redeemed"
+            "free_cleaning_redeemed",
+            "free_cleaning_service",
         ]
     
+    def get_client_name(self, obj):
+        """Get client name from sale or reservation."""
+        if obj.sale and obj.sale.client:
+            return obj.sale.client.full_name
+        if obj.reserved_by:
+            return obj.reserved_by.full_name
+        return None
+
+    def get_sold_date(self, obj):
+        """Get sold date from the sale transaction."""
+        if obj.sale and obj.sale.created_at:
+            return obj.sale.created_at.date().isoformat()
+        return None
+
+    def get_installed_date(self, obj):
+        """Get installation completion date from the installation service."""
+        if obj.installation_service and obj.installation_service.status == "completed":
+            return obj.installation_service.updated_at.date().isoformat()
+        return None
+
     def validate_serial_number(self, value):
         """Ensure indoor serial number is unique and uppercase"""
         value = value.upper()
@@ -743,6 +798,72 @@ class FreeCleaningRedemptionSerializer(serializers.Serializer):
 
         result = FreeCleaningManager.redeem_free_cleaning(
             unit=unit,
+            scheduled_date=self.validated_data.get('scheduled_date'),
+            scheduled_time=self.validated_data.get('scheduled_time'),
+        )
+
+        return result
+
+
+class FreeCleaningBatchRedemptionSerializer(serializers.Serializer):
+    """Serializer for redeeming free cleaning for multiple aircon units under one client."""
+
+    client_id = serializers.IntegerField(help_text="Client ID")
+    unit_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        min_length=1,
+        help_text="List of AirconUnit IDs to redeem free cleaning for"
+    )
+    scheduled_date = serializers.DateField(
+        required=False,
+        allow_null=True,
+        help_text="Scheduled date for cleaning service"
+    )
+    scheduled_time = serializers.TimeField(
+        required=False,
+        allow_null=True,
+        help_text="Scheduled time for cleaning service"
+    )
+
+    def validate_client_id(self, value):
+        """Validate client exists."""
+        from clients.models import Client
+
+        try:
+            Client.objects.get(id=value)
+        except Client.DoesNotExist:
+            raise serializers.ValidationError("Client not found.")
+        return value
+
+    def validate_unit_ids(self, value):
+        """Validate all units exist."""
+        from installations.models import AirconUnit
+
+        units = AirconUnit.objects.filter(id__in=value).select_related(
+            'model', 'model__brand', 'sale', 'sale__client'
+        )
+        if units.count() != len(value):
+            found_ids = set(units.values_list('id', flat=True))
+            missing = set(value) - found_ids
+            raise serializers.ValidationError(f"Units not found: {missing}")
+        return value
+
+    def save(self):
+        """Redeem free cleaning for multiple units."""
+        from clients.models import Client
+        from installations.business_logic import FreeCleaningManager
+        from installations.models import AirconUnit
+
+        client_id = self.validated_data['client_id']
+        unit_ids = self.validated_data['unit_ids']
+        client = Client.objects.get(id=client_id)
+        units = list(AirconUnit.objects.filter(id__in=unit_ids).select_related(
+            'model', 'model__brand', 'sale', 'sale__client'
+        ))
+
+        result = FreeCleaningManager.redeem_free_cleaning_batch(
+            units=units,
+            client=client,
             scheduled_date=self.validated_data.get('scheduled_date'),
             scheduled_time=self.validated_data.get('scheduled_time'),
         )
