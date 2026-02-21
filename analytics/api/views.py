@@ -964,7 +964,7 @@ class CalendarEventsView(APIView):
             leaves = leaves_query.values(
                 'id', 'employee__first_name', 'employee__last_name',
                 'employee_id', 'leave_type', 'date', 'start_date', 'end_date',
-                'is_half_day', 'shift_period', 'reason', 'days_count'
+                'is_half_day', 'shift_period', 'reason'
             )
 
             for leave in leaves:
@@ -986,10 +986,17 @@ class CalendarEventsView(APIView):
                 leave_end = leave['end_date'] or leave['date']
                 is_multi_day = leave_start != leave_end
 
+                # Calculate days_count
+                if is_multi_day:
+                    days_count = (leave_end - leave_start).days + 1
+                    if leave['is_half_day']:
+                        days_count = days_count - 0.5
+                else:
+                    days_count = 0.5 if leave['is_half_day'] else 1.0
+
                 # Build title
                 if is_multi_day:
-                    days = leave['days_count'] or (leave_end - leave_start).days + 1
-                    duration = f"{days} Day{'s' if float(str(days)) != 1 else ''}"
+                    duration = f"{days_count} Day{'s' if days_count != 1 else ''}"
                 else:
                     duration = f"Half Day - {shift_display}" if leave['is_half_day'] else "Full Day"
 
@@ -1011,7 +1018,7 @@ class CalendarEventsView(APIView):
                         'leave_type_display': leave_type_display,
                         'is_half_day': leave['is_half_day'],
                         'is_multi_day': is_multi_day,
-                        'days_count': str(leave['days_count']) if leave['days_count'] else None,
+                        'days_count': str(days_count),
                         'shift_period': leave['shift_period'],
                         'shift_period_display': shift_display,
                         'reason': leave['reason'],
