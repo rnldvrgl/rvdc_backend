@@ -941,12 +941,18 @@ class CalendarEventsView(APIView):
                         }
                     })
 
-        # Fetch approved leaves
+        # Fetch approved leaves (supports multi-day date ranges)
         if include_leaves:
+            from django.db.models import Q
+            
+            # Filter leaves that overlap with the requested date range
+            # A leave overlaps if: leave_start <= range_end AND leave_end >= range_start
             leaves_query = LeaveRequest.objects.filter(
                 status='APPROVED',
-                date__gte=start_date,
-                date__lte=end_date
+            ).filter(
+                # Overlap logic: handles both old (date only) and new (start_date/end_date) records
+                Q(start_date__lte=end_date, end_date__gte=start_date) |  # Multi-day range overlap
+                Q(start_date__isnull=True, date__gte=start_date, date__lte=end_date)  # Legacy single-date
             ).select_related('employee')
             
             # Role-based filtering for leaves
@@ -957,8 +963,8 @@ class CalendarEventsView(APIView):
             
             leaves = leaves_query.values(
                 'id', 'employee__first_name', 'employee__last_name',
-                'employee_id', 'leave_type', 'date', 'is_half_day',
-                'shift_period', 'reason'
+                'employee_id', 'leave_type', 'date', 'start_date', 'end_date',
+                'is_half_day', 'shift_period', 'reason', 'days_count'
             )
 
             for leave in leaves:
@@ -975,24 +981,37 @@ class CalendarEventsView(APIView):
                 }
                 shift_display = shift_period_choices.get(leave['shift_period'], 'Full Day')
 
+                # Determine start and end dates
+                leave_start = leave['start_date'] or leave['date']
+                leave_end = leave['end_date'] or leave['date']
+                is_multi_day = leave_start != leave_end
+
                 # Build title
-                duration = f"Half Day - {shift_display}" if leave['is_half_day'] else "Full Day"
-                title = f"{leave['employee__first_name']} {leave['employee__last_name']} - {leave_type_display} ({duration})"
+                if is_multi_day:
+                    days = leave['days_count'] or (leave_end - leave_start).days + 1
+                    duration = f"{days} Day{'s' if float(str(days)) != 1 else ''}"
+                else:
+                    duration = f"Half Day - {shift_display}" if leave['is_half_day'] else "Full Day"
+
+                employee_name = f"{leave['employee__first_name']} {leave['employee__last_name']}"
+                title = f"{employee_name} - {leave_type_display} ({duration})"
 
                 events.append({
                     'id': f"leave-{leave['id']}",
                     'title': title,
-                    'start': leave['date'].isoformat(),
-                    'end': leave['date'].isoformat(),
+                    'start': leave_start.isoformat(),
+                    'end': leave_end.isoformat(),
                     'allDay': True,
                     'extendedProps': {
                         'type': 'leave',
                         'leave_id': leave['id'],
                         'employee_id': leave['employee_id'],
-                        'employee_name': f"{leave['employee__first_name']} {leave['employee__last_name']}",
+                        'employee_name': employee_name,
                         'leave_type': leave['leave_type'],
                         'leave_type_display': leave_type_display,
                         'is_half_day': leave['is_half_day'],
+                        'is_multi_day': is_multi_day,
+                        'days_count': str(leave['days_count']) if leave['days_count'] else None,
                         'shift_period': leave['shift_period'],
                         'shift_period_display': shift_display,
                         'reason': leave['reason'],

@@ -1036,11 +1036,26 @@ class LeaveRequest(models.Model):
         related_name='leave_requests',
     )
     leave_type = models.CharField(max_length=20, choices=LEAVE_TYPE_CHOICES)
+    
+    # Date range support (start_date + end_date for multi-day leaves)
+    start_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text='Start date of the leave period',
+    )
+    end_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text='End date of the leave period (same as start_date for single-day)',
+    )
+    
+    # Legacy field - kept for backward compatibility with existing data
+    # For new requests, this is auto-populated from start_date
     date = models.DateField()
     
     is_half_day = models.BooleanField(
         default=False,
-        help_text='True if half-day leave (0.5 days), False for full-day (1.0 days)',
+        help_text='True if half-day leave (0.5 days), False for full-day (1.0 days). Only applicable for single-day leaves.',
     )
     
     shift_period = models.CharField(
@@ -1084,6 +1099,8 @@ class LeaveRequest(models.Model):
         verbose_name_plural = 'Leave Requests'
     
     def __str__(self):
+        if self.start_date and self.end_date and self.start_date != self.end_date:
+            return f"{self.employee.get_full_name()} - {self.get_leave_type_display()} from {self.start_date} to {self.end_date} ({self.days_count} days)"
         days_str = '0.5 days' if self.is_half_day else '1.0 day'
         return f"{self.employee.get_full_name()} - {self.get_leave_type_display()} on {self.date} ({days_str})"
     
@@ -1094,6 +1111,12 @@ class LeaveRequest(models.Model):
     @property
     def days_count(self) -> Decimal:
         """Return the number of days this leave represents."""
+        if self.start_date and self.end_date:
+            from datetime import timedelta
+            delta = (self.end_date - self.start_date).days + 1
+            if self.is_half_day and delta == 1:
+                return Decimal('0.5')
+            return Decimal(str(delta))
         return Decimal('0.5') if self.is_half_day else Decimal('1.0')
     
     def save(self, skip_validation=False, *args, **kwargs):
@@ -1106,33 +1129,46 @@ class LeaveRequest(models.Model):
         """
         super().save(*args, **kwargs)
     
+    def _get_date_range(self):
+        """Get list of dates covered by this leave request."""
+        from datetime import timedelta
+        if self.start_date and self.end_date:
+            dates = []
+            current = self.start_date
+            while current <= self.end_date:
+                dates.append(current)
+                current += timedelta(days=1)
+            return dates
+        return [self.date]
+
     def approve(self, approved_by_user):
         """
         Approve the leave request.
         - Balance already deducted on creation
-        - Creates DailyAttendance record with type=LEAVE
+        - Creates DailyAttendance record(s) with type=LEAVE
         """
         if self.status != 'PENDING':
             raise ValidationError(
                 f'Cannot approve leave request with status: {self.status}'
             )
         
-        # Create DailyAttendance record
-        DailyAttendance.objects.update_or_create(
-            employee=self.employee,
-            date=self.date,
-            defaults={
-                'attendance_type': 'LEAVE',
-                'status': 'APPROVED',
-                'paid_hours': Decimal('0.00'),
-                'approved_by': approved_by_user,
-                'approved_at': timezone.now(),
-                'is_late': False,
-                'late_minutes': 0,
-                'late_penalty_amount': Decimal('0.00'),
-                'notes': f'{self.get_leave_type_display()} ({self.get_shift_period_display()}) - {self.reason}',
-            }
-        )
+        # Create DailyAttendance records for each date in range
+        for leave_date in self._get_date_range():
+            DailyAttendance.objects.update_or_create(
+                employee=self.employee,
+                date=leave_date,
+                defaults={
+                    'attendance_type': 'LEAVE',
+                    'status': 'APPROVED',
+                    'paid_hours': Decimal('0.00'),
+                    'approved_by': approved_by_user,
+                    'approved_at': timezone.now(),
+                    'is_late': False,
+                    'late_minutes': 0,
+                    'late_penalty_amount': Decimal('0.00'),
+                    'notes': f'{self.get_leave_type_display()} ({self.get_shift_period_display()}) - {self.reason}',
+                }
+            )
         
         # Update leave request status
         self.status = 'APPROVED'
@@ -1148,7 +1184,7 @@ class LeaveRequest(models.Model):
             raise ValidationError('Leave request is already rejected.')
         
         # Restore leave balance
-        year = self.date.year
+        year = (self.start_date or self.date).year
         try:
             leave_balance = LeaveBalance.objects.get(employee=self.employee, year=year)
             leave_balance.restore_leave(self.leave_type, self.days_count)
@@ -1171,20 +1207,21 @@ class LeaveRequest(models.Model):
             raise ValidationError('Only pending or approved leave requests can be cancelled.')
         
         # Restore leave balance
-        year = self.date.year
+        year = (self.start_date or self.date).year
         try:
             leave_balance = LeaveBalance.objects.get(employee=self.employee, year=year)
             leave_balance.restore_leave(self.leave_type, self.days_count)
         except LeaveBalance.DoesNotExist:
             pass  # Balance doesn't exist, nothing to restore
         
-        # If approved, remove DailyAttendance record
+        # If approved, remove DailyAttendance records for all dates in range
         if self.status == 'APPROVED':
-            DailyAttendance.objects.filter(
-                employee=self.employee,
-                date=self.date,
-                attendance_type='LEAVE'
-            ).update(is_deleted=True)
+            for leave_date in self._get_date_range():
+                DailyAttendance.objects.filter(
+                    employee=self.employee,
+                    date=leave_date,
+                    attendance_type='LEAVE'
+                ).update(is_deleted=True)
         
         # Update status
         self.status = 'CANCELLED'

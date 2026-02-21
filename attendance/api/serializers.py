@@ -146,7 +146,7 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
     leave_type_display = serializers.CharField(source='get_leave_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     shift_period_display = serializers.CharField(source='get_shift_period_display', read_only=True)
-    days_count = serializers.DecimalField(max_digits=3, decimal_places=1, read_only=True)
+    days_count = serializers.DecimalField(max_digits=5, decimal_places=1, read_only=True)
 
     class Meta:
         model = LeaveRequest
@@ -156,6 +156,8 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
             'employee_name',
             'leave_type',
             'leave_type_display',
+            'start_date',
+            'end_date',
             'date',
             'is_half_day',
             'shift_period',
@@ -178,6 +180,7 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
             'approved_at',
             'created_at',
             'updated_at',
+            'date',
         ]
 
 
@@ -196,6 +199,30 @@ class RejectLeaveSerializer(serializers.Serializer):
         allow_empty=False
     )
     reason = serializers.CharField(required=False, allow_blank=True)
+
+
+class ValidateLeaveBalanceSerializer(serializers.Serializer):
+    """Serializer for validating leave balance before submission."""
+    employee = serializers.IntegerField(required=False, help_text='Employee ID (optional for admin, auto-set for others)')
+    leave_type = serializers.ChoiceField(choices=['SICK', 'EMERGENCY'])
+    start_date = serializers.DateField()
+    end_date = serializers.DateField()
+    is_half_day = serializers.BooleanField(default=False)
+
+    def validate(self, data):
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+        is_half_day = data.get('is_half_day', False)
+
+        if end_date < start_date:
+            raise serializers.ValidationError({'end_date': 'End date must be on or after start date.'})
+
+        delta_days = (end_date - start_date).days + 1
+
+        if is_half_day and delta_days > 1:
+            raise serializers.ValidationError({'is_half_day': 'Half-day leave is only allowed for single-day requests.'})
+
+        return data
 
 
 class OffenseSerializer(serializers.ModelSerializer):
