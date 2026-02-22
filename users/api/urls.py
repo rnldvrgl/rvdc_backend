@@ -5,7 +5,7 @@ from users.api import views
 name = "users"
 
 router = DefaultRouter()
-router.register(r'cash-advances', views.CashAdvanceViewSet, basename='cash-advance')
+router.register(r'cash-advance-movements', views.CashAdvanceMovementViewSet, basename='cash-advance-movement')
 
 urlpatterns = [
     path("", views.UserListView.as_view(), name="user-list"),

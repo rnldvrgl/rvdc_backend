@@ -1,6 +1,6 @@
 """
-Management command to auto-close attendance sessions at 11 PM.
-Should be run via cron/scheduler daily at 11:00 PM.
+Management command to auto-close attendance sessions at 9 PM.
+Should be run via cron/scheduler daily at 9:00 PM.
 
 Usage:
     python manage.py auto_close_attendance
@@ -15,7 +15,7 @@ from attendance.models import DailyAttendance
 
 
 class Command(BaseCommand):
-    help = 'Auto-closes attendance sessions at 11 PM for employees who forgot to clock out'
+    help = 'Auto-closes attendance sessions at 9 PM for employees who forgot to clock out'
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -32,7 +32,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         today = timezone.now().date()
-        auto_close_time = time(23, 0)  # 11:00 PM
+        auto_close_time = time(21, 0)  # 9:00 PM
         
         if options['backfill']:
             # Process past dates
@@ -71,13 +71,13 @@ class Command(BaseCommand):
         
         count = 0
         for attendance in open_attendances:
-            # Set clock_out to 7 PM on the attendance date (not today)
+            # Set clock_out to 9 PM on the attendance date (not today)
             clock_out_dt = timezone.make_aware(
                 datetime.combine(attendance.date, auto_close_time),
                 timezone.get_current_timezone()
             )
             
-            # Set clock_out to 11 PM on the attendance date (not today)
+            # Set clock_out to 9 PM on the attendance date (not today)
             attendance.clock_out = clock_out_dt
             attendance.auto_closed = True
             

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.core.exceptions import ValidationError as DjangoValidationError
-from users.models import CustomUser, SystemSettings, CashAdvance
+from users.models import CustomUser, SystemSettings, CashAdvanceMovement
 from inventory.api.serializers import StallSerializer
 from drf_extra_fields.fields import Base64ImageField
 
@@ -224,53 +224,60 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'updated_at']
 
 
-class CashAdvanceSerializer(serializers.ModelSerializer):
-    """Serializer for cash advance transactions"""
-    
-    employee_name = serializers.CharField(source='employee.full_name', read_only=True)
-    created_by_name = serializers.CharField(source='created_by.full_name', read_only=True)
+class CashAdvanceMovementSerializer(serializers.ModelSerializer):
+    """Serializer for cash ban balance movements (credits and debits)"""
+
+    employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True, default='')
     remaining_balance = serializers.DecimalField(
         source='employee.cash_ban_balance',
         max_digits=10,
         decimal_places=2,
-        read_only=True
+        read_only=True,
     )
-    
+
     class Meta:
-        model = CashAdvance
+        model = CashAdvanceMovement
         fields = [
             'id',
             'employee',
             'employee_name',
+            'movement_type',
             'amount',
+            'balance_after',
             'date',
-            'reason',
+            'description',
+            'reference',
+            'is_pending',
             'created_by',
             'created_by_name',
             'remaining_balance',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
-    
+        read_only_fields = ['id', 'balance_after', 'created_at', 'updated_at', 'created_by']
+
     def validate(self, data):
-        """Validate that employee has sufficient cash ban balance"""
         employee = data.get('employee')
         amount = data.get('amount')
-        
-        if amount and employee:
+        movement_type = data.get('movement_type')
+        is_pending = data.get('is_pending', False)
+
+        if amount is not None and amount <= 0:
+            raise serializers.ValidationError({
+                'amount': 'Amount must be greater than zero.'
+            })
+
+        # Only validate balance for debits (cash advances) that are not pending
+        # Pending movements (linked to draft payrolls) will be validated when applied
+        if movement_type == CashAdvanceMovement.MovementType.DEBIT and amount and employee and not is_pending:
             if amount > employee.cash_ban_balance:
                 raise serializers.ValidationError({
                     'amount': f'Insufficient cash ban balance. Available: ₱{employee.cash_ban_balance}'
                 })
-            
-            if amount <= 0:
-                raise serializers.ValidationError({
-                    'amount': 'Amount must be greater than zero.'
-                })
-        
+
         return data
-    
+
     def create(self, validated_data):
         """Set created_by from request user"""
         request = self.context.get('request')

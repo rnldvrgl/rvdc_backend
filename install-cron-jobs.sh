@@ -7,7 +7,7 @@
 # on a DigitalOcean droplet.
 #
 # Cron jobs provided:
-# - Daily: Auto-close attendance (11:00 PM Philippines time)
+# - Daily: Auto-close attendance (9:00 PM Philippines time)
 # - Daily: Mark absences (11:30 PM Philippines time)
 # - Weekly: Fix attendance & refresh payroll (Friday 11 PM Philippines time)
 # - Yearly: Update holiday years to new year (Jan 1, 2:00 AM Philippines time)
@@ -80,7 +80,7 @@ echo -e "${GREEN}✅ Created $SCRIPT_DIR${NC}"
 echo ""
 echo -e "${YELLOW}Step 3: Creating cron scripts...${NC}"
 
-# Script 1: Auto-close attendance (Daily 11:00 PM)
+# Script 1: Auto-close attendance (Daily 9:00 PM)
 cat > "$SCRIPT_DIR/auto-close-attendance.sh" << 'EOF'
 #!/bin/bash
 LOG_FILE="/var/log/cron-auto-close-attendance.log"
@@ -274,7 +274,7 @@ echo ""
 echo -e "${YELLOW}Step 6: Install cron jobs?${NC}"
 echo ""
 echo -e "${BLUE}DAILY TASKS (Philippines Time):${NC}"
-echo "  • 11:00 PM - Auto-close attendance"
+echo "  • 9:00 PM - Auto-close attendance"
 echo "  • 11:30 PM - Mark absences"
 echo ""
 echo -e "${BLUE}WEEKLY TASKS (Philippines Time):${NC}"
@@ -327,8 +327,8 @@ cat >> "$TEMP_CRON" << 'CRONEND'
 # ============================================================================
 
 # DAILY TASKS (Philippines Time)
-# Daily at 11:00 PM Philippines (3:00 PM UTC) - Auto-close open attendance records
-0 15 * * * /opt/cron-scripts/auto-close-attendance.sh
+# Daily at 9:00 PM Philippines (1:00 PM UTC) - Auto-close open attendance records
+0 13 * * * /opt/cron-scripts/auto-close-attendance.sh
 
 # Daily at 11:30 PM Philippines (3:30 PM UTC) - Mark absent employees
 30 15 * * * /opt/cron-scripts/mark-absences.sh
@@ -380,7 +380,7 @@ echo ""
 echo -e "${YELLOW}Schedule Summary (Philippines Time):${NC}"
 echo ""
 echo -e "${BLUE}Daily:${NC}"
-echo "  6:30 PM  → Auto-close attendance"
+echo "  9:00 PM  → Auto-close attendance"
 echo "  7:00 PM  → Mark absences"
 echo ""
 echo -e "${BLUE}Weekly:${NC}"

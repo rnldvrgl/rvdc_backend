@@ -550,6 +550,11 @@ class WeeklyPayroll(models.Model):
     week_start = models.DateField(
         help_text="Start date of the payroll week (recommended: Monday)."
     )
+    week_end = models.DateField(
+        help_text="End date of the payroll week (inclusive).",
+        null=True,
+        blank=True,
+    )
 
     # Configuration for this week
     hourly_rate = models.DecimalField(max_digits=10, decimal_places=2)
@@ -651,11 +656,17 @@ class WeeklyPayroll(models.Model):
     def __str__(self):
         return f"Payroll {self.employee_id} @ {self.week_start}"
 
-    @property
-    def week_end(self) -> date:
-        # Inclusive end date (week_start + 6 days)
-        # For Saturday-Friday week: if week_start is Saturday, week_end is Friday
+    def get_week_end(self) -> date:
+        """Return the stored week_end or fall back to week_start + 6 days."""
+        if self.week_end:
+            return self.week_end
         return self.week_start + timedelta(days=6)
+
+    def save(self, *args, **kwargs):
+        """Auto-populate week_end from week_start + 6 days if not set."""
+        if not self.week_end and self.week_start:
+            self.week_end = self.week_start + timedelta(days=6)
+        super().save(*args, **kwargs)
 
     @property
     def total_hours(self) -> Decimal:
@@ -1107,6 +1118,37 @@ class WeeklyPayroll(models.Model):
             logger = logging.getLogger(__name__)
             logger.error(f"Error applying cash ban deduction: {e}")
 
+        # Apply cash advance deductions (debit movements during this payroll period)
+        try:
+            from users.models import CashAdvanceMovement
+
+            week_end_date = self.week_end or (self.week_start + timedelta(days=6))
+            cash_advance_movements = CashAdvanceMovement.objects.filter(
+                employee=self.employee,
+                movement_type=CashAdvanceMovement.MovementType.DEBIT,
+                is_deleted=False,
+                date__gte=self.week_start,
+                date__lte=week_end_date,
+            )
+
+            cash_advance_total = Decimal('0.00')
+            cash_advance_ids = []
+            for ca in cash_advance_movements:
+                cash_advance_total += Decimal(ca.amount)
+                cash_advance_ids.append(ca.id)
+
+            if cash_advance_total > 0:
+                deductions_map['cash_advance'] = self._q(cash_advance_total)
+                deduction_metadata_map['cash_advance'] = {
+                    'source_type': 'CashAdvanceMovement',
+                    'category': 'deduction',
+                    'description': 'Cash Advance Deduction',
+                    'cash_advance_ids': cash_advance_ids,
+                }
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error applying cash advance deduction: {e}")
         # Apply percentage-based deductions (HDMF savings, etc.) - Legacy
         try:
             from payroll.models import PercentageDeduction

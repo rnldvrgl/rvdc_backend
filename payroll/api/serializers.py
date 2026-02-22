@@ -181,7 +181,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
 
     employee_detail = MinimalUserSerializer(source="employee", read_only=True)
     employee_name = serializers.SerializerMethodField(read_only=True)
-    week_end = serializers.SerializerMethodField(read_only=True)
+    week_end = serializers.DateField(required=False, allow_null=True)
     total_hours = serializers.SerializerMethodField(read_only=True)
     additional_earnings_details = serializers.SerializerMethodField(read_only=True)
     deductions = DeductionsField(required=False)
@@ -293,12 +293,6 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             return f"{obj.employee.first_name or ''} {obj.employee.last_name or ''}".strip()
         except Exception:
             return str(getattr(obj.employee, "username", ""))
-
-    def get_week_end(self, obj: WeeklyPayroll) -> Optional[str]:
-        try:
-            return obj.week_end.isoformat()
-        except Exception:
-            return None
 
     def get_total_hours(self, obj: WeeklyPayroll) -> float:
         try:

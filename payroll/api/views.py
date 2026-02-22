@@ -50,12 +50,34 @@ from utils.query import filter_by_date_range
 # Helper Functions
 # ------------------------------------------------------------------------------
 
+def _apply_pending_cash_advance_movements(payroll: WeeklyPayroll):
+    """
+    Apply pending cash advance movements linked to this payroll.
+    Called when payroll is approved.
+    """
+    try:
+        from users.models import CashAdvanceMovement
+        
+        pending_movements = CashAdvanceMovement.objects.filter(
+            reference=f'payroll-{payroll.id}',
+            is_pending=True,
+            is_deleted=False,
+        )
+        
+        for movement in pending_movements:
+            movement.apply_to_balance()
+    except Exception as e:
+        print(f"Error applying pending cash advance movements for payroll {payroll.id}: {e}")
+
+
 def _add_cash_ban_contribution(payroll: WeeklyPayroll):
     """
     Add cash ban contribution to employee's balance when payroll is approved.
-    Contribution is a fixed amount per payroll period.
+    Creates a CashAdvanceMovement CREDIT record for audit trail.
     """
     try:
+        from users.models import CashAdvanceMovement
+
         settings = PayrollSettings.objects.first()
         if not settings or not settings.cash_ban_enabled:
             return
@@ -70,9 +92,15 @@ def _add_cash_ban_contribution(payroll: WeeklyPayroll):
         if contribution_amount <= 0:
             return
         
-        # Add fixed contribution to employee's cash ban balance
-        employee.cash_ban_balance += contribution_amount
-        employee.save(update_fields=['cash_ban_balance'])
+        # Create a CREDIT movement (this also updates the employee's balance)
+        CashAdvanceMovement.objects.create(
+            employee=employee,
+            movement_type=CashAdvanceMovement.MovementType.CREDIT,
+            amount=contribution_amount,
+            date=payroll.week_start,
+            description=f'Cash ban contribution from payroll ({payroll.week_start} to {payroll.week_end})',
+            reference=f'payroll-{payroll.id}',
+        )
     except Exception as e:
         # Log error but don't fail payroll approval
         print(f"Error adding cash ban contribution for payroll {payroll.id}: {e}")
@@ -158,11 +186,10 @@ class WeeklyPayrollGenerateView(APIView):
     POST to generate a new payroll for an employee for a specific week.
     Request body:
     - employee_id: int (required)
+    - week_start: string YYYY-MM-DD (required)
+    - week_end: string YYYY-MM-DD (required)
     - notes: string (optional)
     - include_unapproved: bool (optional, default False)
-
-    Week is auto-calculated based on PayrollSettings.payroll_cutoff_day.
-    Generates payroll for the most recent completed week.
     """
     permission_classes = [permissions.IsAdminUser]
 
@@ -194,22 +221,43 @@ class WeeklyPayrollGenerateView(APIView):
 
         cutoff_day = getattr(settings_obj, 'payroll_cutoff_day', 4)  # Default Friday
 
-        # Calculate most recent completed week
-        # If today is Thursday and cutoff is Friday, use week ending last Friday
-        today = datetime.now().date()
-        current_weekday = today.weekday()  # 0=Monday, 6=Sunday
+        # Use provided dates or auto-calculate
+        week_start_str = request.data.get('week_start')
+        week_end_str = request.data.get('week_end')
 
-        # Days since last cutoff day
-        days_since_cutoff = (current_weekday - cutoff_day) % 7
-        if days_since_cutoff == 0 and datetime.now().time().hour < 23:
-            # Today is cutoff day but not end of day yet - use previous week
-            days_since_cutoff = 7
-
-        # Last completed cutoff date
-        last_cutoff = today - timedelta(days=days_since_cutoff)
-
-        # Week starts the day after last week's cutoff (7 days before this cutoff)
-        week_start = last_cutoff - timedelta(days=6)
+        if week_start_str and week_end_str:
+            try:
+                week_start = datetime.strptime(str(week_start_str), '%Y-%m-%d').date()
+                week_end = datetime.strptime(str(week_end_str), '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                return Response(
+                    {'detail': 'Invalid date format. Use YYYY-MM-DD.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if week_end < week_start:
+                return Response(
+                    {'detail': 'week_end must be on or after week_start.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        elif week_start_str:
+            try:
+                week_start = datetime.strptime(str(week_start_str), '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                return Response(
+                    {'detail': 'Invalid date format. Use YYYY-MM-DD.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            week_end = week_start + timedelta(days=6)
+        else:
+            # Auto-calculate from cutoff day
+            today = datetime.now().date()
+            current_weekday = today.weekday()
+            days_since_cutoff = (current_weekday - cutoff_day) % 7
+            if days_since_cutoff == 0 and datetime.now().time().hour < 23:
+                days_since_cutoff = 7
+            last_cutoff = today - timedelta(days=days_since_cutoff)
+            week_start = last_cutoff - timedelta(days=6)
+            week_end = week_start + timedelta(days=6)
 
         # Get employee
         try:
@@ -258,6 +306,7 @@ class WeeklyPayrollGenerateView(APIView):
                 payroll = WeeklyPayroll.objects.create(
                     employee=employee,
                     week_start=week_start,
+                    week_end=week_end,
                     hourly_rate=hourly_rate,
                     overtime_threshold=Decimal('40.00'),
                     overtime_multiplier=overtime_multiplier,
@@ -272,6 +321,7 @@ class WeeklyPayrollGenerateView(APIView):
 
                 payroll.save(
                     update_fields=[
+                        'week_end',
                         'regular_hours',
                         'night_diff_hours',
                         'approved_ot_hours',
@@ -609,6 +659,27 @@ class WeeklyPayrollDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
     def perform_destroy(self, instance: WeeklyPayroll) -> None:
+        # Reverse any cash ban movements linked to this payroll
+        try:
+            from users.models import CashAdvanceMovement
+            payroll_movements = CashAdvanceMovement.objects.filter(
+                reference=f'payroll-{instance.id}',
+                is_deleted=False,
+            )
+            for movement in payroll_movements:
+                movement.is_deleted = True
+                movement.save(update_fields=['is_deleted'])
+                # Only reverse balance if movement was actually applied
+                # (pending movements were never applied, so nothing to reverse)
+                if not movement.is_pending:
+                    if movement.movement_type == CashAdvanceMovement.MovementType.CREDIT:
+                        movement.employee.cash_ban_balance -= movement.amount
+                    else:
+                        movement.employee.cash_ban_balance += movement.amount
+                    movement.employee.save(update_fields=['cash_ban_balance'])
+        except Exception as e:
+            print(f"Error reversing cash ban movements for payroll {instance.id}: {e}")
+
         # Soft delete
         instance.is_deleted = True
         instance.save(update_fields=["is_deleted"])
@@ -685,6 +756,8 @@ class WeeklyPayrollUpdateStatusView(APIView):
             payroll.finalize_deductions()
             # Add cash ban contribution
             _add_cash_ban_contribution(payroll)
+            # Apply pending cash advance movements
+            _apply_pending_cash_advance_movements(payroll)
 
         serializer = WeeklyPayrollSerializer(payroll)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -856,10 +929,12 @@ class WeeklyPayrollRecomputeView(APIView):
 
 class WeeklyPayrollBulkGenerateView(APIView):
     """
-    POST to generate payroll for all active employees for the most recent completed week.
-    Request body (all optional):
+    POST to generate payroll for all active employees for a specific week.
+    Request body:
+    - week_start: string YYYY-MM-DD (required)
+    - week_end: string YYYY-MM-DD (required)
     - include_unapproved: bool (default False)
-    - notes: string
+    - notes: string (optional)
     - employee_ids: list[int] (optional - if provided, only generate for these employees)
 
     Returns:
@@ -886,16 +961,43 @@ class WeeklyPayrollBulkGenerateView(APIView):
 
         cutoff_day = getattr(settings_obj, 'payroll_cutoff_day', 4)
 
-        # Calculate week range
-        today = datetime.now().date()
-        current_weekday = today.weekday()
-        days_since_cutoff = (current_weekday - cutoff_day) % 7
-        if days_since_cutoff == 0 and datetime.now().time().hour < 23:
-            days_since_cutoff = 7
+        # Use provided dates or auto-calculate
+        week_start_str = request.data.get('week_start')
+        week_end_str = request.data.get('week_end')
 
-        last_cutoff = today - timedelta(days=days_since_cutoff)
-        week_start = last_cutoff - timedelta(days=6)
-        week_end = week_start + timedelta(days=6)
+        if week_start_str and week_end_str:
+            try:
+                week_start = datetime.strptime(str(week_start_str), '%Y-%m-%d').date()
+                week_end = datetime.strptime(str(week_end_str), '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                return Response(
+                    {'detail': 'Invalid date format. Use YYYY-MM-DD.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if week_end < week_start:
+                return Response(
+                    {'detail': 'week_end must be on or after week_start.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        elif week_start_str:
+            try:
+                week_start = datetime.strptime(str(week_start_str), '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                return Response(
+                    {'detail': 'Invalid date format. Use YYYY-MM-DD.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            week_end = week_start + timedelta(days=6)
+        else:
+            # Auto-calculate from cutoff day
+            today = datetime.now().date()
+            current_weekday = today.weekday()
+            days_since_cutoff = (current_weekday - cutoff_day) % 7
+            if days_since_cutoff == 0 and datetime.now().time().hour < 23:
+                days_since_cutoff = 7
+            last_cutoff = today - timedelta(days=days_since_cutoff)
+            week_start = last_cutoff - timedelta(days=6)
+            week_end = week_start + timedelta(days=6)
 
         # Get employees (only those with include_in_payroll=True)
         employees_qs = User.objects.filter(is_deleted=False, is_active=True, include_in_payroll=True)
@@ -939,6 +1041,7 @@ class WeeklyPayrollBulkGenerateView(APIView):
                     payroll = WeeklyPayroll.objects.create(
                         employee=employee,
                         week_start=week_start,
+                        week_end=week_end,
                         hourly_rate=hourly_rate,
                         overtime_threshold=Decimal('40.00'),
                         overtime_multiplier=overtime_multiplier,
@@ -949,7 +1052,7 @@ class WeeklyPayrollBulkGenerateView(APIView):
                     payroll.compute_from_daily_attendance(include_unapproved=include_unapproved)
 
                     payroll.save(update_fields=[
-                        'regular_hours', 'night_diff_hours',
+                        'week_end', 'regular_hours', 'night_diff_hours',
                         'approved_ot_hours', 'allowances', 'additional_earnings_total',
                         'gross_pay', 'night_diff_pay', 'approved_ot_pay',
                         'holiday_pay_regular', 'holiday_pay_special', 'holiday_pay_total',
@@ -1127,6 +1230,8 @@ class WeeklyPayrollBulkUpdateStatusView(APIView):
                 payroll.finalize_deductions()
                 # Add cash ban contribution
                 _add_cash_ban_contribution(payroll)
+                # Apply pending cash advance movements
+                _apply_pending_cash_advance_movements(payroll)
 
         return Response({
             'updated_count': updated_count,

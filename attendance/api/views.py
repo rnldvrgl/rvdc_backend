@@ -1,6 +1,7 @@
 from datetime import date
 
 from django.core.exceptions import ValidationError
+from django.db import models
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -14,6 +15,7 @@ from attendance.api.serializers import (
     ClockInSerializer,
     ClockOutSerializer,
     DailyAttendanceSerializer,
+    HalfDayScheduleSerializer,
     LeaveBalanceSerializer,
     LeaveRequestSerializer,
     OffenseSerializer,
@@ -22,9 +24,11 @@ from attendance.api.serializers import (
     OvertimeRequestSerializer,
     RejectAttendanceSerializer,
     RejectLeaveSerializer,
+    ValidateLeaveBalanceSerializer,
 )
 from attendance.models import (
     DailyAttendance,
+    HalfDaySchedule,
     LeaveBalance,
     LeaveRequest,
     Offense,
@@ -489,6 +493,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         """Override create to handle validation and return proper Response objects."""
+        from datetime import timedelta
         from decimal import Decimal
 
         serializer = self.get_serializer(data=request.data)
@@ -513,39 +518,84 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
         employee = validated_data.get('employee')
         leave_type = validated_data.get('leave_type')
-        date = validated_data.get('date')
         is_half_day = validated_data.get('is_half_day', False)
-        days_count = Decimal('0.5') if is_half_day else Decimal('1.0')
 
-        # Check for duplicate leave requests
-        existing = LeaveRequest.objects.filter(
-            employee=employee,
-            date=date,
-            status__in=['PENDING', 'APPROVED']
-        ).exists()
+        # Handle date range (start_date / end_date)
+        start_date = validated_data.get('start_date')
+        end_date = validated_data.get('end_date')
 
-        if existing:
+        # Backward compatibility: if start_date/end_date not provided, use date
+        if not start_date:
+            start_date = validated_data.get('date')
+            end_date = start_date
+        
+        if not start_date:
             return Response(
-                {'detail': f'Leave request already exists for {date}.'},
+                {'detail': 'Start date is required.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Check if attendance already exists
-        attendance_exists = DailyAttendance.objects.filter(
-            employee=employee,
-            date=date,
-        ).exclude(
-            clock_in__isnull=True
-        ).exists()
+        if not end_date:
+            end_date = start_date
 
-        if attendance_exists:
+        if end_date < start_date:
             return Response(
-                {'detail': f'Attendance already recorded for {date}, cannot request leave.'},
+                {'detail': 'End date must be on or after start date.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        # Calculate total days
+        delta_days = (end_date - start_date).days + 1
+
+        if is_half_day and delta_days > 1:
+            return Response(
+                {'detail': 'Half-day leave is only allowed for single-day requests.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        days_count = Decimal('0.5') if is_half_day else Decimal(str(delta_days))
+
+        # Set the legacy date field to start_date
+        validated_data['date'] = start_date
+        validated_data['start_date'] = start_date
+        validated_data['end_date'] = end_date
+
+        # Check for duplicate/overlapping leave requests for each date in range
+        current_date = start_date
+        while current_date <= end_date:
+            existing = LeaveRequest.objects.filter(
+                employee=employee,
+                status__in=['PENDING', 'APPROVED']
+            ).filter(
+                # Check overlap: existing leave's date range overlaps with current_date
+                models.Q(date=current_date) |
+                (models.Q(start_date__lte=current_date) & models.Q(end_date__gte=current_date))
+            ).exists()
+
+            if existing:
+                return Response(
+                    {'detail': f'Leave request already exists for {current_date}.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Check if attendance already exists
+            attendance_exists = DailyAttendance.objects.filter(
+                employee=employee,
+                date=current_date,
+            ).exclude(
+                clock_in__isnull=True
+            ).exists()
+
+            if attendance_exists:
+                return Response(
+                    {'detail': f'Attendance already recorded for {current_date}, cannot request leave.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            current_date += timedelta(days=1)
 
         # Check leave balance
-        year = date.year
+        year = start_date.year
         leave_balance, _ = LeaveBalance.objects.get_or_create(
             employee=employee,
             year=year,
@@ -556,8 +606,9 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         )
 
         if not leave_balance.can_take_leave(leave_type, days_count):
+            remaining = leave_balance.get_remaining_balance(leave_type)
             return Response(
-                {'detail': f'Insufficient {leave_type.lower()} leave balance.\n Remaining balance: {leave_balance.get_remaining_balance(leave_type)}' },
+                {'detail': f'Insufficient {leave_type.lower()} leave balance. Requesting {days_count} day(s) but only {remaining} remaining.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -757,6 +808,99 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                 {'detail': str(e)},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+    @action(detail=False, methods=['post'])
+    def validate_leave_balance(self, request):
+        """
+        Validate leave balance before submitting a leave request.
+        Returns remaining balance and whether the request can be fulfilled.
+        
+        Required fields:
+        - leave_type: 'SICK' or 'EMERGENCY'
+        - start_date: Start date (YYYY-MM-DD)
+        - end_date: End date (YYYY-MM-DD)
+        - is_half_day: boolean (optional, default false)
+        """
+        from datetime import timedelta
+        from decimal import Decimal
+
+        serializer = ValidateLeaveBalanceSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        leave_type = data['leave_type']
+        start_date = data['start_date']
+        end_date = data['end_date']
+        is_half_day = data.get('is_half_day', False)
+
+        # Determine employee
+        employee_id = data.get('employee')
+        if request.user.role not in ['admin'] or not employee_id:
+            employee = request.user
+        else:
+            from users.models import CustomUser
+            try:
+                employee = CustomUser.objects.get(id=employee_id)
+            except CustomUser.DoesNotExist:
+                return Response(
+                    {'detail': 'Employee not found.'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        # Calculate days
+        delta_days = (end_date - start_date).days + 1
+        days_count = Decimal('0.5') if is_half_day else Decimal(str(delta_days))
+
+        # Get leave balance
+        year = start_date.year
+        leave_balance, _ = LeaveBalance.objects.get_or_create(
+            employee=employee,
+            year=year,
+            defaults={
+                'sick_leave_total': 5,
+                'emergency_leave_total': 5,
+            }
+        )
+
+        remaining = leave_balance.get_remaining_balance(leave_type)
+        can_take = leave_balance.can_take_leave(leave_type, days_count)
+
+        # Check for conflicting dates
+        conflicting_dates = []
+        current_date = start_date
+        while current_date <= end_date:
+            existing = LeaveRequest.objects.filter(
+                employee=employee,
+                status__in=['PENDING', 'APPROVED']
+            ).filter(
+                models.Q(date=current_date) |
+                (models.Q(start_date__lte=current_date) & models.Q(end_date__gte=current_date))
+            ).exists()
+
+            if existing:
+                conflicting_dates.append(str(current_date))
+
+            attendance_exists = DailyAttendance.objects.filter(
+                employee=employee,
+                date=current_date,
+            ).exclude(
+                clock_in__isnull=True
+            ).exists()
+
+            if attendance_exists:
+                conflicting_dates.append(f'{current_date} (attendance recorded)')
+
+            current_date += timedelta(days=1)
+
+        return Response({
+            'valid': can_take and len(conflicting_dates) == 0,
+            'days_requested': float(days_count),
+            'remaining_balance': float(remaining),
+            'has_sufficient_balance': can_take,
+            'conflicting_dates': conflicting_dates,
+            'leave_type': leave_type,
+        })
 
 
 class OffenseViewSet(viewsets.ModelViewSet):
@@ -991,3 +1135,54 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
             )
 
         return Response(serializer.data)
+
+
+class HalfDayScheduleViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing half-day schedules.
+    
+    Admin can mark specific dates as forced half-days.
+    On those dates, all employees' attendance will be capped at 4 paid hours.
+    
+    Permissions:
+    - Admin/Manager: Full access (create, update, delete, view all)
+    - Others: Read-only access
+    
+    Endpoints:
+    - GET /api/attendance/half-day-schedules/ - List all half-day schedules
+    - POST /api/attendance/half-day-schedules/ - Create (admin/manager only)
+    - GET /api/attendance/half-day-schedules/{id}/ - Get detail
+    - PUT/PATCH /api/attendance/half-day-schedules/{id}/ - Update (admin/manager only)
+    - DELETE /api/attendance/half-day-schedules/{id}/ - Soft delete (admin/manager only)
+    """
+    serializer_class = HalfDayScheduleSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        """Get non-deleted half-day schedules."""
+        queryset = HalfDaySchedule.objects.filter(is_deleted=False).select_related('created_by')
+        
+        # Filter by date range if provided
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        date = self.request.query_params.get('date')
+        
+        if date:
+            queryset = queryset.filter(date=date)
+        if start_date:
+            queryset = queryset.filter(date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(date__lte=end_date)
+        
+        return queryset
+    
+    def get_permissions(self):
+        """Only admin/manager can create, update, delete."""
+        if self.action in ['create', 'update', 'partial_update', 'destroy']:
+            return [IsAdminOrManager()]
+        return [IsAuthenticated()]
+    
+    def perform_destroy(self, instance):
+        """Soft delete half-day schedule."""
+        instance.is_deleted = True
+        instance.save(update_fields=['is_deleted'])
