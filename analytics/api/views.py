@@ -21,8 +21,9 @@ from django.db.models import (
     FloatField,
     Q,
     Sum,
+    Value,
 )
-from django.db.models.functions import TruncDay
+from django.db.models.functions import Coalesce, TruncDay
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from expenses.models import Expense
@@ -331,14 +332,19 @@ class TopSellingItemsView(APIView):
                 transaction__is_deleted=False,
             )
             .filter(**{"transaction__%s" % k: v for k, v in stall_filter.items()})
-            .values("item__name")
+            .annotate(
+                display_name=Coalesce(
+                    "item__name", "description", Value("Manual Item")
+                )
+            )
+            .values("display_name")
             .annotate(total_quantity=Sum("quantity"))
             .order_by("-total_quantity")[:limit]
         )
 
         return Response(
             [
-                {"item": q["item__name"], "quantity": q["total_quantity"]}
+                {"item": q["display_name"], "quantity": q["total_quantity"]}
                 for q in queryset
             ]
         )
