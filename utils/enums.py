@@ -28,6 +28,7 @@ class HorsePower(models.TextChoices):
 
 class ServiceType(models.TextChoices):
     REPAIR = "repair", _("Repair")
+    DISMANTLE = "dismantle", _("Dismantle")
     INSTALLATION = "installation", _("Installation")
     MOTOR_REWIND = "motor_rewind", _("Motor Rewind")
     INSPECTION = "inspection", _("Inspection")
