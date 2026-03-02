@@ -12,6 +12,7 @@ This module handles:
 from decimal import Decimal
 
 from django.db import transaction
+from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 
@@ -19,6 +20,38 @@ def get_main_stall():
     """Get the Main stall (services + aircon units)."""
     from inventory.models import Stall
     return Stall.objects.filter(stall_type='main', is_system=True).first()
+
+
+def _create_schedule_for_service(service, scheduled_date=None, scheduled_time=None,
+                                  schedule_type='home_service', user=None):
+    """
+    Auto-create a Schedule record for a service.
+
+    Used by installation, warranty, and free-cleaning handlers so every
+    home-service or pull-out service gets a schedule automatically.
+    """
+    from datetime import time as dt_time
+
+    from schedules.models import Schedule
+
+    if not scheduled_date:
+        return None
+
+    sch = Schedule.objects.create(
+        client=service.client,
+        service=service,
+        schedule_type=schedule_type,
+        scheduled_date=scheduled_date,
+        scheduled_time=scheduled_time or dt_time(9, 0),
+        estimated_duration=60,
+        status='pending',
+        address=service.override_address or (service.client.address if service.client else ''),
+        contact_person=service.override_contact_person or (service.client.full_name if service.client else ''),
+        contact_number=service.override_contact_number or (service.client.contact_number if service.client else ''),
+        notes=service.description,
+        created_by=user,
+    )
+    return sch
 
 
 class AirconInventoryManager:
@@ -319,42 +352,55 @@ class AirconInstallationHandler:
     @staticmethod
     def create_installation_service(unit, client, scheduled_date=None,
                                    scheduled_time=None, labor_fee=None,
-                                   apply_free_installation=False,
-                                   copper_tube_length=0,
-                                   user=None):
+                                   labor_is_free=False,
+                                   user=None,
+                                   sell_unit_now=False,
+                                   payment_type='cash'):
         """
-        Create installation service for a sold aircon unit.
+        Create installation service for an aircon unit.
 
         Args:
-            unit: AirconUnit instance (must be sold)
+            unit: AirconUnit instance
             client: Client for the installation
             scheduled_date: Date of installation
             scheduled_time: Time of installation
-            labor_fee: Labor fee for installation (if not free)
-            apply_free_installation: Apply free installation promo
-            copper_tube_length: Length of copper tube needed (ft)
+            labor_fee: Labor fee for installation
+            labor_is_free: Mark labor as free (promotional)
             user: User creating the service
+            sell_unit_now: If True, sell the unit now (if not already sold)
+            payment_type: Payment method if selling unit now
 
         Returns:
             dict with service and installation details
         """
-        from inventory.models import Item
         from services.business_logic import (
-            PromoManager,
             RevenueCalculator,
-            StockReservationManager,
         )
-        from services.models import ApplianceItemUsed, Service, ServiceAppliance
+        from services.models import Service, ServiceAppliance
         from utils.enums import ServiceMode, ServiceStatus, ServiceType
-
-        from installations.models import AirconInstallation
-
-        if not unit.is_sold:
-            raise ValidationError("Unit must be sold before installation can be scheduled.")
 
         main_stall = get_main_stall()
         if not main_stall:
             raise ValidationError("Main stall not configured in system.")
+
+        # Check if unit needs to be sold first (optional)
+        sale_transaction = None
+        if sell_unit_now and not unit.is_sold:
+            # Sell the unit now
+            sale_result = AirconSalesHandler.sell_unit(
+                unit=unit,
+                client=client,
+                sales_clerk=user,
+                payment_type=payment_type,
+                create_transaction=True
+            )
+            unit = sale_result['unit']  # Get updated unit
+            sale_transaction = sale_result.get('sale_transaction')
+        elif not unit.is_sold:
+            # Reserve the unit for this client
+            unit.reserved_by = client
+            unit.reserved_at = timezone.now()
+            unit.save(update_fields=['reserved_by', 'reserved_at', 'updated_at'])
 
         with transaction.atomic():
             # Create installation service
@@ -367,17 +413,12 @@ class AirconInstallationHandler:
                 scheduled_time=scheduled_time,
                 status=ServiceStatus.PENDING,
                 description=f"Installation for Aircon Unit: {unit.model} (SN: {unit.serial_number})",
-            )
-
-            # Create aircon installation record
-            installation = AirconInstallation.objects.create(
-                service=service,
                 notes=f"Unit: {unit.serial_number}, Model: {unit.model}",
             )
 
-            # Link unit to installation
-            unit.installation = installation
-            unit.save(update_fields=['installation', 'updated_at'])
+            # Link unit to installation service
+            unit.installation_service = service
+            unit.save(update_fields=['installation_service', 'updated_at'])
 
             # Create service appliance for the aircon
             appliance = ServiceAppliance.objects.create(
@@ -385,64 +426,40 @@ class AirconInstallationHandler:
                 appliance_type=None,  # This is an aircon installation
                 brand=unit.model.brand.name if unit.model else None,
                 model=unit.model.name if unit.model else None,
+                serial_number=unit.serial_number,  # Add serial number
                 labor_fee=labor_fee or Decimal('0.00'),
+                labor_is_free=labor_is_free,
+                labor_original_amount=labor_fee if labor_is_free and labor_fee > 0 else None,
             )
-
-            # Apply free installation promo if requested
-            if apply_free_installation:
-                PromoManager.apply_free_installation(appliance)
-                appliance.save(update_fields=[
-                    'labor_fee', 'labor_is_free', 'labor_original_amount'
-                ])
-
-            # Add copper tube if needed
-            if copper_tube_length > 0:
-                # Find copper tube item
-                copper_tube = Item.objects.filter(
-                    name__icontains='copper',
-                    unit_of_measure='ft',
-                    is_deleted=False
-                ).first()
-
-                if copper_tube:
-                    # Reserve stock
-                    stock = StockReservationManager.reserve_stock(
-                        item=copper_tube,
-                        quantity=copper_tube_length
-                    )
-
-                    # Create item usage
-                    item_used = ApplianceItemUsed.objects.create(
-                        appliance=appliance,
-                        item=copper_tube,
-                        quantity=copper_tube_length,
-                        stall_stock=stock,
-                    )
-
-                    # Apply copper tube promo (first 10ft free)
-                    free_qty, charged_qty, applied = PromoManager.apply_copper_tube_free_10ft(
-                        item_used
-                    )
-                    if applied:
-                        item_used.save(update_fields=['free_quantity', 'promo_name'])
 
             # Calculate initial revenue
             RevenueCalculator.calculate_service_revenue(service, save=True)
 
+            # Auto-create schedule for home service installation
+            schedule = _create_schedule_for_service(
+                service,
+                scheduled_date=scheduled_date,
+                scheduled_time=scheduled_time,
+                schedule_type='home_service',
+                user=user,
+            )
+
             return {
                 'service': service,
-                'installation': installation,
+                'sale_transaction': sale_transaction,  # Include sale transaction if created
+                'unit_price': unit.sale_price,  # Include unit price for reference
                 'unit': unit,
                 'appliance': appliance,
+                'schedule': schedule,
             }
 
     @staticmethod
-    def complete_installation(installation, completion_date=None, user=None):
+    def complete_installation(service, completion_date=None, user=None):
         """
-        Complete an aircon installation.
+        Complete an aircon installation service.
 
         Args:
-            installation: AirconInstallation instance
+            service: Service instance (must be INSTALLATION type)
             completion_date: Date of completion
             user: User completing the installation
 
@@ -450,9 +467,10 @@ class AirconInstallationHandler:
             dict with completion details
         """
         from services.business_logic import ServiceCompletionHandler
-        from utils.enums import ServiceStatus
+        from utils.enums import ServiceStatus, ServiceType
 
-        service = installation.service
+        if service.service_type != ServiceType.INSTALLATION:
+            raise ValidationError("Service must be an INSTALLATION service.")
 
         if service.status == ServiceStatus.COMPLETED:
             raise ValidationError("Installation is already completed.")
@@ -465,21 +483,24 @@ class AirconInstallationHandler:
                 create_receipt=True
             )
 
-            # Update installation date if provided
-            if completion_date and hasattr(installation, 'date_installed'):
-                installation.date_installed = completion_date
-                installation.save(update_fields=['date_installed', 'updated_at'])
-
-            # Warranty starts on installation date
-            unit = installation.aircon_unit
-            if unit and completion_date:
-                unit.warranty_start_date = completion_date
+            # Warranty starts on installation completion date
+            warranty_date = completion_date if completion_date else timezone.now().date()
+            
+            # Activate warranties for aircon units
+            units = service.installation_units.all()
+            for unit in units:
+                unit.warranty_start_date = warranty_date
                 unit.save(update_fields=['warranty_start_date', 'updated_at'])
+            
+            # Activate warranties for service appliances (labor and unit warranties)
+            appliances = service.appliances.all()
+            for appliance in appliances:
+                appliance.activate_warranties(start_date=warranty_date)
 
             return {
-                'installation': installation,
                 'service': service,
                 'completion_result': result,
+                'units': list(units),
             }
 
 
@@ -617,11 +638,11 @@ class WarrantyEligibilityChecker:
         if not unit:
             raise ValidationError("Unit is required")
 
-        # Unit must be sold
-        if not unit.is_sold:
+        # Unit must have been installed (no need to be sold - payment can be pending)
+        if unit.unit_status != "Installed":
             return {
                 'eligible': False,
-                'reason': 'Unit has not been sold yet',
+                'reason': 'Unit has not been installed yet',
             }
 
         # Unit must have warranty
@@ -904,7 +925,7 @@ class WarrantyServiceHandler:
             'repair': ServiceType.REPAIR,
             'replacement': ServiceType.REPAIR,
             'parts': ServiceType.REPAIR,
-            'inspection': ServiceType.CHECK_UP,
+            'inspection': ServiceType.INSPECTION,
         }
         service_type = service_type_map.get(claim.claim_type, ServiceType.REPAIR)
 
@@ -939,6 +960,14 @@ class WarrantyServiceHandler:
         claim.status = WarrantyClaim.ClaimStatus.IN_PROGRESS
         claim.save()
 
+        # Auto-create schedule for warranty service
+        _create_schedule_for_service(
+            service,
+            scheduled_date=scheduled_date,
+            scheduled_time=scheduled_time,
+            schedule_type='home_service',
+        )
+
         return service
 
 
@@ -960,11 +989,11 @@ class FreeCleaningManager:
         if not unit:
             raise ValidationError("Unit is required")
 
-        # Unit must be sold
-        if not unit.is_sold:
+        # Unit must have been installed (no need to be sold - payment can be pending)
+        if unit.unit_status != "Installed":
             return {
                 'eligible': False,
-                'reason': 'Unit has not been sold yet',
+                'reason': 'Unit has not been installed yet',
             }
 
         # Check if already redeemed
@@ -974,12 +1003,20 @@ class FreeCleaningManager:
                 'reason': 'Free cleaning has already been redeemed',
             }
 
-        # Check if under warranty (optional - you can remove this if free cleaning is lifetime)
-        if not unit.is_under_warranty:
+        # Check if within 1 year of installation (free cleaning validity period)
+        if not unit.warranty_start_date:
             return {
                 'eligible': False,
-                'reason': 'Unit is no longer under warranty',
-                'warranty_end_date': unit.warranty_end_date,
+                'reason': 'Unit warranty has not started yet (not installed)',
+            }
+        
+        from dateutil.relativedelta import relativedelta
+        free_cleaning_deadline = unit.warranty_start_date + relativedelta(years=1)
+        if timezone.now().date() > free_cleaning_deadline:
+            return {
+                'eligible': False,
+                'reason': 'Free cleaning is only valid within 1 year of installation',
+                'free_cleaning_deadline': free_cleaning_deadline,
             }
 
         # All checks passed
@@ -991,13 +1028,13 @@ class FreeCleaningManager:
 
     @staticmethod
     @transaction.atomic
-    def redeem_free_cleaning(unit, scheduled_date=None, scheduled_time=None, **service_kwargs):
+    def redeem_free_cleaning(unit, scheduled_date=None, scheduled_time=None, technician_ids=None, **service_kwargs):
         """
         Redeem free cleaning for an aircon unit and create cleaning service.
 
         Args:
             unit: AirconUnit instance
-            scheduled_date: Optional scheduled date for cleaning
+            scheduled_date: Required scheduled date for cleaning
             scheduled_time: Optional scheduled time for cleaning
             **service_kwargs: Additional Service fields
 
@@ -1005,10 +1042,16 @@ class FreeCleaningManager:
             dict with 'service' and 'unit' keys
 
         Raises:
-            ValidationError if unit is not eligible
+            ValidationError if unit is not eligible or scheduled_date is missing
         """
         from services.models import Service
         from utils.enums import ServiceMode, ServiceStatus, ServiceType
+
+        # Require scheduled date
+        if not scheduled_date:
+            raise ValidationError({
+                'scheduled_date': 'A scheduled date is required for free cleaning redemption.'
+            })
 
         # Check eligibility
         eligibility = FreeCleaningManager.check_eligibility(unit)
@@ -1017,11 +1060,15 @@ class FreeCleaningManager:
                 'unit': f"Unit is not eligible for free cleaning: {eligibility['reason']}"
             })
 
-        # Get client from unit sale
-        if not unit.sale:
-            raise ValidationError("Cannot create service - unit has no sale record")
+        # Get client from unit sale or reservation
+        client = None
+        if unit.sale:
+            client = unit.sale.client
+        elif unit.reserved_by:
+            client = unit.reserved_by
 
-        client = unit.sale.client
+        if not client:
+            raise ValidationError("Cannot create service - unit has no sale or reservation record")
 
         # Get main stall
         main_stall = get_main_stall()
@@ -1049,9 +1096,30 @@ class FreeCleaningManager:
 
         service = Service.objects.create(**service_data)
 
-        # Mark as redeemed
+        # Mark as redeemed and link service
         unit.free_cleaning_redeemed = True
+        unit.free_cleaning_service = service
         unit.save()
+
+        # Assign technicians if provided
+        if technician_ids:
+            from services.models import TechnicianAssignment
+            from users.models import CustomUser
+            technicians = CustomUser.objects.filter(id__in=technician_ids, role='technician')
+            for tech in technicians:
+                TechnicianAssignment.objects.create(
+                    service=service,
+                    technician=tech,
+                    assignment_type=TechnicianAssignment.AssignmentType.REPAIR,
+                )
+
+        # Auto-create schedule for free cleaning service
+        _create_schedule_for_service(
+            service,
+            scheduled_date=scheduled_date,
+            scheduled_time=scheduled_time,
+            schedule_type='home_service',
+        )
 
         return {
             'service': service,
@@ -1070,16 +1138,139 @@ class FreeCleaningManager:
             QuerySet of AirconUnit instances
         """
         from installations.models import AirconUnit
+        from utils.enums import ServiceStatus
 
         queryset = AirconUnit.objects.filter(
-            is_sold=True,
             free_cleaning_redeemed=False,
-        ).select_related('model', 'model__brand', 'sale', 'sale__client')
+        ).filter(
+            Q(is_sold=True) | Q(
+                installation_service__isnull=False,
+                installation_service__status=ServiceStatus.COMPLETED,
+            )
+        ).select_related('model', 'model__brand', 'sale', 'sale__client', 'reserved_by')
 
         if client:
-            queryset = queryset.filter(sale__client=client)
+            queryset = queryset.filter(
+                Q(sale__client=client) | Q(reserved_by=client)
+            )
 
         return queryset
+
+    @staticmethod
+    @transaction.atomic
+    def redeem_free_cleaning_batch(units, client, scheduled_date=None, scheduled_time=None, technician_ids=None):
+        """
+        Redeem free cleaning for multiple aircon units under a single client.
+        Creates a single cleaning service with each unit as an appliance.
+
+        Args:
+            units: list of AirconUnit instances
+            client: Client instance
+            scheduled_date: Required scheduled date for cleaning
+            scheduled_time: Optional scheduled time for cleaning
+
+        Returns:
+            dict with 'service' and 'units' keys
+
+        Raises:
+            ValidationError if any unit is not eligible or scheduled_date is missing
+        """
+        from services.models import Service, ServiceAppliance
+        from utils.enums import ServiceMode, ServiceStatus, ServiceType
+
+        if not units:
+            raise ValidationError("At least one unit is required")
+
+        # Require scheduled date
+        if not scheduled_date:
+            raise ValidationError({
+                'scheduled_date': 'A scheduled date is required for free cleaning redemption.'
+            })
+
+        # Validate all units
+        ineligible = []
+        for unit in units:
+            eligibility = FreeCleaningManager.check_eligibility(unit)
+            if not eligibility['eligible']:
+                ineligible.append(f"{unit.serial_number}: {eligibility['reason']}")
+
+        if ineligible:
+            raise ValidationError({
+                'unit_ids': f"Some units are not eligible: {'; '.join(ineligible)}"
+            })
+
+        # Get main stall
+        main_stall = get_main_stall()
+        if not main_stall:
+            raise ValidationError("Main stall not configured")
+
+        # Build description and notes
+        serial_numbers = [u.serial_number for u in units]
+        unit_details = [f"{u.model} (SN: {u.serial_number})" for u in units]
+
+        service_data = {
+            'client': client,
+            'stall': main_stall,
+            'service_type': ServiceType.CLEANING,
+            'service_mode': ServiceMode.HOME_SERVICE,
+            'status': ServiceStatus.PENDING,
+            'description': f"FREE CLEANING - {len(units)} unit(s)",
+            'notes': "Free cleaning redemption\n" + "\n".join(
+                f"- {detail}" for detail in unit_details
+            ),
+        }
+
+        service = Service.objects.create(**service_data)
+
+        # Get or create cleaning appliance type
+        from services.models import ApplianceType
+        cleaning_type, _ = ApplianceType.objects.get_or_create(
+            name__iexact="Aircon",
+            defaults={"name": "Aircon"},
+        )
+
+        # Create appliances for each unit
+        for unit in units:
+            ServiceAppliance.objects.create(
+                service=service,
+                appliance_type=cleaning_type,
+                brand=unit.model.brand.name if unit.model and unit.model.brand else "",
+                model=unit.model.name if unit.model else "",
+                serial_number=unit.serial_number,
+                issue_reported="Free cleaning redemption",
+                labor_fee=0,
+                labor_is_free=True,
+            )
+
+            # Mark as redeemed and link service
+            unit.free_cleaning_redeemed = True
+            unit.free_cleaning_service = service
+            unit.save(clean=False)
+
+        # Assign technicians if provided
+        if technician_ids:
+            from services.models import TechnicianAssignment
+            from users.models import CustomUser
+            technicians = CustomUser.objects.filter(id__in=technician_ids, role='technician')
+            for tech in technicians:
+                TechnicianAssignment.objects.create(
+                    service=service,
+                    technician=tech,
+                    assignment_type=TechnicianAssignment.AssignmentType.REPAIR,
+                )
+
+        # Auto-create schedule
+        _create_schedule_for_service(
+            service,
+            scheduled_date=scheduled_date,
+            scheduled_time=scheduled_time,
+            schedule_type='home_service',
+        )
+
+        return {
+            'service': service,
+            'units': units,
+        }
 
 
 # ============================================================================

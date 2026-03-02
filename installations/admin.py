@@ -2,10 +2,9 @@ from django.contrib import admin
 
 from installations.models import (
     AirconBrand,
-    AirconInstallation,
-    AirconItemUsed,
     AirconModel,
     AirconUnit,
+    ModelPriceHistory,
     WarrantyClaim,
 )
 
@@ -23,6 +22,7 @@ class AirconModelAdmin(admin.ModelAdmin):
         "id",
         "brand",
         "name",
+        "horsepower",
         "retail_price",
         "promo_price",
         "aircon_type",
@@ -30,9 +30,35 @@ class AirconModelAdmin(admin.ModelAdmin):
         "discount_percentage",
         "has_discount",
     ]
-    list_filter = ["brand", "aircon_type", "is_inverter"]
+    list_filter = ["brand", "aircon_type", "horsepower", "is_inverter"]
     search_fields = ["name", "brand__name"]
     ordering = ["brand__name", "name"]
+
+
+class PriceHistoryInline(admin.TabularInline):
+    model = ModelPriceHistory
+    extra = 0
+    readonly_fields = [
+        "retail_price", "discount_percentage", "old_retail_price",
+        "old_discount_percentage", "change_type", "notes", "changed_at",
+    ]
+    ordering = ["-changed_at"]
+
+
+# Patch the inline into AirconModelAdmin
+AirconModelAdmin.inlines = [PriceHistoryInline]
+
+
+@admin.register(ModelPriceHistory)
+class ModelPriceHistoryAdmin(admin.ModelAdmin):
+    list_display = [
+        "id", "aircon_model", "retail_price", "discount_percentage",
+        "change_type", "changed_at",
+    ]
+    list_filter = ["change_type", "aircon_model__brand"]
+    search_fields = ["aircon_model__name", "aircon_model__brand__name"]
+    ordering = ["-changed_at"]
+    readonly_fields = ["changed_at"]
 
 
 @admin.register(AirconUnit)
@@ -62,6 +88,8 @@ class AirconUnitAdmin(admin.ModelAdmin):
         "is_reserved",
         "is_available_for_sale",
         "sale_price",
+        "created_at",
+        "updated_at",
     ]
     ordering = ["-created_at"]
 
@@ -70,7 +98,7 @@ class AirconUnitAdmin(admin.ModelAdmin):
             "fields": ("model", "serial_number", "stall")
         }),
         ("Sale Information", {
-            "fields": ("sale", "installation", "is_sold", "reserved_by", "reserved_at")
+            "fields": ("sale", "installation_service", "is_sold", "reserved_by", "reserved_at")
         }),
         ("Warranty Information", {
             "fields": (
@@ -90,21 +118,6 @@ class AirconUnitAdmin(admin.ModelAdmin):
             "classes": ("collapse",)
         }),
     )
-
-
-@admin.register(AirconInstallation)
-class AirconInstallationAdmin(admin.ModelAdmin):
-    list_display = ["id", "service", "created_at"]
-    search_fields = ["service__client__name"]
-    ordering = ["-created_at"]
-
-
-@admin.register(AirconItemUsed)
-class AirconItemUsedAdmin(admin.ModelAdmin):
-    list_display = ["id", "unit", "item", "total_quantity_used", "free_quantity"]
-    list_filter = ["item"]
-    search_fields = ["unit__serial_number", "item__name"]
-    ordering = ["-created_at"]
 
 
 @admin.register(WarrantyClaim)
@@ -136,8 +149,6 @@ class WarrantyClaimAdmin(admin.ModelAdmin):
         "is_pending",
         "is_approved",
         "warranty_days_remaining_at_claim",
-        "created_at",
-        "updated_at",
     ]
     ordering = ["-claim_date"]
 

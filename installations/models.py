@@ -5,7 +5,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 from services.models import Service
-from utils.enums import AirconType, ServiceType
+from utils.enums import AirconType, HorsePower, ServiceType
 
 
 class AirconBrand(models.Model):
@@ -31,8 +31,24 @@ class AirconModel(models.Model):
     aircon_type = models.CharField(
         max_length=30, choices=AirconType.choices, default=AirconType.WINDOW
     )
+    horsepower = models.CharField(
+        max_length=10,
+        choices=HorsePower.choices,
+        default=HorsePower.HP_1_0,
+        help_text="Horsepower/capacity of the air conditioner"
+    )
     is_inverter = models.BooleanField(
         default=False, help_text="Uses inverter technology."
+    )
+
+    # Warranty configuration per model
+    parts_warranty_months = models.PositiveIntegerField(
+        default=60,
+        help_text="Parts (unit) warranty duration in months (default: 60 = 5 years)",
+    )
+    labor_warranty_months = models.PositiveIntegerField(
+        default=12,
+        help_text="Labor warranty duration in months (default: 12 = 1 year)",
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -40,6 +56,16 @@ class AirconModel(models.Model):
 
     def __str__(self):
         return f"{self.brand.name} {self.name} ({self.get_aircon_type_display()})"
+
+    @property
+    def parts_warranty_years(self) -> float:
+        """Parts warranty in years (for display)."""
+        return round(self.parts_warranty_months / 12, 1)
+
+    @property
+    def labor_warranty_years(self) -> float:
+        """Labor warranty in years (for display)."""
+        return round(self.labor_warranty_months / 12, 1)
 
     @property
     def has_discount(self) -> bool:
@@ -55,25 +81,103 @@ class AirconModel(models.Model):
             return self.retail_price - discount_amount
         return self.retail_price
 
+    def save(self, *args, **kwargs):
+        """Override save to track price changes in history."""
+        track_history = kwargs.pop("track_history", True)
+        is_new = self.pk is None
+        old_retail = None
+        old_discount = None
 
-class AirconInstallation(models.Model):
-    service = models.OneToOneField(
-        Service, on_delete=models.CASCADE, related_name="aircon_installation", null=True
+        if not is_new and track_history:
+            try:
+                old = AirconModel.objects.get(pk=self.pk)
+                old_retail = old.retail_price
+                old_discount = old.discount_percentage
+            except AirconModel.DoesNotExist:
+                pass
+
+        super().save(*args, **kwargs)
+
+        if track_history:
+            if is_new:
+                # Log initial price
+                ModelPriceHistory.objects.create(
+                    aircon_model=self,
+                    retail_price=self.retail_price,
+                    discount_percentage=self.discount_percentage,
+                    change_type="initial",
+                    notes="Initial price set on model creation",
+                )
+            elif old_retail is not None:
+                price_changed = old_retail != self.retail_price
+                discount_changed = old_discount != self.discount_percentage
+                if price_changed or discount_changed:
+                    change_type = "price_and_discount" if (price_changed and discount_changed) else ("price" if price_changed else "discount")
+                    ModelPriceHistory.objects.create(
+                        aircon_model=self,
+                        retail_price=self.retail_price,
+                        discount_percentage=self.discount_percentage,
+                        old_retail_price=old_retail,
+                        old_discount_percentage=old_discount,
+                        change_type=change_type,
+                    )
+
+
+class ModelPriceHistory(models.Model):
+    """Tracks price changes for aircon models."""
+
+    CHANGE_TYPE_CHOICES = [
+        ("initial", "Initial Price"),
+        ("price", "Price Change"),
+        ("discount", "Discount Change"),
+        ("price_and_discount", "Price & Discount Change"),
+    ]
+
+    aircon_model = models.ForeignKey(
+        AirconModel,
+        on_delete=models.CASCADE,
+        related_name="price_history",
     )
-    notes = models.TextField(blank=True, null=True)
+    retail_price = models.DecimalField(max_digits=10, decimal_places=2)
+    discount_percentage = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("0.00")
+    )
+    old_retail_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Previous retail price (null for initial)",
+    )
+    old_discount_percentage = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Previous discount percentage (null for initial)",
+    )
+    change_type = models.CharField(
+        max_length=20, choices=CHANGE_TYPE_CHOICES, default="price"
+    )
+    notes = models.TextField(blank=True, default="")
+    changed_at = models.DateTimeField(auto_now_add=True)
 
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    class Meta:
+        ordering = ["-changed_at"]
+        verbose_name = "Price History"
+        verbose_name_plural = "Price Histories"
 
-    def clean(self):
-        if self.service.service_type != ServiceType.INSTALLATION:
-            raise ValidationError(
-                "Installation must be linked to an INSTALLATION service."
-            )
+    @property
+    def effective_price(self) -> Decimal:
+        """Computed promo price at this point in history."""
+        if self.discount_percentage > 0:
+            discount_fraction = self.discount_percentage / Decimal("100")
+            return self.retail_price - (self.retail_price * discount_fraction)
+        return self.retail_price
+
+    @property
+    def price_change_amount(self):
+        """Difference from old to new retail price."""
+        if self.old_retail_price is not None:
+            return self.retail_price - self.old_retail_price
+        return None
 
     def __str__(self):
-        client = getattr(self.service.client, "full_name", "Unknown Client")
-        return f"Installation for {client}"
+        return f"{self.aircon_model} - ₱{self.retail_price} ({self.change_type}) @ {self.changed_at}"
 
 
 class AirconUnit(models.Model):
@@ -110,12 +214,13 @@ class AirconUnit(models.Model):
         related_name="aircon_units_sold",
     )
 
-    installation = models.OneToOneField(
-        AirconInstallation,
+    installation_service = models.ForeignKey(
+        Service,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="aircon_unit",
+        related_name="installation_units",
+        help_text="Installation service this unit is part of"
     )
 
     reserved_by = models.ForeignKey(
@@ -130,6 +235,14 @@ class AirconUnit(models.Model):
     warranty_start_date = models.DateField(null=True, blank=True)
     warranty_period_months = models.PositiveIntegerField(default=12)
     free_cleaning_redeemed = models.BooleanField(default=False)
+    free_cleaning_service = models.ForeignKey(
+        Service,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="free_cleaning_units",
+        help_text="The cleaning service created when free cleaning was redeemed"
+    )
 
     # Track if unit is sold (convenience field)
     is_sold = models.BooleanField(
@@ -147,17 +260,21 @@ class AirconUnit(models.Model):
                 {"stall": "Aircon units can only be owned by Main stall."}
             )
 
-        if self.installation:
-            tx = self.installation.service.related_transaction
+        if self.installation_service:
+            # Validate installation_service is actually an installation service
+            if self.installation_service.service_type != ServiceType.INSTALLATION:
+                raise ValidationError(
+                    {"installation_service": "Service must be an INSTALLATION service."}
+                )
+            tx = self.installation_service.related_transaction
             if tx and self.sale != tx:
                 raise ValidationError(
                     {"sale": "Sale must match the installation's transaction."}
                 )
-            if not self.sale:
-                raise ValidationError({"sale": "Installed units must be sold first."})
+            # Installation doesn't require sale - unit can be reserved
 
-        if self.warranty_start_date and not self.sale:
-            raise ValidationError({"warranty_start_date": "Warranty requires a sale."})
+        if self.warranty_start_date and not (self.sale or self.installation_service):
+            raise ValidationError({"warranty_start_date": "Warranty requires a sale or installation."})
 
     def save(self, *args, **kwargs):
         run_clean = kwargs.pop("clean", True)
@@ -174,15 +291,16 @@ class AirconUnit(models.Model):
                 self.stall = main_stall
 
         # Determine warranty start logic
-        if self.installation and hasattr(self.installation, 'date_installed') and self.installation.date_installed:
-            self.warranty_start_date = self.installation.date_installed
-        elif self.sale and self.sale.created_at:
+        # Warranty for direct sales (no installation) starts at sale date.
+        # Warranty for installations is set by complete_installation() — NOT here.
+        if self.sale and not self.installation_service and self.sale.created_at:
             self.warranty_start_date = self.sale.created_at.date()
-        else:
+        elif not self.sale and not self.installation_service:
             self.warranty_start_date = None  # Not yet started
 
-        # Mark as sold and clear reservation once sold or installed
-        if self.sale or self.installation:
+        # Mark as sold and clear reservation once sold
+        # Units with installation but no sale should remain reserved
+        if self.sale:
             self.is_sold = True
             self.reserved_by = None
             self.reserved_at = None
@@ -224,9 +342,97 @@ class AirconUnit(models.Model):
             else 0
         )
 
+    # --- Per-type warranty properties (based on AirconModel's parts/labor warranty months) ---
+
+    @property
+    def parts_warranty_end_date(self):
+        if self.warranty_start_date and self.model and self.model.parts_warranty_months:
+            return self.warranty_start_date + relativedelta(months=self.model.parts_warranty_months)
+        return None
+
+    @property
+    def labor_warranty_end_date(self):
+        if self.warranty_start_date and self.model and self.model.labor_warranty_months:
+            return self.warranty_start_date + relativedelta(months=self.model.labor_warranty_months)
+        return None
+
+    @property
+    def parts_warranty_days_left(self):
+        end = self.parts_warranty_end_date
+        if end and timezone.now().date() <= end:
+            return max((end - timezone.now().date()).days, 0)
+        return 0
+
+    @property
+    def labor_warranty_days_left(self):
+        end = self.labor_warranty_end_date
+        if end and timezone.now().date() <= end:
+            return max((end - timezone.now().date()).days, 0)
+        return 0
+
+    @property
+    def parts_warranty_status(self):
+        if not self.model or not self.model.parts_warranty_months:
+            return "No Warranty"
+        if not self.warranty_start_date:
+            return "Not Started"
+        return "Active" if self.parts_warranty_days_left > 0 else "Expired"
+
+    @property
+    def labor_warranty_status(self):
+        if not self.model or not self.model.labor_warranty_months:
+            return "No Warranty"
+        if not self.warranty_start_date:
+            return "Not Started"
+        return "Active" if self.labor_warranty_days_left > 0 else "Expired"
+
+    @property
+    def free_cleaning_status(self):
+        """Return the free cleaning status: available, pending, or redeemed.
+        - available: Not yet redeemed
+        - pending: Redeemed but service not completed
+        - redeemed: Redeemed and service completed
+        """
+        if not self.free_cleaning_redeemed:
+            return "available"
+        if self.free_cleaning_service:
+            from utils.enums import ServiceStatus
+            if self.free_cleaning_service.status == ServiceStatus.COMPLETED:
+                return "redeemed"
+            if self.free_cleaning_service.status == ServiceStatus.CANCELLED:
+                return "available"  # Cancelled cleaning = still available
+            return "pending"  # Redeemed but not completed yet
+        return "pending"  # Redeemed but no service record yet
+
+    @property
+    def free_cleaning_redemption_date(self):
+        """Return the date when free cleaning was redeemed."""
+        if self.free_cleaning_redeemed and self.free_cleaning_service:
+            return self.free_cleaning_service.created_at
+        return None
+
+    @property
+    def free_cleaning_service_id(self):
+        """Return the service ID for free cleaning."""
+        return self.free_cleaning_service_id if self.free_cleaning_service else None
+
     @property
     def is_available_for_sale(self):
         return self.sale is None and self.reserved_by is None and not self.is_sold
+
+    @property
+    def unit_status(self):
+        """Computed status reflecting the full lifecycle of the unit."""
+        from utils.enums import ServiceStatus
+        if self.installation_service:
+            if self.installation_service.status == ServiceStatus.COMPLETED:
+                return "Installed"
+            return "For Installation"
+        if self.is_sold:
+            return "Sold"
+        if self.is_reserved:
+            return "Reserved"
+        return "Available"
 
     @property
     def sale_price(self):
@@ -237,25 +443,6 @@ class AirconUnit(models.Model):
 
     def __str__(self):
         return f"{self.model} (SN: {self.serial_number})"
-
-
-class AirconItemUsed(models.Model):
-    unit = models.ForeignKey(
-        AirconUnit, on_delete=models.CASCADE, related_name="items_used"
-    )
-    item = models.ForeignKey("inventory.Item", on_delete=models.SET_NULL, null=True)
-    total_quantity_used = models.PositiveIntegerField()
-    free_quantity = models.PositiveIntegerField(default=0)
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def clean(self):
-        if self.total_quantity_used < self.free_quantity:
-            raise ValidationError("Free quantity cannot exceed total quantity used.")
-
-    def __str__(self):
-        return f"{self.item.name} x{self.total_quantity_used} for unit {self.unit.serial_number}"
 
 
 class WarrantyClaim(models.Model):

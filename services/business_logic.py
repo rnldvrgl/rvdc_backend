@@ -214,6 +214,16 @@ class RevenueCalculator:
         for appliance in service.appliances.all():
             # Use discounted_labor_fee which accounts for labor discounts
             main_revenue += appliance.discounted_labor_fee or Decimal('0.00')
+            # Add custom unit_price for second-hand or manually priced units
+            if appliance.unit_price:
+                main_revenue += appliance.unit_price
+
+        # Add aircon unit prices for installation services (Main stall revenue)
+        if service.service_type == 'installation':
+            for unit in service.installation_units.all():
+                if unit.model:
+                    # Use promo_price which includes any discounts
+                    main_revenue += unit.model.promo_price
 
         # Calculate parts revenue (Sub stall revenue) with discounts
         for appliance in service.appliances.all():
@@ -222,6 +232,17 @@ class RevenueCalculator:
                 sub_revenue += item_used.line_total
 
         total_revenue = main_revenue + sub_revenue
+
+        # Apply service-level discount (percentage or fixed amount)
+        service_discount = Decimal('0.00')
+        if service.service_discount_percentage and service.service_discount_percentage > 0:
+            service_discount = (total_revenue * service.service_discount_percentage / Decimal('100')).quantize(
+                Decimal('0.01'), rounding=ROUND_HALF_UP
+            )
+        elif service.service_discount_amount and service.service_discount_amount > 0:
+            service_discount = service.service_discount_amount
+
+        total_revenue = max(total_revenue - service_discount, Decimal('0.00'))
         
         # Round all revenue values to 2 decimal places to prevent validation errors
         main_revenue = main_revenue.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
@@ -351,7 +372,37 @@ class ServiceCompletionHandler:
             # Update service status to completed
             service.status = ServiceStatusEnum.COMPLETED
             service.save(update_fields=['status', 'updated_at'])
+
+            # Cascade status to all appliances
+            from utils.enums import ApplianceStatus
+            service.appliances.exclude(
+                status=ApplianceStatus.COMPLETED
+            ).update(status=ApplianceStatus.COMPLETED)
             
+            # Activate warranties for all appliances when service is completed
+            from datetime import date
+            completion_date = date.today()
+            for appliance in service.appliances.all():
+                if appliance.labor_warranty_months > 0 or appliance.unit_warranty_months > 0:
+                    appliance.activate_warranties(start_date=completion_date)
+            
+            # For installation services, set warranty_start_date and mark as sold on all aircon units
+            from utils.enums import ServiceType
+            if service.service_type == ServiceType.INSTALLATION:
+                for unit in service.installation_units.all():
+                    update_fields = []
+                    if not unit.warranty_start_date:
+                        unit.warranty_start_date = completion_date
+                        update_fields.append('warranty_start_date')
+                    if not unit.is_sold:
+                        unit.is_sold = True
+                        unit.reserved_by = None
+                        unit.reserved_at = None
+                        update_fields.extend(['is_sold', 'reserved_by', 'reserved_at'])
+                    if update_fields:
+                        update_fields.append('updated_at')
+                        unit.save(update_fields=update_fields)
+
             # Update payment status (sets to NOT_APPLICABLE for complementary services)
             service.update_payment_status()
 
@@ -395,6 +446,18 @@ class ServiceCompletionHandler:
                                 quantity=1,
                                 final_price_per_unit=labor_charge,
                             )
+                    
+                    # Add aircon unit prices for installation services (Main stall revenue)
+                    if service.service_type == 'installation':
+                        for unit in service.installation_units.all():
+                            if unit.model and unit.model.promo_price > 0:
+                                SalesItem.objects.create(
+                                    transaction=main_receipt,
+                                    item=None,
+                                    description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                                    quantity=1,
+                                    final_price_per_unit=unit.model.promo_price,
+                                )
                     
                     # Link main receipt to service
                     service.related_transaction = main_receipt
@@ -470,6 +533,18 @@ class ServiceCompletionHandler:
                     quantity=1,
                     final_price_per_unit=labor_charge,
                 )
+        
+        # Add aircon unit prices for installation services (Main stall revenue)
+        if service.service_type == 'installation':
+            for unit in service.installation_units.all():
+                if unit.model and unit.model.promo_price > 0:
+                    SalesItem.objects.create(
+                        transaction=receipt,
+                        item=None,
+                        description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                        quantity=1,
+                        final_price_per_unit=unit.model.promo_price,
+                    )
 
         # Add parts charges
         for appliance in service.appliances.all():
@@ -533,6 +608,10 @@ class ServiceCancellationHandler:
             service.status = ServiceStatus.CANCELLED
             service.remarks = f"{service.remarks}\n\nCancellation reason: {reason}".strip()
             service.save(update_fields=['status', 'remarks', 'updated_at'])
+
+            # Cascade status to all appliances — mark them as received (back to initial)
+            from utils.enums import ApplianceStatus
+            service.appliances.all().update(status=ApplianceStatus.RECEIVED)
 
             return {
                 'service_id': service.id,
@@ -654,7 +733,7 @@ class ServicePaymentManager:
             service.related_transaction = sales_transaction
             service.save(update_fields=["related_transaction"])
             
-            # Create sales items for labor fees ONLY (main stall)
+            # Create sales items for labor fees (main stall)
             for appliance in service.appliances.all():
                 if appliance.labor_fee > 0 and not appliance.labor_is_free:
                     appliance_name = appliance.appliance_type.name if appliance.appliance_type else "Appliance"
@@ -666,6 +745,18 @@ class ServicePaymentManager:
                         quantity=1,
                         final_price_per_unit=appliance.labor_fee,
                     )
+            
+            # Add aircon unit prices for installation services (Main stall revenue)
+            if service.service_type == 'installation':
+                for unit in service.installation_units.all():
+                    if unit.model and unit.model.promo_price > 0:
+                        SalesItem.objects.create(
+                            transaction=sales_transaction,
+                            item=None,
+                            description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                            quantity=1,
+                            final_price_per_unit=unit.model.promo_price,
+                        )
             
             # Collect all parts from all appliances
             parts_to_add = []
@@ -801,6 +892,18 @@ class ServicePaymentManager:
                             quantity=1,
                             final_price_per_unit=appliance.labor_fee,
                         )
+                
+                # Add aircon unit prices for installation services (Main stall revenue)
+                if service.service_type == 'installation':
+                    for unit in service.installation_units.all():
+                        if unit.model and unit.model.promo_price > 0:
+                            SalesItem.objects.create(
+                                transaction=sales_transaction,
+                                item=None,
+                                description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                                quantity=1,
+                                final_price_per_unit=unit.model.promo_price,
+                            )
                 
                 # Collect all parts from all appliances
                 parts_to_add = []

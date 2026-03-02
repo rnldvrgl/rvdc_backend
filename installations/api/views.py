@@ -1,13 +1,11 @@
 from django_filters.rest_framework import DjangoFilterBackend
 from installations.api.filters import (
-    AirconInstallationFilter,
     AirconModelFilter,
     AirconUnitFilter,
 )
 from installations.api.serializers import (
     AirconBrandSerializer,
     AirconInstallationCreateSerializer,
-    AirconInstallationSerializer,
     AirconModelSerializer,
     AirconReservationSerializer,
     AirconSaleSerializer,
@@ -23,7 +21,6 @@ from installations.api.serializers import (
 )
 from installations.models import (
     AirconBrand,
-    AirconInstallation,
     AirconModel,
     AirconUnit,
     WarrantyClaim,
@@ -60,7 +57,7 @@ class AirconBrandViewSet(viewsets.ModelViewSet):
 
 
 class AirconModelViewSet(viewsets.ModelViewSet):
-    queryset = AirconModel.objects.all()
+    queryset = AirconModel.objects.select_related('brand').prefetch_related('price_history').all()
     serializer_class = AirconModelSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [
@@ -109,6 +106,10 @@ class AirconUnitViewSet(viewsets.ModelViewSet):
 
     Endpoints:
     - GET /aircon-units/ - List all units in inventory
+          Query params:
+          - is_available_for_sale=true: Units available to purchase
+          - is_available_for_installation=true: Units available for installation scheduling
+          - is_reserved=true/false: Filter by reservation status
     - POST /aircon-units/ - Add new unit to inventory
     - GET /aircon-units/{id}/ - Get unit details
     - PUT/PATCH /aircon-units/{id}/ - Update unit information
@@ -117,11 +118,14 @@ class AirconUnitViewSet(viewsets.ModelViewSet):
     - POST /aircon-units/sell/ - Sell one or more units (creates sale transaction)
     - POST /aircon-units/{id}/reserve/ - Reserve a unit for a client
     - POST /aircon-units/{id}/release-reservation/ - Release reservation
-    - POST /aircon-units/{id}/create-installation/ - Create installation service
+    - POST /aircon-units/{id}/create-installation/ - Create installation service (reserves unit if not sold)
     - GET /aircon-units/stock-report/ - Get inventory stock report
     """
 
-    queryset = AirconUnit.objects.all()
+    queryset = AirconUnit.objects.select_related(
+        'model__brand', 'stall', 'installation_service', 'installation_service__client',
+        'reserved_by', 'sale__client'
+    ).all()
     serializer_class = AirconUnitSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [
@@ -315,52 +319,28 @@ class AirconUnitViewSet(viewsets.ModelViewSet):
     def get_filters(self, request):
         filters_config = {
             "model": {"options": get_aircon_model_options},
-            "sale": {"options": lambda: []},
-            "installation": {"options": lambda: []},
-            "reserved_by": {"options": lambda: []},
-            "is_available_for_sale": {
-                "options": lambda: [
-                    {"label": "Available", "value": "true"},
-                    {"label": "Not Available", "value": "false"},
-                ]
-            },
             "is_sold": {
                 "options": lambda: [
                     {"label": "Sold", "value": "true"},
                     {"label": "Not Sold", "value": "false"},
                 ]
             },
+            "is_installed": {
+                "options": lambda: [
+                    {"label": "Installed", "value": "true"},
+                    {"label": "Not Installed", "value": "false"},
+                ]
+            },
+            "is_available": {
+                "options": lambda: [
+                    {"label": "Available", "value": "true"},
+                    {"label": "Not Available", "value": "false"},
+                ]
+            },
         }
         ordering_config = [
             {"label": "Serial Number", "value": "serial_number"},
             {"label": "Created At", "value": "created_at"},
-        ]
-        return get_role_based_filter_response(request, filters_config, ordering_config)
-
-
-class AirconInstallationViewSet(viewsets.ModelViewSet):
-    queryset = AirconInstallation.objects.all()
-    serializer_class = AirconInstallationSerializer
-    permission_classes = [IsAuthenticated]
-    filter_backends = [
-        DjangoFilterBackend,
-        drf_filters.SearchFilter,
-        drf_filters.OrderingFilter,
-    ]
-    filterset_class = AirconInstallationFilter
-    search_fields = ["service__client__full_name", "service__reference_code"]
-    ordering_fields = ["id"]
-
-    def get_queryset(self):
-        return get_role_filtered_queryset(self.request, super().get_queryset())
-
-    @action(detail=False, methods=["get"], url_path="filters")
-    def get_filters(self, request):
-        filters_config = {
-            "service": {"options": lambda: []},
-        }
-        ordering_config = [
-            {"label": "ID", "value": "id"},
         ]
         return get_role_based_filter_response(request, filters_config, ordering_config)
 
@@ -581,6 +561,39 @@ class WarrantyClaimViewSet(viewsets.ModelViewSet):
         return Response({
             'service': ServiceSerializer(result['service']).data,
             'unit': AirconUnitSerializer(result['unit']).data,
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=["post"], url_path="redeem-free-cleaning-batch")
+    def redeem_free_cleaning_batch(self, request):
+        """
+        Redeem free cleaning for multiple aircon units under one client.
+        Creates a single cleaning service with all units as appliances.
+
+        Request body:
+        {
+            "client_id": 1,
+            "unit_ids": [1, 2, 3],
+            "scheduled_date": "2024-01-20",
+            "scheduled_time": "14:00:00"
+        }
+
+        Response:
+        {
+            "service": {...},
+            "units": [...]
+        }
+        """
+        from installations.api.serializers import FreeCleaningBatchRedemptionSerializer
+
+        serializer = FreeCleaningBatchRedemptionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = serializer.save()
+
+        from services.api.serializers import ServiceSerializer
+
+        return Response({
+            'service': ServiceSerializer(result['service']).data,
+            'units': AirconUnitSerializer(result['units'], many=True).data,
         }, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=["post"], url_path="check-free-cleaning")

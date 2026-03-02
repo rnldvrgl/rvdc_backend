@@ -16,7 +16,7 @@ from rest_framework.views import APIView
 from services.models import ApplianceType
 from users.api.serializers import EmployeesSerializer, UserSerializer
 from users.models import CustomUser
-from utils.enums import AirconType, BankChoices
+from utils.enums import AirconType, BankChoices, HorsePower
 
 
 class ApplianceTypeSerializer(serializers.ModelSerializer):
@@ -106,6 +106,10 @@ class BanksChoicesAPIView(ChoicesAPIView):
 
 class AirconTypesChoicesAPIView(ChoicesAPIView):
     choices_class = AirconType
+
+
+class HorsePowerChoicesAPIView(ChoicesAPIView):
+    choices_class = HorsePower
 
 
 class AirconBrandsChoicesAPIView(BaseChoicesAPIView):

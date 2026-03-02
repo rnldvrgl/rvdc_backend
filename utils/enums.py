@@ -11,6 +11,15 @@ class AirconType(models.TextChoices):
     CENTRALIZED = "centralized", _("Centralized")
 
 
+class HorsePower(models.TextChoices):
+    HP_0_5 = "0.5", _("0.5 HP (10-11 sqm)")
+    HP_0_75 = "0.75", _("0.75 HP (10-17 sqm)")
+    HP_1_0 = "1.0", _("1.0 HP (15-22 sqm)")
+    HP_1_5 = "1.5", _("1.5 HP (19-27 sqm)")
+    HP_2_0 = "2.0", _("2.0 HP (23-40 sqm)")
+    HP_2_5 = "2.5", _("2.5 HP (up to 54 sqm)")
+
+
 class ServiceType(models.TextChoices):
     REPAIR = "repair", _("Repair")
     INSTALLATION = "installation", _("Installation")
@@ -34,6 +43,9 @@ class ApplianceStatus(models.TextChoices):
     COMPLETED = "completed", _("Completed")
     READY_FOR_PICKUP = "ready_for_pickup", _("Ready for Pickup")
     DELIVERED = "delivered", _("Delivered")
+    # Installation-specific statuses
+    RESERVED = "reserved", _("Reserved")
+    INSTALLED = "installed", _("Installed")
 
 
 class ServiceMode(models.TextChoices):
