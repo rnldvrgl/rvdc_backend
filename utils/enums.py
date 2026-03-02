@@ -14,10 +14,16 @@ class AirconType(models.TextChoices):
 class HorsePower(models.TextChoices):
     HP_0_5 = "0.5", _("0.5 HP (10-11 sqm)")
     HP_0_75 = "0.75", _("0.75 HP (10-17 sqm)")
+    HP_0_8 = "0.8", _("0.8 HP (12-18 sqm)")
     HP_1_0 = "1.0", _("1.0 HP (15-22 sqm)")
     HP_1_5 = "1.5", _("1.5 HP (19-27 sqm)")
     HP_2_0 = "2.0", _("2.0 HP (23-40 sqm)")
     HP_2_5 = "2.5", _("2.5 HP (up to 54 sqm)")
+    HP_3_0 = "3.0", _("3.0 HP (45-65 sqm)")
+    HP_4_0 = "4.0", _("4.0 HP (60-85 sqm)")
+    HP_5_0 = "5.0", _("5.0 HP (80-110 sqm)")
+    HP_7_5 = "7.5", _("7.5 HP (110-160 sqm)")
+    HP_10_0 = "10.0", _("10.0 HP (160-220 sqm)")
 
 
 class ServiceType(models.TextChoices):
