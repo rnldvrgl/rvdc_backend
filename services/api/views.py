@@ -101,6 +101,18 @@ class ServiceViewSet(viewsets.ModelViewSet):
         
         return filter_by_date_range(self.request, qs)
 
+    def perform_update(self, serializer):
+        """Cascade appliance status when service status changes to in_progress."""
+        old_status = serializer.instance.status
+        service = serializer.save()
+        new_status = service.status
+
+        if old_status != new_status and new_status == "in_progress":
+            from utils.enums import ApplianceStatus
+            # Move appliances that are still in early stages to in_repair
+            service.appliances.filter(
+                status__in=[ApplianceStatus.RECEIVED, ApplianceStatus.DIAGNOSED]
+            ).update(status=ApplianceStatus.IN_REPAIR)
     @action(detail=True, methods=["post"], url_path="complete")
     def complete(self, request, pk=None):
         """

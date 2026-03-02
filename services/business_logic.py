@@ -361,6 +361,12 @@ class ServiceCompletionHandler:
             # Update service status to completed
             service.status = ServiceStatusEnum.COMPLETED
             service.save(update_fields=['status', 'updated_at'])
+
+            # Cascade status to all appliances
+            from utils.enums import ApplianceStatus
+            service.appliances.exclude(
+                status=ApplianceStatus.COMPLETED
+            ).update(status=ApplianceStatus.COMPLETED)
             
             # Activate warranties for all appliances when service is completed
             from datetime import date
@@ -582,6 +588,10 @@ class ServiceCancellationHandler:
             service.status = ServiceStatus.CANCELLED
             service.remarks = f"{service.remarks}\n\nCancellation reason: {reason}".strip()
             service.save(update_fields=['status', 'remarks', 'updated_at'])
+
+            # Cascade status to all appliances — mark them as received (back to initial)
+            from utils.enums import ApplianceStatus
+            service.appliances.all().update(status=ApplianceStatus.RECEIVED)
 
             return {
                 'service_id': service.id,
