@@ -82,7 +82,9 @@ class AirconUnitFilter(filters.FilterSet):
             return queryset.filter(installation_service__isnull=False)
 
     def filter_by_client(self, queryset, name, value):
-        """Filter units belonging to a client — via sale OR reservation."""
+        """Filter units belonging to a client — via sale, reservation, or installation service."""
         return queryset.filter(
-            Q(sale__client_id=value) | Q(reserved_by_id=value)
+            Q(sale__client_id=value)
+            | Q(reserved_by_id=value)
+            | Q(installation_service__client_id=value)
         )

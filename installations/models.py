@@ -81,6 +81,104 @@ class AirconModel(models.Model):
             return self.retail_price - discount_amount
         return self.retail_price
 
+    def save(self, *args, **kwargs):
+        """Override save to track price changes in history."""
+        track_history = kwargs.pop("track_history", True)
+        is_new = self.pk is None
+        old_retail = None
+        old_discount = None
+
+        if not is_new and track_history:
+            try:
+                old = AirconModel.objects.get(pk=self.pk)
+                old_retail = old.retail_price
+                old_discount = old.discount_percentage
+            except AirconModel.DoesNotExist:
+                pass
+
+        super().save(*args, **kwargs)
+
+        if track_history:
+            if is_new:
+                # Log initial price
+                ModelPriceHistory.objects.create(
+                    aircon_model=self,
+                    retail_price=self.retail_price,
+                    discount_percentage=self.discount_percentage,
+                    change_type="initial",
+                    notes="Initial price set on model creation",
+                )
+            elif old_retail is not None:
+                price_changed = old_retail != self.retail_price
+                discount_changed = old_discount != self.discount_percentage
+                if price_changed or discount_changed:
+                    change_type = "price_and_discount" if (price_changed and discount_changed) else ("price" if price_changed else "discount")
+                    ModelPriceHistory.objects.create(
+                        aircon_model=self,
+                        retail_price=self.retail_price,
+                        discount_percentage=self.discount_percentage,
+                        old_retail_price=old_retail,
+                        old_discount_percentage=old_discount,
+                        change_type=change_type,
+                    )
+
+
+class ModelPriceHistory(models.Model):
+    """Tracks price changes for aircon models."""
+
+    CHANGE_TYPE_CHOICES = [
+        ("initial", "Initial Price"),
+        ("price", "Price Change"),
+        ("discount", "Discount Change"),
+        ("price_and_discount", "Price & Discount Change"),
+    ]
+
+    aircon_model = models.ForeignKey(
+        AirconModel,
+        on_delete=models.CASCADE,
+        related_name="price_history",
+    )
+    retail_price = models.DecimalField(max_digits=10, decimal_places=2)
+    discount_percentage = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("0.00")
+    )
+    old_retail_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Previous retail price (null for initial)",
+    )
+    old_discount_percentage = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Previous discount percentage (null for initial)",
+    )
+    change_type = models.CharField(
+        max_length=20, choices=CHANGE_TYPE_CHOICES, default="price"
+    )
+    notes = models.TextField(blank=True, default="")
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-changed_at"]
+        verbose_name = "Price History"
+        verbose_name_plural = "Price Histories"
+
+    @property
+    def effective_price(self) -> Decimal:
+        """Computed promo price at this point in history."""
+        if self.discount_percentage > 0:
+            discount_fraction = self.discount_percentage / Decimal("100")
+            return self.retail_price - (self.retail_price * discount_fraction)
+        return self.retail_price
+
+    @property
+    def price_change_amount(self):
+        """Difference from old to new retail price."""
+        if self.old_retail_price is not None:
+            return self.retail_price - self.old_retail_price
+        return None
+
+    def __str__(self):
+        return f"{self.aircon_model} - ₱{self.retail_price} ({self.change_type}) @ {self.changed_at}"
+
 
 class AirconUnit(models.Model):
     model = models.ForeignKey(AirconModel, on_delete=models.PROTECT, null=True)

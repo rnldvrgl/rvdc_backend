@@ -4,6 +4,7 @@ from installations.models import (
     AirconBrand,
     AirconModel,
     AirconUnit,
+    ModelPriceHistory,
     WarrantyClaim,
 )
 
@@ -32,6 +33,32 @@ class AirconModelAdmin(admin.ModelAdmin):
     list_filter = ["brand", "aircon_type", "horsepower", "is_inverter"]
     search_fields = ["name", "brand__name"]
     ordering = ["brand__name", "name"]
+
+
+class PriceHistoryInline(admin.TabularInline):
+    model = ModelPriceHistory
+    extra = 0
+    readonly_fields = [
+        "retail_price", "discount_percentage", "old_retail_price",
+        "old_discount_percentage", "change_type", "notes", "changed_at",
+    ]
+    ordering = ["-changed_at"]
+
+
+# Patch the inline into AirconModelAdmin
+AirconModelAdmin.inlines = [PriceHistoryInline]
+
+
+@admin.register(ModelPriceHistory)
+class ModelPriceHistoryAdmin(admin.ModelAdmin):
+    list_display = [
+        "id", "aircon_model", "retail_price", "discount_percentage",
+        "change_type", "changed_at",
+    ]
+    list_filter = ["change_type", "aircon_model__brand"]
+    search_fields = ["aircon_model__name", "aircon_model__brand__name"]
+    ordering = ["-changed_at"]
+    readonly_fields = ["changed_at"]
 
 
 @admin.register(AirconUnit)

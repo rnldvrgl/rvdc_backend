@@ -2,11 +2,34 @@ from installations.models import (
     AirconBrand,
     AirconModel,
     AirconUnit,
+    ModelPriceHistory,
     WarrantyClaim,
 )
 from rest_framework import serializers
 from services.models import Service
 from clients.api.serializers import ClientSerializer
+
+
+class ModelPriceHistorySerializer(serializers.ModelSerializer):
+    effective_price = serializers.ReadOnlyField()
+    price_change_amount = serializers.ReadOnlyField()
+
+    class Meta:
+        model = ModelPriceHistory
+        fields = [
+            "id",
+            "aircon_model",
+            "retail_price",
+            "discount_percentage",
+            "old_retail_price",
+            "old_discount_percentage",
+            "effective_price",
+            "price_change_amount",
+            "change_type",
+            "notes",
+            "changed_at",
+        ]
+        read_only_fields = fields
 
 
 class AirconBrandSerializer(serializers.ModelSerializer):
@@ -29,6 +52,7 @@ class AirconModelSerializer(serializers.ModelSerializer):
     promo_price = serializers.ReadOnlyField()
     parts_warranty_years = serializers.ReadOnlyField()
     labor_warranty_years = serializers.ReadOnlyField()
+    price_history = ModelPriceHistorySerializer(many=True, read_only=True)
 
     class Meta:
         model = AirconModel
@@ -48,6 +72,7 @@ class AirconModelSerializer(serializers.ModelSerializer):
             "labor_warranty_months",
             "parts_warranty_years",
             "labor_warranty_years",
+            "price_history",
         ]
 
     def validate(self, data):
@@ -149,17 +174,22 @@ class AirconUnitSerializer(serializers.ModelSerializer):
         ]
     
     def get_client_name(self, obj):
-        """Get client name from sale or reservation."""
+        """Get client name from sale, installation service, or reservation."""
         if obj.sale and obj.sale.client:
             return obj.sale.client.full_name
+        if obj.installation_service and obj.installation_service.client:
+            return obj.installation_service.client.full_name
         if obj.reserved_by:
             return obj.reserved_by.full_name
         return None
 
     def get_sold_date(self, obj):
-        """Get sold date from the sale transaction."""
+        """Get sold date from the sale transaction or installation completion."""
         if obj.sale and obj.sale.created_at:
             return obj.sale.created_at.date().isoformat()
+        # For installation-only units, use warranty_start_date (set on completion)
+        if obj.installation_service and obj.is_sold and obj.warranty_start_date:
+            return obj.warranty_start_date.isoformat()
         return None
 
     def get_installed_date(self, obj):
@@ -768,6 +798,12 @@ class FreeCleaningRedemptionSerializer(serializers.Serializer):
         allow_null=True,
         help_text="Scheduled time for cleaning service"
     )
+    technician_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        default=[],
+        help_text="List of technician user IDs to assign to the cleaning service"
+    )
 
     def validate_unit_id(self, value):
         """Validate unit exists and is eligible for free cleaning."""
@@ -800,6 +836,7 @@ class FreeCleaningRedemptionSerializer(serializers.Serializer):
             unit=unit,
             scheduled_date=self.validated_data.get('scheduled_date'),
             scheduled_time=self.validated_data.get('scheduled_time'),
+            technician_ids=self.validated_data.get('technician_ids', []),
         )
 
         return result
@@ -823,6 +860,12 @@ class FreeCleaningBatchRedemptionSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
         help_text="Scheduled time for cleaning service"
+    )
+    technician_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        default=[],
+        help_text="List of technician user IDs to assign to the cleaning service"
     )
 
     def validate_client_id(self, value):
@@ -866,6 +909,7 @@ class FreeCleaningBatchRedemptionSerializer(serializers.Serializer):
             client=client,
             scheduled_date=self.validated_data.get('scheduled_date'),
             scheduled_time=self.validated_data.get('scheduled_time'),
+            technician_ids=self.validated_data.get('technician_ids', []),
         )
 
         return result

@@ -1028,7 +1028,7 @@ class FreeCleaningManager:
 
     @staticmethod
     @transaction.atomic
-    def redeem_free_cleaning(unit, scheduled_date=None, scheduled_time=None, **service_kwargs):
+    def redeem_free_cleaning(unit, scheduled_date=None, scheduled_time=None, technician_ids=None, **service_kwargs):
         """
         Redeem free cleaning for an aircon unit and create cleaning service.
 
@@ -1101,6 +1101,18 @@ class FreeCleaningManager:
         unit.free_cleaning_service = service
         unit.save()
 
+        # Assign technicians if provided
+        if technician_ids:
+            from services.models import TechnicianAssignment
+            from users.models import CustomUser
+            technicians = CustomUser.objects.filter(id__in=technician_ids, role='technician')
+            for tech in technicians:
+                TechnicianAssignment.objects.create(
+                    service=service,
+                    technician=tech,
+                    assignment_type=TechnicianAssignment.AssignmentType.REPAIR,
+                )
+
         # Auto-create schedule for free cleaning service
         _create_schedule_for_service(
             service,
@@ -1146,7 +1158,7 @@ class FreeCleaningManager:
 
     @staticmethod
     @transaction.atomic
-    def redeem_free_cleaning_batch(units, client, scheduled_date=None, scheduled_time=None):
+    def redeem_free_cleaning_batch(units, client, scheduled_date=None, scheduled_time=None, technician_ids=None):
         """
         Redeem free cleaning for multiple aircon units under a single client.
         Creates a single cleaning service with each unit as an appliance.
@@ -1234,6 +1246,18 @@ class FreeCleaningManager:
             unit.free_cleaning_redeemed = True
             unit.free_cleaning_service = service
             unit.save(clean=False)
+
+        # Assign technicians if provided
+        if technician_ids:
+            from services.models import TechnicianAssignment
+            from users.models import CustomUser
+            technicians = CustomUser.objects.filter(id__in=technician_ids, role='technician')
+            for tech in technicians:
+                TechnicianAssignment.objects.create(
+                    service=service,
+                    technician=tech,
+                    assignment_type=TechnicianAssignment.AssignmentType.REPAIR,
+                )
 
         # Auto-create schedule
         _create_schedule_for_service(

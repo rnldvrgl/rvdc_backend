@@ -232,6 +232,17 @@ class RevenueCalculator:
                 sub_revenue += item_used.line_total
 
         total_revenue = main_revenue + sub_revenue
+
+        # Apply service-level discount (percentage or fixed amount)
+        service_discount = Decimal('0.00')
+        if service.service_discount_percentage and service.service_discount_percentage > 0:
+            service_discount = (total_revenue * service.service_discount_percentage / Decimal('100')).quantize(
+                Decimal('0.01'), rounding=ROUND_HALF_UP
+            )
+        elif service.service_discount_amount and service.service_discount_amount > 0:
+            service_discount = service.service_discount_amount
+
+        total_revenue = max(total_revenue - service_discount, Decimal('0.00'))
         
         # Round all revenue values to 2 decimal places to prevent validation errors
         main_revenue = main_revenue.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
@@ -375,13 +386,22 @@ class ServiceCompletionHandler:
                 if appliance.labor_warranty_months > 0 or appliance.unit_warranty_months > 0:
                     appliance.activate_warranties(start_date=completion_date)
             
-            # For installation services, set warranty_start_date on all aircon units
+            # For installation services, set warranty_start_date and mark as sold on all aircon units
             from utils.enums import ServiceType
             if service.service_type == ServiceType.INSTALLATION:
                 for unit in service.installation_units.all():
+                    update_fields = []
                     if not unit.warranty_start_date:
                         unit.warranty_start_date = completion_date
-                        unit.save(update_fields=['warranty_start_date', 'updated_at'])
+                        update_fields.append('warranty_start_date')
+                    if not unit.is_sold:
+                        unit.is_sold = True
+                        unit.reserved_by = None
+                        unit.reserved_at = None
+                        update_fields.extend(['is_sold', 'reserved_by', 'reserved_at'])
+                    if update_fields:
+                        update_fields.append('updated_at')
+                        unit.save(update_fields=update_fields)
 
             # Update payment status (sets to NOT_APPLICABLE for complementary services)
             service.update_payment_status()
