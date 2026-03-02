@@ -82,7 +82,7 @@ class CollectionType(models.TextChoices):
 class ChequeStatus(models.TextChoices):
     PENDING = "pending", "Pending"
     DEPOSITED = "deposited", "Deposited"
-    ENCAHSED = "encashed", "Encashed"
+    ENCASHED = "encashed", "Encashed"
     RETURNED = "returned", "Returned"
     BOUNCED = "bounced", "Bounced"
     CANCELLED = "cancelled", "Cancelled"

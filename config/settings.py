@@ -156,9 +156,8 @@ REST_FRAMEWORK = {
         "rest_framework.filters.SearchFilter",
         "rest_framework.filters.OrderingFilter",
     ],
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "DEFAULT_PAGINATION_CLASS": "config.pagination.CustomPageNumberPagination",
     "PAGE_SIZE": 10,
-    "page_size_query_param": "limit",
 }
 
 SIMPLE_JWT = {

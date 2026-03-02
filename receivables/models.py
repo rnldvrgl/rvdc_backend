@@ -104,7 +104,7 @@ class ChequeCollection(models.Model):
             )
 
         # If cheque is marked deposited or encashed, enforce rules
-        if self.status in [ChequeStatus.ENCAHSED, ChequeStatus.DEPOSITED]:
+        if self.status in [ChequeStatus.ENCASHED, ChequeStatus.DEPOSITED]:
             # Cannot deposit/encash before cheque date
             if self.cheque_date > today:
                 raise ValidationError(
