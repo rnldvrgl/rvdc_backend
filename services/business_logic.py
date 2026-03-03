@@ -498,13 +498,13 @@ class ServiceCompletionHandler:
                                         final_price_per_unit=item_used.item.retail_price,
                                     )
             
-            unified_receipt = main_receipt or sub_receipt
-
             return {
                 'service_id': service.id,
                 'status': 'completed',
                 'revenue': revenue_data,
-                'receipt': unified_receipt.id if unified_receipt else (service.related_transaction.id if service.related_transaction else None),
+                'receipt': (main_receipt or sub_receipt).id if (main_receipt or sub_receipt) else (service.related_transaction.id if service.related_transaction else None),
+                'main_receipt': main_receipt.id if main_receipt else None,
+                'sub_receipt': sub_receipt.id if sub_receipt else None,
                 'message': 'Service completed without items/appliances. Add items and create invoice separately.' if not has_appliances else 'Service completed successfully.',
             }
 

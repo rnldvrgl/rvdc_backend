@@ -137,7 +137,9 @@ class ServiceViewSet(viewsets.ModelViewSet):
                 "sub_revenue": "300.00",
                 "total_revenue": "800.00"
             },
-            "receipt": 456  // Receipt ID if created
+            "receipt": 456,          // Primary receipt ID (main or sub)
+            "main_receipt": 456,     // Main stall receipt ID (labor + units)
+            "sub_receipt": 457       // Sub stall receipt ID (parts)
         }
         """
         service = self.get_object()
