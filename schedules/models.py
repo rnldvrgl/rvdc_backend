@@ -130,6 +130,10 @@ class Schedule(models.Model):
         blank=True
     )
 
+    # Soft-delete fields
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ['scheduled_date', 'scheduled_time']
         indexes = [

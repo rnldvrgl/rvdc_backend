@@ -34,12 +34,13 @@ from rest_framework.response import Response
 from utils.filters.options import get_stall_options
 from utils.filters.role_filters import get_role_based_filter_response
 from utils.query import get_role_filtered_queryset
+from utils.soft_delete import SoftDeleteViewSetMixin
 
 
 # ================================
 # Expense Category ViewSet
 # ================================
-class ExpenseCategoryViewSet(viewsets.ModelViewSet):
+class ExpenseCategoryViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for expense categories.
 
@@ -120,7 +121,7 @@ class ExpenseCategoryViewSet(viewsets.ModelViewSet):
 # ================================
 # Expense ViewSet
 # ================================
-class ExpenseViewSet(viewsets.ModelViewSet):
+class ExpenseViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for expenses.
 

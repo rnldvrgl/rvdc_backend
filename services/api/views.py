@@ -46,10 +46,13 @@ from utils.filters.role_filters import get_role_based_filter_response
 from utils.query import filter_by_date_range, get_role_filtered_queryset
 
 
+from utils.soft_delete import SoftDeleteViewSetMixin
+
+
 # --------------------------
 # Service ViewSet
 # --------------------------
-class ServiceViewSet(viewsets.ModelViewSet):
+class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     Service operations with two-stall architecture support.
 
@@ -58,7 +61,10 @@ class ServiceViewSet(viewsets.ModelViewSet):
     - POST /services/ - Create service (reserves stock)
     - GET /services/{id}/ - Retrieve service details
     - PUT/PATCH /services/{id}/ - Update service
-    - DELETE /services/{id}/ - Delete service
+    - DELETE /services/{id}/ - Soft-delete (archive) service
+    - GET /services/archived/ - List archived services
+    - POST /services/{id}/restore/ - Restore archived service
+    - DELETE /services/{id}/hard-delete/ - Permanently delete archived service
     - POST /services/{id}/complete/ - Complete service (consume stock, create transactions)
     - POST /services/{id}/cancel/ - Cancel service (release reserved stock)
     - POST /services/{id}/recalculate_revenue/ - Recalculate revenue attribution
@@ -90,6 +96,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = (
             Service.objects.all()
+            .filter(is_deleted=False)
             .select_related("client", "stall", "related_transaction")
             .prefetch_related(
                 "appliances__items_used__item",

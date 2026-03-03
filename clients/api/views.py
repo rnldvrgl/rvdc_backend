@@ -6,9 +6,10 @@ from rest_framework import filters, permissions, serializers, viewsets
 from rest_framework.decorators import action
 from utils.filters.role_filters import get_role_based_filter_response
 from utils.query import filter_by_date_range
+from utils.soft_delete import SoftDeleteViewSetMixin
 
 
-class ClientViewSet(viewsets.ModelViewSet):
+class ClientViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     queryset = Client.objects.all()
     serializer_class = ClientSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -31,6 +32,7 @@ class ClientViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         # Apply role/date-based filtering
         qs = super().get_queryset()
+        qs = qs.filter(is_deleted=False)
         return filter_by_date_range(self.request, qs)
 
     @action(detail=False, methods=["get"], url_path="filters")

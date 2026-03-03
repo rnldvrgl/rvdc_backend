@@ -1,7 +1,9 @@
-from rest_framework import generics, permissions, filters, viewsets
+from rest_framework import generics, permissions, filters, viewsets, status
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
+from rest_framework.views import APIView
 from utils.query import filter_by_date_range
+from django.utils import timezone
 from users.models import CustomUser, SystemSettings, CashAdvanceMovement
 from users.api.serializers import EmployeesSerializer, UserSerializer, SystemSettingsSerializer, CashAdvanceMovementSerializer
 from django_filters.rest_framework import DjangoFilterBackend
@@ -98,10 +100,70 @@ class UseraDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_destroy(self, instance):
         instance.is_deleted = True
-        instance.save()
+        instance.deleted_at = timezone.now()
+        instance.save(update_fields=["is_deleted", "deleted_at"])
 
     def get_serializer_context(self):
         return {"request": self.request}
+
+
+class EmployeeArchivedListView(generics.ListAPIView):
+    """List all archived (soft-deleted) employees."""
+    serializer_class = EmployeesSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_fields = [
+        "username", "contact_number", "first_name", "last_name",
+        "email", "address", "province", "city", "barangay",
+    ]
+    search_fields = [
+        "username", "contact_number", "first_name", "last_name",
+        "email", "address", "province", "city", "barangay",
+    ]
+    ordering_fields = "__all__"
+
+    def get_queryset(self):
+        return CustomUser.all_objects.exclude(role="admin").filter(is_deleted=True)
+
+
+class EmployeeRestoreView(APIView):
+    """Restore an archived employee."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        from django.shortcuts import get_object_or_404
+        instance = get_object_or_404(CustomUser.all_objects.all(), pk=pk)
+        if not instance.is_deleted:
+            return Response(
+                {"detail": "This record is not archived."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        instance.is_deleted = False
+        instance.deleted_at = None
+        instance.save(update_fields=["is_deleted", "deleted_at"])
+        serializer = EmployeesSerializer(instance, context={"request": request})
+        return Response(serializer.data)
+
+
+class EmployeeHardDeleteView(APIView):
+    """Permanently delete an archived employee."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, pk):
+        from django.shortcuts import get_object_or_404
+        instance = get_object_or_404(CustomUser.all_objects.all(), pk=pk)
+        if not instance.is_deleted:
+            return Response(
+                {"detail": "Record must be archived before it can be permanently deleted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # Call Django's base delete to bypass the soft-delete override
+        instance.delete(force=True)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class MyProfileView(generics.RetrieveUpdateDestroyAPIView):

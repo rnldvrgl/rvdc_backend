@@ -26,6 +26,7 @@ class ProductCategory(models.Model):
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
     is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -67,6 +68,7 @@ class Item(models.Model):
         max_digits=10, decimal_places=2, default=0, null=True, blank=True
     )
     is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -112,6 +114,7 @@ class Stall(models.Model):
         help_text="Stall type: Main (services + aircon units), Sub (parts), or Other",
     )
     is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -136,6 +139,8 @@ class Stock(models.Model):
     track_stock = models.BooleanField(default=True)
 
     is_deleted = models.BooleanField(default=False)
+
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -200,6 +205,8 @@ class StockRoomStock(models.Model):
     low_stock_threshold = models.PositiveIntegerField(default=0)
 
     is_deleted = models.BooleanField(default=False)
+
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
 

@@ -1,6 +1,7 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.contrib.auth.models import UserManager
+from django.utils import timezone
 from inventory.models import Stall
 
 
@@ -80,6 +81,7 @@ class CustomUser(AbstractUser):
     )
     
     is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     USERNAME_FIELD = "username"
     REQUIRED_FIELDS = []
@@ -94,8 +96,12 @@ class CustomUser(AbstractUser):
         return f"{self.first_name} {self.last_name}".strip()
 
     def delete(self, *args, **kwargs):
-        self.is_deleted = True
-        self.save()
+        if kwargs.pop("force", False):
+            super().delete(*args, **kwargs)
+        else:
+            self.is_deleted = True
+            self.deleted_at = timezone.now()
+            self.save(update_fields=["is_deleted", "deleted_at"])
 
 
 class SystemSettings(models.Model):

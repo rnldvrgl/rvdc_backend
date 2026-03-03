@@ -43,6 +43,7 @@ class AdditionalEarning(models.Model):
         help_text="Only approved additional earnings are included in payroll computations.",
     )
     is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -69,6 +70,7 @@ class Holiday(models.Model):
     name = models.CharField(max_length=100)
     kind = models.CharField(max_length=32, choices=KIND_CHOICES)
     is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-date"]
@@ -122,6 +124,7 @@ class ManualDeduction(models.Model):
     applied_date = models.DateField(null=True, blank=True, help_text="Date when onetime deduction was applied")
 
     is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -642,6 +645,7 @@ class WeeklyPayroll(models.Model):
     notes = models.TextField(blank=True)
 
     is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

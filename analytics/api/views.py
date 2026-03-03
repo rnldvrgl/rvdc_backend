@@ -38,6 +38,7 @@ from sales.models import SalesItem, SalesPayment, SalesTransaction
 from schedules.models import Schedule
 from services.models import Service, ServicePayment
 from users.models import CustomUser
+from utils.soft_delete import SoftDeleteViewSetMixin
 
 
 def get_date_range(request):
@@ -1117,7 +1118,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 
 
-class CalendarEventViewSet(viewsets.ModelViewSet):
+class CalendarEventViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing custom calendar events.
     
@@ -1156,9 +1157,4 @@ class CalendarEventViewSet(viewsets.ModelViewSet):
         if self.action == 'list':
             return CalendarEventListSerializer
         return CalendarEventSerializer
-    
-    def perform_destroy(self, instance):
-        """Soft delete calendar event."""
-        instance.is_deleted = True
-        instance.save(update_fields=['is_deleted'])
 

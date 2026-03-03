@@ -42,9 +42,10 @@ from utils.query import (
     filter_by_date_range,
     get_role_filtered_queryset,
 )
+from utils.soft_delete import SoftDeleteViewSetMixin
 
 
-class ItemViewSet(viewsets.ModelViewSet):
+class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     queryset = Item.objects.select_related('category').all()
     serializer_class = ItemSerializer
     filter_backends = [
@@ -57,7 +58,8 @@ class ItemViewSet(viewsets.ModelViewSet):
     ordering_fields = "__all__"
 
     def get_queryset(self):
-        return filter_by_date_range(self.request, super().get_queryset())
+        qs = super().get_queryset().filter(is_deleted=False)
+        return filter_by_date_range(self.request, qs)
 
     # (moved) explicit disallowed-method handlers belong to StallViewSet, not ItemViewSet.
 
@@ -169,7 +171,7 @@ class StallViewSet(viewsets.ModelViewSet):
         )
 
 
-class StockViewSet(viewsets.ModelViewSet):
+class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     queryset = Stock.objects.select_related(
         'item__category', 'item__stockroom_stock', 'stall'
     ).all()
@@ -193,7 +195,7 @@ class StockViewSet(viewsets.ModelViewSet):
         return StockReadSerializer
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().filter(is_deleted=False)
         # Annotate with available quantity for filtering
         queryset = queryset.annotate(
             available_expr=models.F('quantity') - models.F('reserved_quantity')
@@ -332,7 +334,7 @@ class StockViewSet(viewsets.ModelViewSet):
         )
 
 
-class StockRoomStockViewSet(viewsets.ModelViewSet):
+class StockRoomStockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     queryset = StockRoomStock.objects.select_related('item__category').all()
     serializer_class = StockRoomStockSerializer
     filter_backends = [
@@ -345,7 +347,8 @@ class StockRoomStockViewSet(viewsets.ModelViewSet):
     ordering_fields = "__all__"
 
     def get_queryset(self):
-        return filter_by_date_range(self.request, super().get_queryset())
+        qs = super().get_queryset().filter(is_deleted=False)
+        return filter_by_date_range(self.request, qs)
 
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):
@@ -385,7 +388,7 @@ class StockRoomStockViewSet(viewsets.ModelViewSet):
         )
 
 
-class ProductCategoryViewSet(viewsets.ModelViewSet):
+class ProductCategoryViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     queryset = ProductCategory.objects.all()
     serializer_class = ProductCategorySerializer
     filter_backends = [
@@ -398,4 +401,5 @@ class ProductCategoryViewSet(viewsets.ModelViewSet):
     ordering_fields = "__all__"
 
     def get_queryset(self):
-        return filter_by_date_range(self.request, super().get_queryset())
+        qs = super().get_queryset().filter(is_deleted=False)
+        return filter_by_date_range(self.request, qs)

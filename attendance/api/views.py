@@ -34,6 +34,7 @@ from attendance.models import (
     Offense,
     OvertimeRequest,
 )
+from utils.soft_delete import SoftDeleteViewSetMixin
 
 
 class IsAdminOrManager(IsAuthenticated):
@@ -45,7 +46,7 @@ class IsAdminOrManager(IsAuthenticated):
         return request.user.role in ['admin', 'manager']
 
 
-class DailyAttendanceViewSet(viewsets.ModelViewSet):
+class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for daily attendance management.
 
@@ -107,11 +108,7 @@ class DailyAttendanceViewSet(viewsets.ModelViewSet):
                 {'detail': 'Only admin and manager can delete attendance records.'},
                 status=status.HTTP_403_FORBIDDEN
             )
-
-        instance = self.get_object()
-        instance.is_deleted = True
-        instance.save()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return super().destroy(request, *args, **kwargs)
 
     @action(detail=False, methods=["get"])
     def current_status(self, request):
@@ -903,7 +900,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         })
 
 
-class OffenseViewSet(viewsets.ModelViewSet):
+class OffenseViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for offense management.
 
@@ -925,7 +922,7 @@ class OffenseViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = Offense.objects.select_related('employee', 'created_by')
+        queryset = Offense.objects.select_related('employee', 'created_by').filter(is_deleted=False)
 
         # Admins and managers can see all offenses
         if user.role in ['admin', 'manager']:
@@ -1137,7 +1134,7 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class HalfDayScheduleViewSet(viewsets.ModelViewSet):
+class HalfDayScheduleViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing half-day schedules.
     
@@ -1181,8 +1178,3 @@ class HalfDayScheduleViewSet(viewsets.ModelViewSet):
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
             return [IsAdminOrManager()]
         return [IsAuthenticated()]
-    
-    def perform_destroy(self, instance):
-        """Soft delete half-day schedule."""
-        instance.is_deleted = True
-        instance.save(update_fields=['is_deleted'])

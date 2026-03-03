@@ -45,6 +45,7 @@ from utils.filters.options import (
 )
 from utils.filters.role_filters import get_role_based_filter_response
 from utils.query import filter_by_date_range
+from utils.soft_delete import SoftDeleteViewSetMixin
 
 # ------------------------------------------------------------------------------
 # Helper Functions
@@ -682,7 +683,65 @@ class WeeklyPayrollDetailView(generics.RetrieveUpdateDestroyAPIView):
 
         # Soft delete
         instance.is_deleted = True
-        instance.save(update_fields=["is_deleted"])
+        instance.deleted_at = timezone.now()
+        instance.save(update_fields=["is_deleted", "deleted_at"])
+
+
+class WeeklyPayrollArchivedView(generics.ListAPIView):
+    """List all archived (soft-deleted) weekly payroll records."""
+    serializer_class = WeeklyPayrollSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filterset_class = WeeklyPayrollFilter
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    search_fields = [
+        "notes",
+        "employee__username",
+        "employee__first_name",
+        "employee__last_name",
+    ]
+    ordering_fields = "__all__"
+
+    def get_queryset(self):
+        return WeeklyPayroll.objects.filter(is_deleted=True).select_related("employee", "received_by")
+
+
+class WeeklyPayrollRestoreView(APIView):
+    """Restore an archived weekly payroll record."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        from django.shortcuts import get_object_or_404
+        instance = get_object_or_404(WeeklyPayroll.objects.all(), pk=pk)
+        if not instance.is_deleted:
+            return Response(
+                {"detail": "This record is not archived."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        instance.is_deleted = False
+        instance.deleted_at = None
+        instance.save(update_fields=["is_deleted", "deleted_at"])
+        serializer = WeeklyPayrollSerializer(instance)
+        return Response(serializer.data)
+
+
+class WeeklyPayrollHardDeleteView(APIView):
+    """Permanently delete an archived weekly payroll record."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, pk):
+        from django.shortcuts import get_object_or_404
+        instance = get_object_or_404(WeeklyPayroll.objects.all(), pk=pk)
+        if not instance.is_deleted:
+            return Response(
+                {"detail": "Record must be archived before it can be permanently deleted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        instance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class WeeklyPayrollDownloadPDFView(APIView):
@@ -1267,7 +1326,7 @@ class PayrollSettingsAdminView(APIView):
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-class HolidayViewSet(viewsets.ModelViewSet):
+class HolidayViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing holidays (admin only).
     Supports CRUD operations and provides filter options.
@@ -1375,13 +1434,7 @@ class HolidayViewSet(viewsets.ModelViewSet):
 
         return Response({"imported_count": imported_count, "skipped_count": len(errors), "errors": errors}, status=status.HTTP_200_OK)
 
-    def perform_destroy(self, instance: Holiday) -> None:
-        """Soft delete the holiday."""
-        instance.is_deleted = True
-        instance.save(update_fields=["is_deleted"])
-
-
-class ManualDeductionViewSet(viewsets.ModelViewSet):
+class ManualDeductionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing manual deductions.
     Supports CRUD operations with role-based access control.
@@ -1422,11 +1475,6 @@ class ManualDeductionViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Set created_by to current user"""
         serializer.save(created_by=self.request.user)
-
-    def perform_destroy(self, instance):
-        """Soft delete the deduction"""
-        instance.is_deleted = True
-        instance.save(update_fields=["is_deleted"])
 
     @action(detail=True, methods=["post"], url_path="activate")
     def activate(self, request, pk=None):

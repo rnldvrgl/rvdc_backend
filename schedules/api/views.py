@@ -15,9 +15,10 @@ from schedules.api.serializers import (
 from schedules.models import Schedule
 from users.models import CustomUser
 from utils.filters.role_filters import get_role_based_filter_response
+from utils.soft_delete import SoftDeleteViewSetMixin
 
 
-class ScheduleViewSet(viewsets.ModelViewSet):
+class ScheduleViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for Schedule model with CRUD operations and custom actions
     Supports multiple technicians per schedule
@@ -56,7 +57,7 @@ class ScheduleViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Filter queryset based on user role and query parameters"""
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().filter(is_deleted=False)
         user = self.request.user
 
         # Role-based filtering
@@ -461,6 +462,6 @@ class ScheduleViewSet(viewsets.ModelViewSet):
         serializer.save()
 
     def perform_destroy(self, instance):
-        """Override to use soft delete if needed, or just delete"""
-        instance.delete()
+        """Soft-delete the schedule (handled by SoftDeleteViewSetMixin)."""
+        super().perform_destroy(instance)
 

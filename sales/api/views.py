@@ -15,9 +15,10 @@ from sales.api.filters import SalesTransactionFilter
 
 from utils.filters.options import get_stall_options
 from utils.filters.role_filters import get_role_based_filter_response
+from utils.soft_delete import SoftDeleteViewSetMixin
 
 
-class SalesTransactionViewSet(viewsets.ModelViewSet):
+class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     queryset = SalesTransaction.objects.select_related(
         'client', 'stall', 'sales_clerk'
     ).prefetch_related(
@@ -41,7 +42,8 @@ class SalesTransactionViewSet(viewsets.ModelViewSet):
     ordering_fields = "__all__"
 
     def get_queryset(self):
-        return get_role_filtered_queryset(self.request, super().get_queryset())
+        qs = super().get_queryset().filter(is_deleted=False)
+        return get_role_filtered_queryset(self.request, qs)
 
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):

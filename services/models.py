@@ -201,7 +201,12 @@ class Service(models.Model):
             models.Index(fields=["payment_status"], name="service_payment_status_idx"),
             models.Index(fields=["created_at"], name="service_created_at_idx"),
             models.Index(fields=["service_type"], name="service_type_idx"),
+            models.Index(fields=["is_deleted"], name="service_is_deleted_idx"),
         ]
+
+    # Soft-delete fields
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
 
     def clean(self):
         """Validate service data"""
