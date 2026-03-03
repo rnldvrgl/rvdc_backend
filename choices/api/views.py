@@ -1,5 +1,7 @@
 from clients.api.serializers import ClientSerializer
 from clients.models import Client
+from django.utils.decorators import method_decorator
+from django.views.decorators.cache import cache_page
 from expenses.api.serializers import ExpenseCategoryListSerializer
 from expenses.models import ExpenseCategory
 from installations.api.serializers import AirconBrandSerializer
@@ -43,6 +45,10 @@ class ChoicesAPIView(APIView):
 class BaseChoicesAPIView(generics.ListAPIView):
     pagination_class = None
     permission_classes = [permissions.IsAuthenticated]
+
+    @method_decorator(cache_page(60 * 5))  # Cache choices for 5 minutes
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
 
 
 class ItemChoicesAPIView(BaseChoicesAPIView):

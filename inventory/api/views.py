@@ -171,7 +171,7 @@ class StallViewSet(viewsets.ModelViewSet):
 
 class StockViewSet(viewsets.ModelViewSet):
     queryset = Stock.objects.select_related(
-        'item__category', 'stall'
+        'item__category', 'item__stockroom_stock', 'stall'
     ).all()
     permission_classes = [IsAuthenticated]
     filter_backends = [

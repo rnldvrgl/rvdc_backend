@@ -118,21 +118,23 @@ class NotificationViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="by-type")
     def by_type(self, request):
         """Get notifications grouped by type."""
-        notifications = self.get_queryset()
+        notifications = self.get_queryset()[:100]  # Limit to prevent loading all
+        serializer = NotificationSerializer(notifications, many=True)
 
         grouped = {}
-        for notif in notifications:
-            notif_type = notif.type
+        for item in serializer.data:
+            notif_type = item.get('type', 'unknown')
             if notif_type not in grouped:
                 grouped[notif_type] = []
-            grouped[notif_type].append(NotificationSerializer(notif).data)
+            grouped[notif_type].append(item)
 
         return Response(grouped)
 
     @action(detail=False, methods=["get"], url_path="by-priority")
     def by_priority(self, request):
         """Get notifications grouped by priority."""
-        notifications = self.get_queryset()
+        notifications = self.get_queryset()[:100]  # Limit to prevent loading all
+        serializer = NotificationSerializer(notifications, many=True)
 
         grouped = {
             NotificationPriority.URGENT: [],
@@ -141,9 +143,10 @@ class NotificationViewSet(viewsets.ModelViewSet):
             NotificationPriority.LOW: [],
         }
 
-        for notif in notifications:
-            if notif.priority in grouped:
-                grouped[notif.priority].append(NotificationSerializer(notif).data)
+        for item in serializer.data:
+            priority = item.get('priority', NotificationPriority.NORMAL)
+            if priority in grouped:
+                grouped[priority].append(item)
 
         return Response(grouped)
 
@@ -163,21 +166,30 @@ class NotificationViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="summary")
     def summary(self, request):
-        """Get notification summary for current user."""
+        """Get notification summary for current user using a single aggregated query."""
+        from django.db.models import Count, Case, When, IntegerField
+
         user = request.user
+        base_qs = Notification.objects.filter(user=user, is_archived=False)
 
-        total = Notification.objects.filter(user=user, is_archived=False).count()
-        unread = NotificationManager.get_unread_count(user)
+        # Single query with conditional aggregation
+        stats = base_qs.aggregate(
+            total=Count('id'),
+            unread=Count('id', filter=Q(is_read=False)),
+            **{
+                f'priority_{p.value}': Count(
+                    'id', filter=Q(is_read=False, priority=p.value)
+                )
+                for p in NotificationPriority
+            }
+        )
 
-        by_priority = {}
-        for priority in NotificationPriority:
-            count = Notification.objects.filter(
-                user=user,
-                is_archived=False,
-                priority=priority.value,
-                is_read=False
-            ).count()
-            by_priority[priority.value] = count
+        total = stats['total']
+        unread = stats['unread']
+        by_priority = {
+            p.value: stats.get(f'priority_{p.value}', 0)
+            for p in NotificationPriority
+        }
 
         return Response({
             "total_notifications": total,

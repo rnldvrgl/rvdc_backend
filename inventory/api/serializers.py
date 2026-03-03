@@ -99,12 +99,14 @@ class StockReadSerializer(serializers.ModelSerializer):
         return obj.status()
 
     def get_stock_room_quantity(self, obj):
-        stock_room_stock = StockRoomStock.objects.filter(item=obj.item).first()
+        # Use select_related stockroom_stock (OneToOne) to avoid N+1 queries
+        stock_room_stock = getattr(obj.item, 'stockroom_stock', None)
         return stock_room_stock.quantity if stock_room_stock else 0
 
     def get_stock_room_status(self, obj):
-        stock_room = StockRoomStock.objects.filter(item=obj.item).first()
-        return stock_room.status() if stock_room else "no_stock"
+        # Use select_related stockroom_stock (OneToOne) to avoid N+1 queries
+        stock_room_stock = getattr(obj.item, 'stockroom_stock', None)
+        return stock_room_stock.status() if stock_room_stock else "no_stock"
 
     def get_available_quantity(self, obj):
         return obj.quantity - obj.reserved_quantity

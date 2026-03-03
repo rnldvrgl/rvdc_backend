@@ -74,7 +74,8 @@ class ScheduleListSerializer(serializers.ModelSerializer):
         ]
 
     def get_technician_count(self, obj):
-        return obj.technicians.count()
+        # Use len() on prefetched queryset instead of count() which bypasses cache
+        return len(obj.technicians.all())
 
 
 class ScheduleDetailSerializer(serializers.ModelSerializer):
