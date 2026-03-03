@@ -93,7 +93,14 @@ WSGI_APPLICATION = "config.wsgi.application"
 # ------------------------------------------------------------------------------
 
 DATABASES = {
-    "default": dj_database_url.parse(config("DATABASE_URL")),
+    "default": {
+        **dj_database_url.parse(config("DATABASE_URL")),
+        "CONN_MAX_AGE": 600,  # Keep DB connections alive for 10 min
+        "CONN_HEALTH_CHECKS": True,  # Verify connection before use (Django 4.1+)
+        "OPTIONS": {
+            "connect_timeout": 10,  # Fail fast if DB is unreachable
+        },
+    }
 }
 
 # ------------------------------------------------------------------------------

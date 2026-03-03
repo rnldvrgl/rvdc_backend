@@ -695,6 +695,8 @@ class CalendarEventsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        from utils.enums import ServiceType as ServiceTypeEnum
+
         # Get current user and role
         user = request.user
         user_role = getattr(user, 'role', None)
@@ -734,21 +736,40 @@ class CalendarEventsView(APIView):
 
         # Fetch birthdays - Role-based filtering
         if include_birthdays:
+            # Build birthday month/day filters to let the DB do more work
+            from django.db.models import Q as BQ
+            year_start = start_date.year
+            year_end = end_date.year
+            birthday_q = BQ()
+            for year in range(year_start, year_end + 1):
+                # Determine the month-day window for this year slice
+                y_start = max(start_date, start_date.replace(year=year, month=1, day=1))
+                y_end = min(end_date, end_date.replace(year=year, month=12, day=31))
+                if y_start.year == year and y_end.year == year:
+                    birthday_q |= BQ(
+                        birthday__month__gte=y_start.month,
+                        birthday__month__lte=y_end.month,
+                    )
+
             birthdays_query = CustomUser.objects.filter(
                 is_deleted=False,
                 birthday__isnull=False
             )
-            
+            if birthday_q:
+                birthdays_query = birthdays_query.filter(birthday_q)
+
             birthdays = birthdays_query.values('id', 'first_name', 'last_name', 'birthday')
 
             for birthday_user in birthdays:
                 # Calculate birthday for current year range
                 birthday = birthday_user['birthday']
-                year_start = start_date.year
-                year_end = end_date.year
 
                 for year in range(year_start, year_end + 1):
-                    birthday_this_year = birthday.replace(year=year)
+                    try:
+                        birthday_this_year = birthday.replace(year=year)
+                    except ValueError:
+                        # Feb 29 in a non-leap year
+                        continue
                     if start_date <= birthday_this_year <= end_date:
                         events.append({
                             'id': f"birthday-{birthday_user['id']}-{year}",
@@ -790,7 +811,7 @@ class CalendarEventsView(APIView):
             schedules_query = Schedule.objects.filter(
                 scheduled_date__gte=start_date,
                 scheduled_date__lte=end_date
-            ).prefetch_related('technicians', 'client', 'service')
+            ).select_related('client', 'service').prefetch_related('technicians')
             
             # Role-based filtering for schedules
             if user_role == 'technician':
@@ -845,18 +866,12 @@ class CalendarEventsView(APIView):
                     start_iso = schedule.scheduled_date.isoformat()
                     all_day = True
 
-                # Debug logging
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.info(f"Schedule {schedule.id}: scheduled_date={schedule.scheduled_date}, scheduled_time={schedule.scheduled_time}, start_iso={start_iso}")
-
                 # Get service type if service is linked
                 service_type = None
                 service_type_display = None
                 if schedule.service:
                     service_type = schedule.service.service_type
-                    from utils.enums import ServiceType
-                    service_type_display = ServiceType(service_type).label if service_type else None
+                    service_type_display = ServiceTypeEnum(service_type).label if service_type else None
 
                 events.append({
                     'id': f"schedule-{schedule.id}",
@@ -881,9 +896,9 @@ class CalendarEventsView(APIView):
                 })
             
             # Also fetch delivery dates from services
-            from services.models import Service
+            from services.models import Service as ServiceModel
             
-            services_query = Service.objects.filter(
+            services_query = ServiceModel.objects.filter(
                 delivery_date__isnull=False,
                 delivery_date__date__gte=start_date,
                 delivery_date__date__lte=end_date
@@ -897,7 +912,7 @@ class CalendarEventsView(APIView):
                 ).distinct()
             elif user_role == 'clerk':
                 # Clerks see no delivery dates
-                services_query = Service.objects.none()
+                services_query = ServiceModel.objects.none()
             # Managers and admins see all delivery dates
             
             for service in services_query:
@@ -912,20 +927,19 @@ class CalendarEventsView(APIView):
                     # Use full datetime for the event
                     start_iso = delivery_datetime.isoformat()
                     
-                    # Get technicians from related schedules
+                    # Get technicians from related schedules (already prefetched)
                     technician_names = []
                     technician_ids = []
-                    schedules = service.schedules.all()
-                    for schedule in schedules:
-                        for tech in schedule.technicians.all():
-                            tech_name = f"{tech.first_name} {tech.last_name}"
-                            if tech_name not in technician_names:
-                                technician_names.append(tech_name)
+                    seen_tech_ids = set()
+                    for sched in service.schedules.all():
+                        for tech in sched.technicians.all():
+                            if tech.id not in seen_tech_ids:
+                                seen_tech_ids.add(tech.id)
+                                technician_names.append(f"{tech.first_name} {tech.last_name}")
                                 technician_ids.append(tech.id)
                     
                     # Get service type display
-                    from utils.enums import ServiceType
-                    service_type_display = ServiceType(service.service_type).label if service.service_type else None
+                    service_type_display = ServiceTypeEnum(service.service_type).label if service.service_type else None
                     
                     events.append({
                         'id': f"delivery-{service.id}",

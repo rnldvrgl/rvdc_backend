@@ -125,6 +125,8 @@ class AirconUnitViewSet(viewsets.ModelViewSet):
     queryset = AirconUnit.objects.select_related(
         'model__brand', 'stall', 'installation_service', 'installation_service__client',
         'reserved_by', 'sale__client'
+    ).prefetch_related(
+        'model__price_history',
     ).all()
     serializer_class = AirconUnitSerializer
     permission_classes = [IsAuthenticated]

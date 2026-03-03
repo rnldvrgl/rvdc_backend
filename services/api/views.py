@@ -95,7 +95,11 @@ class ServiceViewSet(viewsets.ModelViewSet):
                 "appliances__items_used__item",
                 "appliances__items_used__stall_stock__stall",
                 "appliances__appliance_type",
+                "appliances__assigned_technician",
+                "appliances__technician_assignments__technician",
                 "technician_assignments__technician",
+                "payments",
+                "installation_units__model__brand",
                 "schedules",
             )
         )

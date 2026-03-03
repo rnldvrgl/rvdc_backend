@@ -8,6 +8,7 @@ Features:
 - Promo support (free installation, copper tube promos)
 """
 
+from datetime import time
 from decimal import Decimal, ROUND_HALF_UP
 
 from clients.models import Client
@@ -800,7 +801,9 @@ class ServiceSerializer(serializers.ModelSerializer):
         """Calculate payment status based on total_paid and total_cost."""
         try:
             total_cost = float(obj.total_revenue or 0)
-            total_paid = float(obj.total_paid or 0)
+            # Use prefetched payments to avoid extra DB hit
+            payments = obj.payments.all()
+            total_paid = float(sum(p.amount for p in payments))
 
             # If no cost calculated yet (no items/labor added), status is pending
             if total_cost == 0:
@@ -832,35 +835,33 @@ class ServiceSerializer(serializers.ModelSerializer):
     def get_next_schedule(self, obj):
         """Get the next upcoming or most recent schedule for this service."""
         from datetime import date
-        from schedules.models import Schedule
         
-        # Get all schedules for this service
-        schedules = obj.schedules.all()
+        # Use the already-prefetched schedules to avoid extra DB queries
+        all_schedules = list(obj.schedules.all())
         
-        if not schedules.exists():
+        if not all_schedules:
             return None
         
         today = date.today()
         
-        # Try to get the next upcoming schedule
-        next_schedule = schedules.filter(
-            scheduled_date__gte=today
-        ).order_by('scheduled_date', 'scheduled_time').first()
+        # Filter in Python to use the prefetch cache
+        upcoming = [
+            s for s in all_schedules if s.scheduled_date >= today
+        ]
+        if upcoming:
+            upcoming.sort(key=lambda s: (s.scheduled_date, s.scheduled_time or time.min))
+            next_schedule = upcoming[0]
+        else:
+            all_schedules.sort(key=lambda s: (s.scheduled_date, s.scheduled_time or time.min), reverse=True)
+            next_schedule = all_schedules[0]
         
-        # If no upcoming schedule, get the most recent past schedule
-        if not next_schedule:
-            next_schedule = schedules.order_by('-scheduled_date', '-scheduled_time').first()
-        
-        if next_schedule:
-            return {
-                'id': next_schedule.id,
-                'schedule_type': next_schedule.schedule_type,
-                'scheduled_date': next_schedule.scheduled_date,
-                'scheduled_time': next_schedule.scheduled_time,
-                'status': next_schedule.status,
-            }
-        
-        return None
+        return {
+            'id': next_schedule.id,
+            'schedule_type': next_schedule.schedule_type,
+            'scheduled_date': next_schedule.scheduled_date,
+            'scheduled_time': next_schedule.scheduled_time,
+            'status': next_schedule.status,
+        }
 
     def validate(self, data):
         """Validate service data."""
