@@ -61,6 +61,12 @@ class SalesTransaction(models.Model):
 
     class Meta:
         ordering = ["-updated_at"]
+        indexes = [
+            models.Index(fields=["payment_status"], name="sales_payment_status_idx"),
+            models.Index(fields=["created_at"], name="sales_created_at_idx"),
+            models.Index(fields=["stall", "created_at"], name="sales_stall_created_idx"),
+            models.Index(fields=["is_deleted"], name="sales_is_deleted_idx"),
+        ]
 
     def __str__(self):
         return f"Sale #{self.id} - OR {self.manual_receipt_number or 'N/A'}"

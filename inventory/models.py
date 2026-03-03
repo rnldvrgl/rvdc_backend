@@ -143,6 +143,10 @@ class Stock(models.Model):
 
     class Meta:
         ordering = ["item__name"]
+        indexes = [
+            models.Index(fields=["item", "stall"], name="stock_item_stall_idx"),
+            models.Index(fields=["is_deleted"], name="stock_is_deleted_idx"),
+        ]
 
     def clean(self):
         """

@@ -18,7 +18,12 @@ from utils.filters.role_filters import get_role_based_filter_response
 
 
 class SalesTransactionViewSet(viewsets.ModelViewSet):
-    queryset = SalesTransaction.objects.all().order_by("-created_at")
+    queryset = SalesTransaction.objects.select_related(
+        'client', 'stall', 'sales_clerk'
+    ).prefetch_related(
+        'items__item__category',
+        'payments',
+    ).order_by("-created_at")
     serializer_class = SalesTransactionSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [

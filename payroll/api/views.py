@@ -533,7 +533,7 @@ class WeeklyPayrollListCreateView(generics.ListCreateAPIView):
 
     permission_classes = [permissions.IsAuthenticated]
 
-    queryset = WeeklyPayroll.objects.filter(is_deleted=False).select_related("employee")
+    queryset = WeeklyPayroll.objects.filter(is_deleted=False).select_related("employee", "received_by")
 
 
 
@@ -610,7 +610,7 @@ class WeeklyPayrollListCreateView(generics.ListCreateAPIView):
 class WeeklyPayrollDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = WeeklyPayrollSerializer
     permission_classes = [permissions.IsAuthenticated]
-    queryset = WeeklyPayroll.objects.filter(is_deleted=False).select_related("employee")
+    queryset = WeeklyPayroll.objects.filter(is_deleted=False).select_related("employee", "received_by")
 
     def get_queryset(self):
         qs = super().get_queryset()

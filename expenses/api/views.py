@@ -131,8 +131,8 @@ class ExpenseViewSet(viewsets.ModelViewSet):
     - Expense summaries
     """
     queryset = Expense.objects.select_related(
-        'stall', 'category', 'created_by'
-    ).prefetch_related('items')
+        'stall', 'category__parent', 'created_by'
+    ).prefetch_related('items__item')
     permission_classes = [IsAuthenticated]
     filter_backends = [
         DjangoFilterBackend,

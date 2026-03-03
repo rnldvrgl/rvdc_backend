@@ -196,6 +196,12 @@ class Service(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status"], name="service_status_idx"),
+            models.Index(fields=["payment_status"], name="service_payment_status_idx"),
+            models.Index(fields=["created_at"], name="service_created_at_idx"),
+            models.Index(fields=["service_type"], name="service_type_idx"),
+        ]
 
     def clean(self):
         """Validate service data"""

@@ -22,7 +22,9 @@ class ScheduleViewSet(viewsets.ModelViewSet):
     ViewSet for Schedule model with CRUD operations and custom actions
     Supports multiple technicians per schedule
     """
-    queryset = Schedule.objects.all().prefetch_related('technicians', 'client')
+    queryset = Schedule.objects.select_related(
+        'client', 'service', 'completed_by', 'created_by'
+    ).prefetch_related('technicians')
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [
         DjangoFilterBackend,

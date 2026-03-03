@@ -45,7 +45,7 @@ from utils.query import (
 
 
 class ItemViewSet(viewsets.ModelViewSet):
-    queryset = Item.objects.all()
+    queryset = Item.objects.select_related('category').all()
     serializer_class = ItemSerializer
     filter_backends = [
         DjangoFilterBackend,
@@ -170,7 +170,9 @@ class StallViewSet(viewsets.ModelViewSet):
 
 
 class StockViewSet(viewsets.ModelViewSet):
-    queryset = Stock.objects.all()
+    queryset = Stock.objects.select_related(
+        'item__category', 'stall'
+    ).all()
     permission_classes = [IsAuthenticated]
     filter_backends = [
         DjangoFilterBackend,
@@ -331,7 +333,7 @@ class StockViewSet(viewsets.ModelViewSet):
 
 
 class StockRoomStockViewSet(viewsets.ModelViewSet):
-    queryset = StockRoomStock.objects.all()
+    queryset = StockRoomStock.objects.select_related('item__category').all()
     serializer_class = StockRoomStockSerializer
     filter_backends = [
         DjangoFilterBackend,
