@@ -5,7 +5,6 @@ Tests:
 - Notification model and methods
 - Notification manager operations
 - Notification API endpoints
-- Automatic notification triggers (signals)
 - Notification filtering and querying
 """
 
@@ -31,7 +30,7 @@ from notifications.business_logic import (
     PaymentNotifications,
     ServiceNotifications,
 )
-from notifications.models import Notification, NotificationPriority, NotificationType
+from notifications.models import Notification, NotificationType
 
 User = get_user_model()
 
@@ -136,13 +135,11 @@ class NotificationModelTest(NotificationTestSetupMixin, TransactionTestCase):
             type=NotificationType.PAYMENT_RECEIVED,
             title="Payment Received",
             message="Payment of ₱500 received",
-            priority=NotificationPriority.NORMAL,
         )
 
         self.assertEqual(notification.user, self.admin_user)
         self.assertEqual(notification.type, NotificationType.PAYMENT_RECEIVED)
         self.assertFalse(notification.is_read)
-        self.assertFalse(notification.is_archived)
 
     def test_mark_as_read(self):
         """Test marking notification as read."""
@@ -161,87 +158,25 @@ class NotificationModelTest(NotificationTestSetupMixin, TransactionTestCase):
         self.assertTrue(notification.is_read)
         self.assertIsNotNone(notification.read_at)
 
-    def test_mark_as_unread(self):
-        """Test marking notification as unread."""
-        notification = Notification.objects.create(
-            user=self.admin_user,
-            type=NotificationType.SERVICE_CREATED,
-            title="New Service",
-            message="New service created",
-            is_read=True,
-            read_at=timezone.now(),
-        )
-
-        self.assertTrue(notification.is_read)
-
-        notification.mark_as_unread()
-
-        self.assertFalse(notification.is_read)
-        self.assertIsNone(notification.read_at)
-
-    def test_archive_notification(self):
-        """Test archiving notification."""
+    def test_notification_str(self):
+        """Test notification string representation."""
         notification = Notification.objects.create(
             user=self.admin_user,
             type=NotificationType.STOCK_LOW,
             title="Low Stock",
             message="Stock is low",
         )
+        self.assertIn("Low Stock", str(notification))
 
-        self.assertFalse(notification.is_archived)
-        self.assertIsNone(notification.archived_at)
-
-        notification.archive()
-
-        self.assertTrue(notification.is_archived)
-        self.assertIsNotNone(notification.archived_at)
-
-    def test_unarchive_notification(self):
-        """Test unarchiving notification."""
+    def test_notification_type_display(self):
+        """Test type display label."""
         notification = Notification.objects.create(
             user=self.admin_user,
-            type=NotificationType.STOCK_LOW,
-            title="Low Stock",
-            message="Stock is low",
-            is_archived=True,
-            archived_at=timezone.now(),
+            type=NotificationType.STOCK_RESTOCKED,
+            title="Stock Restocked",
+            message="Stock was restocked",
         )
-
-        notification.unarchive()
-
-        self.assertFalse(notification.is_archived)
-        self.assertIsNone(notification.archived_at)
-
-    def test_is_expired(self):
-        """Test notification expiration check."""
-        # Not expired
-        notification1 = Notification.objects.create(
-            user=self.admin_user,
-            type=NotificationType.SYSTEM_ALERT,
-            title="System Alert",
-            message="Alert",
-            expires_at=timezone.now() + timedelta(days=1),
-        )
-        self.assertFalse(notification1.is_expired)
-
-        # Expired
-        notification2 = Notification.objects.create(
-            user=self.admin_user,
-            type=NotificationType.SYSTEM_ALERT,
-            title="System Alert",
-            message="Alert",
-            expires_at=timezone.now() - timedelta(days=1),
-        )
-        self.assertTrue(notification2.is_expired)
-
-        # No expiration
-        notification3 = Notification.objects.create(
-            user=self.admin_user,
-            type=NotificationType.SYSTEM_ALERT,
-            title="System Alert",
-            message="Alert",
-        )
-        self.assertFalse(notification3.is_expired)
+        self.assertEqual(notification.get_type_display(), "Stock Restocked")
 
 
 # ----------------------------------
@@ -257,17 +192,12 @@ class NotificationManagerTest(NotificationTestSetupMixin, TransactionTestCase):
             notification_type=NotificationType.PAYMENT_RECEIVED,
             title="Payment Received",
             message="Payment of ₱500 received",
-            priority=NotificationPriority.HIGH,
             data={"amount": 500},
-            action_url="/payments/123",
-            action_text="View Payment",
         )
 
         self.assertIsNotNone(notification)
         self.assertEqual(notification.user, self.admin_user)
-        self.assertEqual(notification.priority, NotificationPriority.HIGH)
         self.assertEqual(notification.data["amount"], 500)
-        self.assertEqual(notification.action_url, "/payments/123")
 
     def test_create_bulk_notifications(self):
         """Test creating notifications for multiple users."""
@@ -278,13 +208,11 @@ class NotificationManagerTest(NotificationTestSetupMixin, TransactionTestCase):
             notification_type=NotificationType.STOCK_LOW,
             title="Low Stock Alert",
             message="Capacitor stock is low",
-            priority=NotificationPriority.HIGH,
         )
 
         self.assertEqual(len(notifications), 3)
         self.assertEqual(Notification.objects.count(), 3)
 
-        # Verify each user got a notification
         for user in users:
             self.assertTrue(
                 Notification.objects.filter(user=user).exists()
@@ -292,7 +220,6 @@ class NotificationManagerTest(NotificationTestSetupMixin, TransactionTestCase):
 
     def test_get_user_notifications(self):
         """Test getting notifications for a user."""
-        # Create notifications
         Notification.objects.create(
             user=self.admin_user,
             type=NotificationType.PAYMENT_RECEIVED,
@@ -313,11 +240,9 @@ class NotificationManagerTest(NotificationTestSetupMixin, TransactionTestCase):
             message="Stock low",
         )
 
-        # Get all notifications for admin
         notifications = NotificationManager.get_user_notifications(self.admin_user)
         self.assertEqual(notifications.count(), 2)
 
-        # Get only unread
         unread = NotificationManager.get_user_notifications(
             self.admin_user, unread_only=True
         )
@@ -325,7 +250,6 @@ class NotificationManagerTest(NotificationTestSetupMixin, TransactionTestCase):
 
     def test_get_unread_count(self):
         """Test getting unread notification count."""
-        # Create notifications
         Notification.objects.create(
             user=self.admin_user,
             type=NotificationType.PAYMENT_RECEIVED,
@@ -351,7 +275,6 @@ class NotificationManagerTest(NotificationTestSetupMixin, TransactionTestCase):
 
     def test_mark_all_as_read(self):
         """Test marking all notifications as read."""
-        # Create unread notifications
         for i in range(3):
             Notification.objects.create(
                 user=self.admin_user,
@@ -368,7 +291,6 @@ class NotificationManagerTest(NotificationTestSetupMixin, TransactionTestCase):
 
     def test_delete_old_notifications(self):
         """Test deleting old notifications."""
-        # Create old read notification
         old_notification = Notification.objects.create(
             user=self.admin_user,
             type=NotificationType.SERVICE_COMPLETED,
@@ -376,10 +298,9 @@ class NotificationManagerTest(NotificationTestSetupMixin, TransactionTestCase):
             message="Service completed",
             is_read=True,
         )
-        old_notification.created_at = timezone.now() - timedelta(days=100)
+        old_notification.created_at = timezone.now() - timedelta(days=10)
         old_notification.save()
 
-        # Create recent notification
         Notification.objects.create(
             user=self.admin_user,
             type=NotificationType.SERVICE_CREATED,
@@ -387,7 +308,7 @@ class NotificationManagerTest(NotificationTestSetupMixin, TransactionTestCase):
             message="Service created",
         )
 
-        count = NotificationManager.delete_old_notifications(days=90)
+        count = NotificationManager.delete_old_notifications(days=7)
         self.assertEqual(count, 1)
         self.assertEqual(Notification.objects.count(), 1)
 
@@ -400,24 +321,19 @@ class PaymentNotificationTest(NotificationTestSetupMixin, TransactionTestCase):
 
     def test_notify_payment_received_service(self):
         """Test notification when service payment is received."""
-        # Create service
         service = Service.objects.create(
             client=self.client,
             stall=self.main_stall,
             total_revenue=Decimal("1000.00"),
         )
-
-        # Create payment
         payment = ServicePayment.objects.create(
             service=service,
             payment_type="cash",
             amount=Decimal("500.00"),
         )
 
-        # Trigger notification
         PaymentNotifications.notify_payment_received(payment=payment, service=service)
 
-        # Check notifications created for clerks and managers
         notifications = Notification.objects.filter(
             type=NotificationType.PAYMENT_RECEIVED
         )
@@ -437,10 +353,6 @@ class PaymentNotificationTest(NotificationTestSetupMixin, TransactionTestCase):
             type=NotificationType.PAYMENT_OVERDUE
         )
         self.assertGreater(notifications.count(), 0)
-
-        # Verify priority is high
-        for notif in notifications:
-            self.assertEqual(notif.priority, NotificationPriority.HIGH)
 
 
 # ----------------------------------
@@ -477,14 +389,12 @@ class ServiceNotificationTest(NotificationTestSetupMixin, TransactionTestCase):
             technician=self.technician_user,
         )
 
-        # Check technician received notification
         notification = Notification.objects.filter(
             user=self.technician_user,
             type=NotificationType.SERVICE_ASSIGNED,
         ).first()
 
         self.assertIsNotNone(notification)
-        self.assertEqual(notification.priority, NotificationPriority.HIGH)
 
     def test_notify_service_completed(self):
         """Test notification when service is completed."""
@@ -511,7 +421,6 @@ class InventoryNotificationTest(NotificationTestSetupMixin, TransactionTestCase)
 
     def test_notify_low_stock(self):
         """Test notification when stock is low."""
-        # Set stock to low level
         self.stock.quantity = 5
         self.stock.save()
 
@@ -522,13 +431,8 @@ class InventoryNotificationTest(NotificationTestSetupMixin, TransactionTestCase)
         )
         self.assertGreater(notifications.count(), 0)
 
-        # Verify priority is high
-        for notif in notifications:
-            self.assertEqual(notif.priority, NotificationPriority.HIGH)
-
     def test_notify_out_of_stock(self):
         """Test notification when stock is out."""
-        # Set stock to zero
         self.stock.quantity = 0
         self.stock.save()
 
@@ -538,10 +442,6 @@ class InventoryNotificationTest(NotificationTestSetupMixin, TransactionTestCase)
             type=NotificationType.STOCK_OUT
         )
         self.assertGreater(notifications.count(), 0)
-
-        # Verify priority is urgent
-        for notif in notifications:
-            self.assertEqual(notif.priority, NotificationPriority.URGENT)
 
 
 # ----------------------------------
@@ -556,7 +456,6 @@ class NotificationAPITest(NotificationTestSetupMixin, APITestCase):
 
     def test_list_notifications(self):
         """Test listing notifications."""
-        # Create notifications
         Notification.objects.create(
             user=self.admin_user,
             type=NotificationType.PAYMENT_RECEIVED,
@@ -572,13 +471,10 @@ class NotificationAPITest(NotificationTestSetupMixin, APITestCase):
 
         response = self.client.get("/api/notifications/")
         self.assertEqual(response.status_code, 200)
-
-        # Should have pagination
         self.assertIn("results", response.data)
 
     def test_unread_count(self):
         """Test getting unread count."""
-        # Create unread notifications
         Notification.objects.create(
             user=self.admin_user,
             type=NotificationType.PAYMENT_RECEIVED,
@@ -613,7 +509,6 @@ class NotificationAPITest(NotificationTestSetupMixin, APITestCase):
 
     def test_mark_all_as_read(self):
         """Test marking all notifications as read."""
-        # Create unread notifications
         for i in range(3):
             Notification.objects.create(
                 user=self.admin_user,
@@ -626,53 +521,11 @@ class NotificationAPITest(NotificationTestSetupMixin, APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["count"], 3)
 
-        # Verify all marked as read
         unread_count = Notification.objects.filter(
             user=self.admin_user,
             is_read=False
         ).count()
         self.assertEqual(unread_count, 0)
-
-    def test_archive_notification(self):
-        """Test archiving notification."""
-        notification = Notification.objects.create(
-            user=self.admin_user,
-            type=NotificationType.STOCK_LOW,
-            title="Low Stock",
-            message="Stock is low",
-        )
-
-        response = self.client.post(f"/api/notifications/{notification.id}/archive/")
-        self.assertEqual(response.status_code, 200)
-
-        notification.refresh_from_db()
-        self.assertTrue(notification.is_archived)
-
-    def test_get_notification_summary(self):
-        """Test getting notification summary."""
-        # Create notifications with different priorities
-        Notification.objects.create(
-            user=self.admin_user,
-            type=NotificationType.PAYMENT_RECEIVED,
-            title="Payment",
-            message="Payment received",
-            priority=NotificationPriority.NORMAL,
-        )
-        Notification.objects.create(
-            user=self.admin_user,
-            type=NotificationType.STOCK_OUT,
-            title="Stock Out",
-            message="Out of stock",
-            priority=NotificationPriority.URGENT,
-        )
-
-        response = self.client.get("/api/notifications/summary/")
-        self.assertEqual(response.status_code, 200)
-
-        data = response.data
-        self.assertEqual(data["total_notifications"], 2)
-        self.assertEqual(data["unread_count"], 2)
-        self.assertIn("by_priority", data)
 
     def test_filter_by_type(self):
         """Test filtering notifications by type."""
@@ -694,14 +547,12 @@ class NotificationAPITest(NotificationTestSetupMixin, APITestCase):
         )
         self.assertEqual(response.status_code, 200)
 
-        # Should only return payment notifications
         results = response.data["results"]
         for notif in results:
             self.assertEqual(notif["type"], NotificationType.PAYMENT_RECEIVED)
 
     def test_requires_authentication(self):
         """Test that endpoints require authentication."""
-        # Logout
         self.client.force_authenticate(user=None)
 
         response = self.client.get("/api/notifications/")
@@ -709,15 +560,12 @@ class NotificationAPITest(NotificationTestSetupMixin, APITestCase):
 
     def test_user_can_only_see_own_notifications(self):
         """Test users can only see their own notifications."""
-        # Create notification for admin
         Notification.objects.create(
             user=self.admin_user,
             type=NotificationType.PAYMENT_RECEIVED,
             title="Admin Notification",
             message="For admin",
         )
-
-        # Create notification for manager
         Notification.objects.create(
             user=self.manager_user,
             type=NotificationType.SERVICE_CREATED,
@@ -725,7 +573,6 @@ class NotificationAPITest(NotificationTestSetupMixin, APITestCase):
             message="For manager",
         )
 
-        # Admin should only see their own
         self.client.force_authenticate(user=self.admin_user)
         response = self.client.get("/api/notifications/")
 

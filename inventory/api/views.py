@@ -264,7 +264,8 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         if manager_user:
             Notification.objects.create(
                 user=manager_user,
-                type="restock",
+                type="stock_restocked",
+                title="Stock Restocked",
                 data={
                     "stall": stock.stall.name,
                     "item": stock.item.name,
@@ -314,7 +315,8 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         if manager_user:
             Notification.objects.create(
                 user=manager_user,
-                type="restock",
+                type="stock_restocked",
+                title="Stock Added",
                 data={
                     "stall": stock.stall.name,
                     "item": stock.item.name,

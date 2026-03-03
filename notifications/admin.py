@@ -10,17 +10,13 @@ class NotificationAdmin(admin.ModelAdmin):
         "id",
         "user",
         "type_badge",
-        "priority_badge",
         "short_title",
         "is_read",
-        "is_archived",
         "created_at",
     )
     list_filter = (
         "type",
-        "priority",
         "is_read",
-        "is_archived",
         "created_at",
     )
     search_fields = (
@@ -36,8 +32,6 @@ class NotificationAdmin(admin.ModelAdmin):
         "created_at",
         "updated_at",
         "read_at",
-        "archived_at",
-        "is_expired",
     )
 
     fieldsets = (
@@ -45,15 +39,8 @@ class NotificationAdmin(admin.ModelAdmin):
             "fields": (
                 "user",
                 "type",
-                "priority",
                 "title",
                 "message",
-            )
-        }),
-        ("Action/Link", {
-            "fields": (
-                "action_url",
-                "action_text",
             )
         }),
         ("Additional Data", {
@@ -64,25 +51,18 @@ class NotificationAdmin(admin.ModelAdmin):
             "fields": (
                 "is_read",
                 "read_at",
-                "is_archived",
-                "archived_at",
             )
         }),
         ("Timestamps", {
             "fields": (
                 "created_at",
                 "updated_at",
-                "expires_at",
-                "is_expired",
             )
         }),
     )
 
     actions = [
         "mark_as_read",
-        "mark_as_unread",
-        "archive_notifications",
-        "unarchive_notifications",
     ]
 
     def type_badge(self, obj):
@@ -94,6 +74,7 @@ class NotificationAdmin(admin.ModelAdmin):
             "service_completed": "#28a745",
             "stock_low": "#ffc107",
             "stock_out": "#dc3545",
+            "stock_restocked": "#6f42c1",
             "warranty_claim_created": "#17a2b8",
         }
         color = colors.get(obj.type, "#6c757d")
@@ -104,23 +85,6 @@ class NotificationAdmin(admin.ModelAdmin):
         )
 
     type_badge.short_description = "Type"
-
-    def priority_badge(self, obj):
-        """Display priority with color coding."""
-        colors = {
-            "urgent": "#dc3545",
-            "high": "#fd7e14",
-            "normal": "#28a745",
-            "low": "#6c757d",
-        }
-        color = colors.get(obj.priority, "#6c757d")
-        return format_html(
-            '<span style="background-color: {}; color: white; padding: 3px 8px; border-radius: 3px; font-size: 11px;">{}</span>',
-            color,
-            obj.get_priority_display(),
-        )
-
-    priority_badge.short_description = "Priority"
 
     def short_title(self, obj):
         """Display shortened title."""
@@ -142,36 +106,3 @@ class NotificationAdmin(admin.ModelAdmin):
         self.message_user(request, f"{count} notification(s) marked as read.")
 
     mark_as_read.short_description = "Mark selected as read"
-
-    def mark_as_unread(self, request, queryset):
-        """Mark selected notifications as unread."""
-        count = 0
-        for notification in queryset:
-            if notification.is_read:
-                notification.mark_as_unread()
-                count += 1
-        self.message_user(request, f"{count} notification(s) marked as unread.")
-
-    mark_as_unread.short_description = "Mark selected as unread"
-
-    def archive_notifications(self, request, queryset):
-        """Archive selected notifications."""
-        count = 0
-        for notification in queryset:
-            if not notification.is_archived:
-                notification.archive()
-                count += 1
-        self.message_user(request, f"{count} notification(s) archived.")
-
-    archive_notifications.short_description = "Archive selected notifications"
-
-    def unarchive_notifications(self, request, queryset):
-        """Unarchive selected notifications."""
-        count = 0
-        for notification in queryset:
-            if notification.is_archived:
-                notification.unarchive()
-                count += 1
-        self.message_user(request, f"{count} notification(s) unarchived.")
-
-    unarchive_notifications.short_description = "Unarchive selected notifications"

@@ -9,50 +9,41 @@ class NotificationSerializer(serializers.ModelSerializer):
 
     relative_time = serializers.SerializerMethodField()
     type_display = serializers.CharField(source="get_type_display", read_only=True)
-    priority_display = serializers.CharField(source="get_priority_display", read_only=True)
-    is_expired = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Notification
         fields = [
             "id",
-            "user",
             "type",
             "type_display",
-            "priority",
-            "priority_display",
             "title",
             "message",
             "data",
-            "action_url",
-            "action_text",
             "is_read",
-            "read_at",
-            "is_archived",
-            "archived_at",
             "created_at",
-            "updated_at",
-            "expires_at",
-            "is_expired",
             "relative_time",
         ]
         read_only_fields = [
             "id",
             "created_at",
-            "updated_at",
-            "read_at",
-            "archived_at",
         ]
 
     def get_relative_time(self, obj):
         """Get human-readable relative time."""
-        return timesince(obj.created_at, timezone.now()) + " ago"
+        now = timezone.now()
+        diff = now - obj.created_at
+        total_seconds = int(diff.total_seconds())
 
-
-class NotificationSummarySerializer(serializers.Serializer):
-    """Serializer for notification summary."""
-
-    total_notifications = serializers.IntegerField()
-    unread_count = serializers.IntegerField()
-    read_count = serializers.IntegerField()
-    by_priority = serializers.DictField()
+        if total_seconds < 60:
+            return "Just now"
+        elif total_seconds < 3600:
+            minutes = total_seconds // 60
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        elif total_seconds < 86400:
+            hours = total_seconds // 3600
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+        elif total_seconds < 604800:
+            days = total_seconds // 86400
+            return f"{days} day{'s' if days != 1 else ''} ago"
+        else:
+            return timesince(obj.created_at, now) + " ago"

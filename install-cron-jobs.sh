@@ -98,6 +98,24 @@ fi
 echo "" >> "$LOG_FILE"
 EOF
 
+# Script 1b: Delete old notifications (Daily 2:00 AM)
+cat > "$SCRIPT_DIR/delete-old-notifications.sh" << 'EOF'
+#!/bin/bash
+LOG_FILE="/var/log/cron-delete-old-notifications.log"
+CONTAINER_NAME="CONTAINER_NAME_PLACEHOLDER"
+export TZ=Asia/Manila
+
+echo "=== Delete Old Notifications - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
+docker exec "$CONTAINER_NAME" python manage.py delete_old_notifications --days 7 >> "$LOG_FILE" 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "✅ Success - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
+else
+    echo "❌ Failed - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
+fi
+echo "" >> "$LOG_FILE"
+EOF
+
 # Script 2: Mark absences (Daily 11:30 PM)
 cat > "$SCRIPT_DIR/mark-absences.sh" << 'EOF'
 #!/bin/bash
@@ -332,6 +350,9 @@ cat >> "$TEMP_CRON" << 'CRONEND'
 
 # Daily at 11:30 PM Philippines (3:30 PM UTC) - Mark absent employees
 30 15 * * * /opt/cron-scripts/mark-absences.sh
+
+# Daily at 2:00 AM Philippines (6:00 PM previous day UTC) - Delete old notifications (older than 7 days)
+0 18 * * * /opt/cron-scripts/delete-old-notifications.sh
 
 # WEEKLY TASKS (Philippines Time)
 # Every Friday at 11:00 PM Philippines (3:00 PM UTC) - Fix last week's attendance & refresh payroll (Sat-Fri → Sat payday)
