@@ -5,6 +5,7 @@ from django.db.models.functions import Concat
 from installations.models import AirconBrand, AirconModel
 from inventory.models import Item, ProductCategory, Stall
 from users.models import CustomUser
+from services.models import PaymentStatus
 from utils.enums import AirconType, BankChoices, ServiceMode, ServiceStatus, ServiceType
 
 
@@ -87,6 +88,10 @@ def get_service_type_options():
 
 def get_service_mode_options():
     return [{"label": label, "value": value} for value, label in ServiceMode.choices]
+
+
+def get_service_payment_status_options():
+    return [{"label": label, "value": value} for value, label in PaymentStatus.choices]
 
 
 def get_aircon_type_options():

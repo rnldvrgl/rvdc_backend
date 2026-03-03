@@ -8,6 +8,9 @@ class ServiceFilter(filters.FilterSet):
         field_name="technician_assignments__technician_id", lookup_expr="exact"
     )
     status = filters.CharFilter(field_name="status", lookup_expr="iexact")
+    payment_status = filters.CharFilter(
+        field_name="payment_status", lookup_expr="iexact"
+    )
     service_type = filters.CharFilter(field_name="service_type", lookup_expr="iexact")
     service_mode = filters.CharFilter(field_name="service_mode", lookup_expr="iexact")
     stall = filters.NumberFilter(field_name="stall_id", lookup_expr="exact")
@@ -18,6 +21,7 @@ class ServiceFilter(filters.FilterSet):
             "client",
             "technician",
             "status",
+            "payment_status",
             "service_type",
             "service_mode",
             "stall",

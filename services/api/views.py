@@ -37,6 +37,7 @@ from services.models import (
 )
 from utils.filters.options import (
     get_service_mode_options,
+    get_service_payment_status_options,
     get_service_status_options,
     get_service_type_options,
     get_user_options,
@@ -308,6 +309,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
                 "options": lambda: get_user_options(include_roles=["technician"])
             },
             "status": {"options": get_service_status_options},
+            "payment_status": {"options": get_service_payment_status_options},
             "service_type": {"options": get_service_type_options},
             "service_mode": {"options": get_service_mode_options},
         }
