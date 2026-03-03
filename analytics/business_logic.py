@@ -664,6 +664,161 @@ class ServiceAnalytics:
 
 
 # ----------------------------------
+# Employee Performance Analytics
+# ----------------------------------
+class EmployeePerformanceAnalytics:
+    """Analytics for employee performance including services and attendance."""
+
+    @staticmethod
+    def get_employee_performance(start_date=None, end_date=None):
+        """
+        Get comprehensive employee performance statistics.
+        
+        Returns:
+        - top_service_types: Which service types are most completed
+        - top_technicians: Employees with most service assignments
+        - attendance_leaders: Most late and most early/on-time employees
+        """
+        from attendance.models import DailyAttendance
+        from services.models import Service, TechnicianAssignment
+        from users.models import CustomUser
+        from utils.enums import ServiceStatus
+
+        if not start_date:
+            start_date = timezone.now().date() - timedelta(days=30)
+        if not end_date:
+            end_date = timezone.now().date()
+
+        # ── Top Service Types (most completed) ──
+        top_service_types = list(
+            Service.objects.filter(
+                created_at__date__gte=start_date,
+                created_at__date__lte=end_date,
+                status=ServiceStatus.COMPLETED,
+            )
+            .values("service_type")
+            .annotate(
+                count=Count("id"),
+                revenue=Sum("total_revenue"),
+            )
+            .order_by("-count")[:6]
+        )
+        top_service_types = [
+            {
+                "service_type": item["service_type"],
+                "count": item["count"],
+                "revenue": float(item["revenue"] or 0),
+            }
+            for item in top_service_types
+        ]
+
+        # ── Top Technicians by Assignments ──
+        assignments = (
+            TechnicianAssignment.objects.filter(
+                service__created_at__date__gte=start_date,
+                service__created_at__date__lte=end_date,
+            )
+            .values("technician__id", "technician__first_name", "technician__last_name")
+            .annotate(
+                total_assignments=Count("id"),
+                completed=Count(
+                    "id",
+                    filter=Q(service__status=ServiceStatus.COMPLETED),
+                ),
+                total_revenue=Coalesce(
+                    Sum(
+                        "service__total_revenue",
+                        filter=Q(service__status=ServiceStatus.COMPLETED),
+                    ),
+                    Value(0),
+                ),
+            )
+            .order_by("-total_assignments")[:10]
+        )
+
+        top_technicians = []
+        for a in assignments:
+            total = a["total_assignments"] or 0
+            completed = a["completed"] or 0
+            name = f"{a['technician__first_name']} {a['technician__last_name']}".strip()
+            top_technicians.append({
+                "employee_id": a["technician__id"],
+                "employee_name": name or "Unknown",
+                "total_assignments": total,
+                "completed": completed,
+                "completion_rate": round((completed / total * 100) if total > 0 else 0, 1),
+                "total_revenue": float(a["total_revenue"] or 0),
+            })
+
+        # ── Attendance Stats ──
+        attendance_qs = DailyAttendance.objects.filter(
+            date__gte=start_date,
+            date__lte=end_date,
+            status="APPROVED",
+            is_deleted=False,
+            employee__is_deleted=False,
+            employee__include_in_payroll=True,
+        ).exclude(attendance_type__in=["ABSENT", "LEAVE", "INVALID"])
+
+        # Most late employees
+        late_stats = list(
+            attendance_qs.filter(is_late=True)
+            .values("employee__id", "employee__first_name", "employee__last_name")
+            .annotate(
+                late_count=Count("id"),
+                total_late_minutes=Sum("late_minutes"),
+            )
+            .order_by("-late_count")[:5]
+        )
+        most_late = [
+            {
+                "employee_id": item["employee__id"],
+                "employee_name": f"{item['employee__first_name']} {item['employee__last_name']}".strip() or "Unknown",
+                "late_count": item["late_count"],
+                "total_late_minutes": item["total_late_minutes"] or 0,
+            }
+            for item in late_stats
+        ]
+
+        # Most punctual employees (days present & not late)
+        punctual_stats = list(
+            attendance_qs.values("employee__id", "employee__first_name", "employee__last_name")
+            .annotate(
+                total_days=Count("id"),
+                on_time_days=Count("id", filter=Q(is_late=False)),
+                late_days=Count("id", filter=Q(is_late=True)),
+                total_paid_hours=Sum("paid_hours"),
+                full_days=Count("id", filter=Q(attendance_type="FULL_DAY")),
+            )
+            .order_by("-on_time_days")[:5]
+        )
+        most_punctual = [
+            {
+                "employee_id": item["employee__id"],
+                "employee_name": f"{item['employee__first_name']} {item['employee__last_name']}".strip() or "Unknown",
+                "total_days": item["total_days"],
+                "on_time_days": item["on_time_days"],
+                "late_days": item["late_days"],
+                "punctuality_rate": round(
+                    (item["on_time_days"] / item["total_days"] * 100) if item["total_days"] > 0 else 0, 1
+                ),
+                "total_paid_hours": float(item["total_paid_hours"] or 0),
+                "full_days": item["full_days"],
+            }
+            for item in punctual_stats
+        ]
+
+        return {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "top_service_types": top_service_types,
+            "top_technicians": top_technicians,
+            "most_late": most_late,
+            "most_punctual": most_punctual,
+        }
+
+
+# ----------------------------------
 # Warranty Analytics
 # ----------------------------------
 class WarrantyAnalytics:

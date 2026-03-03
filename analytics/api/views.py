@@ -3,6 +3,7 @@ from datetime import datetime, time, timedelta
 from analytics.business_logic import (
     ClientAnalytics,
     DashboardAnalytics,
+    EmployeePerformanceAnalytics,
     InventoryAnalytics,
     OutstandingAnalytics,
     PaymentAnalytics,
@@ -590,6 +591,21 @@ class AnalyticsViewSet(ViewSet):
         start_date, end_date = get_date_range_from_request(request)
 
         data = ServiceAnalytics.get_technician_productivity(start_date, end_date)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="employee-performance")
+    def employee_performance(self, request):
+        """
+        Get employee performance statistics.
+
+        Query params:
+        - start_date, end_date
+
+        Returns top service types, top technicians, most late, most punctual.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+
+        data = EmployeePerformanceAnalytics.get_employee_performance(start_date, end_date)
         return Response(data, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["get"], url_path="warranty-summary")
