@@ -18,6 +18,7 @@ from django.db.models import (
     Avg,
     Case,
     Count,
+    DecimalField,
     F,
     Q,
     Sum,
@@ -730,7 +731,8 @@ class EmployeePerformanceAnalytics:
                         "service__total_revenue",
                         filter=Q(service__status=ServiceStatus.COMPLETED),
                     ),
-                    Value(0),
+                    Value(0, output_field=DecimalField()),
+                    output_field=DecimalField(),
                 ),
             )
             .order_by("-total_assignments")[:10]
