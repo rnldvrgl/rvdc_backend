@@ -141,8 +141,33 @@ class SummaryStatsView(APIView):
             or 0
         )
 
+        # Aircon unit cost deduction (cost price of units used in installations)
+        from installations.models import AirconUnit
+        installation_unit_cost = (
+            AirconUnit.objects.filter(
+                installation_service__isnull=False,
+                installation_service__created_at__date__gte=start_date.date() if hasattr(start_date, 'date') else start_date,
+                installation_service__created_at__date__lte=end_date.date() if hasattr(end_date, 'date') else end_date,
+                model__isnull=False,
+            )
+            .aggregate(total=Sum("model__cost_price"))["total"]
+            or Decimal("0")
+        )
+        # Also include units sold directly (not via installation)
+        sold_unit_cost = (
+            AirconUnit.objects.filter(
+                sale__isnull=False,
+                sale__created_at__range=(start_date, end_date),
+                sale__is_deleted=False,
+                model__isnull=False,
+            )
+            .aggregate(total=Sum("model__cost_price"))["total"]
+            or Decimal("0")
+        )
+        total_unit_cost = float(installation_unit_cost) + float(sold_unit_cost)
+
         # Net income
-        net_income = total_revenue - float(expense)
+        net_income = total_revenue - float(expense) - total_unit_cost
 
         # Outstanding balances
         # Calculate sales outstanding
@@ -259,6 +284,9 @@ class SummaryStatsView(APIView):
                 
                 # Expenses
                 "total_expense": float(expense),
+                
+                # Unit cost deductions
+                "unit_cost_deduction": total_unit_cost,
                 
                 # Top selling
                 "top_selling_item": {

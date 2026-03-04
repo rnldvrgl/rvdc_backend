@@ -62,6 +62,7 @@ class AirconModelSerializer(serializers.ModelSerializer):
             "brand_id",
             "name",
             "retail_price",
+            "cost_price",
             "aircon_type",
             "horsepower",
             "discount_percentage",

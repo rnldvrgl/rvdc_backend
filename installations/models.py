@@ -22,6 +22,12 @@ class AirconModel(models.Model):
     brand = models.ForeignKey(AirconBrand, on_delete=models.CASCADE)
     name = models.CharField(max_length=100)
     retail_price = models.DecimalField(max_digits=10, decimal_places=2)
+    cost_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Dealer/purchase cost price of this aircon model.",
+    )
     discount_percentage = models.DecimalField(
         max_digits=5,
         decimal_places=2,
