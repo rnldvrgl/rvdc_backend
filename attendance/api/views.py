@@ -365,6 +365,87 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
 
+    @action(detail=False, methods=['post'], permission_classes=[IsAdminOrManager])
+    def mark_absent(self, request):
+        """
+        Manually mark one or more employees as absent for a given date.
+        
+        Required fields:
+        - employee_ids: List of employee IDs to mark absent
+        - date: Date to mark absent for (YYYY-MM-DD)
+        """
+        employee_ids = request.data.get('employee_ids', [])
+        target_date = request.data.get('date')
+
+        if not employee_ids:
+            return Response(
+                {'detail': 'employee_ids is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not target_date:
+            return Response(
+                {'detail': 'date is required (YYYY-MM-DD).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from datetime import datetime as dt
+        try:
+            parsed_date = dt.strptime(target_date, '%Y-%m-%d').date()
+        except (ValueError, TypeError):
+            return Response(
+                {'detail': 'Invalid date format. Use YYYY-MM-DD.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from users.models import CustomUser
+        employees = CustomUser.objects.filter(id__in=employee_ids, is_active=True, is_deleted=False)
+
+        if not employees.exists():
+            return Response(
+                {'detail': 'No valid employees found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        marked_count = 0
+        skipped = []
+        for employee in employees:
+            attendance, created = DailyAttendance.objects.get_or_create(
+                employee=employee,
+                date=parsed_date,
+                defaults={'attendance_type': 'PENDING'},
+            )
+
+            # Skip if already marked as ABSENT or LEAVE
+            if attendance.attendance_type in ['ABSENT', 'LEAVE']:
+                skipped.append({
+                    'employee_id': employee.id,
+                    'name': employee.get_full_name(),
+                    'reason': f'Already marked as {attendance.get_attendance_type_display()}',
+                })
+                continue
+
+            # Skip if employee already clocked in (has actual attendance)
+            if attendance.clock_in:
+                skipped.append({
+                    'employee_id': employee.id,
+                    'name': employee.get_full_name(),
+                    'reason': 'Employee has already clocked in',
+                })
+                continue
+
+            attendance.mark_absent()
+            attendance.save()
+            marked_count += 1
+
+        return Response(
+            {
+                'detail': f'{marked_count} employee(s) marked as absent for {target_date}.',
+                'marked_count': marked_count,
+                'skipped': skipped,
+            },
+            status=status.HTTP_200_OK,
+        )
+
     @action(detail=False, methods=["get"])
     def pending_approvals(self, request):
         """Get all pending attendance records (admin/manager only)."""

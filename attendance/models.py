@@ -61,6 +61,7 @@ class DailyAttendance(models.Model):
     """
     
     ATTENDANCE_TYPE_CHOICES = [
+        ('PENDING', 'Pending'),
         ('FULL_DAY', 'Full Day'),
         ('HALF_DAY', 'Half Day'),
         ('PARTIAL', 'Partial Hours'),
@@ -291,10 +292,43 @@ class DailyAttendance(models.Model):
         # Default to unexcused for safety
         return True
 
+    def _get_previous_working_day_attendance(self):
+        """
+        Find the most recent working day attendance before this date,
+        skipping weekends and holidays. Looks back up to 7 days.
+        """
+        from payroll.models import Holiday
+        
+        check_date = self.date - timedelta(days=1)
+        max_lookback = 7  # Don't look back more than a week
+        
+        for _ in range(max_lookback):
+            # Skip weekends
+            if check_date.weekday() >= 5:  # Saturday=5, Sunday=6
+                check_date -= timedelta(days=1)
+                continue
+            
+            # Skip holidays
+            if Holiday.objects.filter(date=check_date, is_deleted=False).exists():
+                check_date -= timedelta(days=1)
+                continue
+            
+            # Found a working day - check for attendance
+            return DailyAttendance.objects.filter(
+                employee=self.employee,
+                date=check_date,
+                is_deleted=False,
+            ).first()
+        
+        return None
+
     def mark_absent(self):
         """
         Marks the attendance as ABSENT if no approved leave and no clock in/out.
         Also updates consecutive absences and AWOL status.
+        
+        Consecutive absence counting skips weekends and holidays so that
+        e.g. Thu-Fri-Mon absences correctly count as 3 consecutive.
         """
         try:
             # Check for approved leave
@@ -310,14 +344,11 @@ class DailyAttendance(models.Model):
                 self.is_awol = False
             else:
                 self.attendance_type = 'ABSENT'
-                # Get previous day's attendance
-                yesterday = self.date - timedelta(days=1)
-                prev_attendance = DailyAttendance.objects.filter(
-                    employee=self.employee,
-                    date=yesterday
-                ).first()
                 
-                # Check if previous day was an unexcused absence
+                # Get previous working day's attendance (skips weekends/holidays)
+                prev_attendance = self._get_previous_working_day_attendance()
+                
+                # Check if previous working day was an unexcused absence
                 if prev_attendance and prev_attendance.is_unexcused_absence():
                     self.consecutive_absences = prev_attendance.consecutive_absences + 1
                 else:
@@ -332,6 +363,9 @@ class DailyAttendance(models.Model):
             self.consecutive_absences = 1
             self.is_awol = False
         
+        # Clear clock times to avoid clean() validation conflicts
+        self.clock_in = None
+        self.clock_out = None
         self.total_hours = Decimal('0.00')
         self.paid_hours = Decimal('0.00')
         self.break_hours = Decimal('0.00')
