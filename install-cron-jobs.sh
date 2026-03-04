@@ -9,6 +9,7 @@
 # Cron jobs provided:
 # - Daily: Auto-close attendance (9:00 PM Philippines time)
 # - Daily: Mark absences (11:30 PM Philippines time)
+# - Daily: Delete old notifications (2:00 AM Philippines time)
 # - Weekly: Fix attendance & refresh payroll (Friday 11 PM Philippines time)
 # - Yearly: Update holiday years to new year (Jan 1, 2:00 AM Philippines time)
 # - Yearly: Replenish leave balances (Jan 1, 3:00 AM Philippines time)
@@ -265,7 +266,7 @@ sed -i "s/CONTAINER_NAME_PLACEHOLDER/$CONTAINER_NAME/g" "$SCRIPT_DIR"/*.sh
 # Make scripts executable
 chmod +x "$SCRIPT_DIR"/*.sh
 
-echo -e "${GREEN}✅ Created 6 cron scripts${NC}"
+echo -e "${GREEN}✅ Created 7 cron scripts${NC}"
 
 # Step 4: Test scripts
 echo ""
@@ -294,6 +295,7 @@ echo ""
 echo -e "${BLUE}DAILY TASKS (Philippines Time):${NC}"
 echo "  • 9:00 PM - Auto-close attendance"
 echo "  • 11:30 PM - Mark absences"
+echo "  • 2:00 AM - Delete old notifications (7+ days)"
 echo ""
 echo -e "${BLUE}WEEKLY TASKS (Philippines Time):${NC}"
 echo "  • Friday 11:00 PM - Fix attendance & refresh payroll (for Saturday payday)"
@@ -329,10 +331,10 @@ fi
 echo ""
 echo -e "${YELLOW}Installing cron jobs...${NC}"
 
-# Get existing crontab (if any)
+# Get existing crontab and remove old RVDC entries to avoid duplicates
 TEMP_CRON=$(mktemp)
 if crontab -l > /dev/null 2>&1; then
-    crontab -l > "$TEMP_CRON"
+    crontab -l | sed '/# ===.*RVDC Attendance/,/\/var\/log\/cron-\*\.log.*-delete/d' | sed '/^$/N;/^\n$/d' > "$TEMP_CRON"
 fi
 
 # Add RVDC cron jobs
