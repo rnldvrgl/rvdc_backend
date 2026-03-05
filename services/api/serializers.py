@@ -957,9 +957,14 @@ class ServiceSerializer(serializers.ModelSerializer):
         """Update service, appliances, and technician assignments."""
         appliances_data = validated_data.pop("appliances", None)
         technician_assignments_data = validated_data.pop("technician_assignments", None)
+        appointment_datetime = validated_data.pop("appointment_datetime", None)
 
         with transaction.atomic():
             instance = super().update(instance, validated_data)
+
+            # Update existing schedule date/time if appointment_datetime changed
+            if appointment_datetime is not None:
+                self._update_schedule_datetime(instance, appointment_datetime)
 
             # Handle appliances update if provided
             if appliances_data is not None:
@@ -1196,6 +1201,78 @@ class ServiceSerializer(serializers.ModelSerializer):
         for schedule in schedules:
             if technician_ids:
                 schedule.technicians.set(technician_ids)
+
+    def _update_schedule_datetime(self, service, appointment_datetime):
+        """Update the date/time of pending/confirmed schedules for this service.
+        If no schedule exists (e.g. service mode changed to home_service), create one."""
+        from schedules.models import Schedule
+
+        schedules = list(Schedule.objects.filter(
+            service=service,
+            status__in=['pending', 'confirmed'],
+        ))
+
+        scheduled_date = appointment_datetime.date()
+        scheduled_time = appointment_datetime.time()
+
+        if schedules:
+            for schedule in schedules:
+                schedule.scheduled_date = scheduled_date
+                schedule.scheduled_time = scheduled_time
+                # Also update contact/address in case they changed on the service
+                schedule.address = (
+                    service.override_address
+                    or (service.client.address if service.client else '')
+                )
+                schedule.contact_person = (
+                    service.override_contact_person
+                    or (service.client.full_name if service.client else '')
+                )
+                schedule.contact_number = (
+                    service.override_contact_number
+                    or (service.client.contact_number if service.client else '')
+                )
+                schedule.save()
+        else:
+            # No schedule exists yet — create one (e.g. mode changed to home_service)
+            from utils.enums import ServiceMode
+
+            if service.service_mode in [ServiceMode.HOME_SERVICE, ServiceMode.PULL_OUT]:
+                request = self.context.get('request')
+                created_by = request.user if request and hasattr(request, 'user') else None
+
+                schedule_type = (
+                    'home_service' if service.service_mode == ServiceMode.HOME_SERVICE
+                    else 'pull_out'
+                )
+                schedule = Schedule.objects.create(
+                    client=service.client,
+                    service=service,
+                    schedule_type=schedule_type,
+                    scheduled_date=scheduled_date,
+                    scheduled_time=scheduled_time,
+                    estimated_duration=60,
+                    status='pending',
+                    address=service.override_address or (
+                        service.client.address if service.client else ''
+                    ),
+                    contact_person=service.override_contact_person or (
+                        service.client.full_name if service.client else ''
+                    ),
+                    contact_number=service.override_contact_number or (
+                        service.client.contact_number if service.client else ''
+                    ),
+                    notes=service.description,
+                    created_by=created_by,
+                )
+                # Assign existing technicians to the new schedule
+                tech_ids = list(
+                    service.technician_assignments.values_list(
+                        'technician_id', flat=True
+                    )
+                )
+                if tech_ids:
+                    schedule.technicians.set(tech_ids)
 
 
 class ServiceCompletionSerializer(serializers.Serializer):
