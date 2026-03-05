@@ -445,7 +445,22 @@ class AirconUnit(models.Model):
 
     @property
     def sale_price(self):
-        """Get the actual sale price (selling price from model)."""
+        """Get the actual sale price.
+        
+        For installed units, returns the price from ServiceAppliance.unit_price (if overridden).
+        Otherwise returns the model's selling price.
+        """
+        # If this unit is part of an installation service, check for price override
+        if self.installation_service:
+            # Find the matching ServiceAppliance by serial number
+            matching_appliance = self.installation_service.appliances.filter(
+                serial_number=self.serial_number
+            ).first()
+            
+            if matching_appliance and matching_appliance.unit_price is not None:
+                return matching_appliance.unit_price
+        
+        # Fall back to model's selling price
         if self.model:
             return self.model.selling_price
         return Decimal("0.00")
