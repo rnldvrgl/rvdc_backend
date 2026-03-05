@@ -46,6 +46,18 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
     cod_for_next_day = serializers.SerializerMethodField()
     cod_for_today = serializers.SerializerMethodField()
 
+    # Optional: allow backdating remittances (admin fills in past dates)
+    remittance_date = serializers.DateField(
+        required=False, write_only=True, allow_null=True,
+        help_text="If provided, creates remittance for this date instead of today. "
+                  "Sales & expenses will be pulled from this date."
+    )
+    # Optional: immediately acknowledge a backdated remittance
+    mark_as_acknowledged = serializers.BooleanField(
+        required=False, write_only=True, default=False,
+        help_text="If true, marks the new remittance as acknowledged on creation."
+    )
+
     class Meta:
         model = RemittanceRecord
         fields = [
@@ -70,6 +82,8 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             "balance",
             "cod_for_next_day",
             "cod_for_today",
+            "remittance_date",
+            "mark_as_acknowledged",
         ]
 
     def get_stall_data(self, obj):
@@ -132,29 +146,33 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         stall = validated_data.pop("stall")
         user = self.context["request"].user
         notes = validated_data.pop("notes", "")
-        today = timezone.localdate()
+        remittance_date = validated_data.pop("remittance_date", None)
+        mark_as_acknowledged = validated_data.pop("mark_as_acknowledged", False)
+
+        # Use provided date or default to today
+        target_date = remittance_date or timezone.localdate()
 
         # 🚫 Prevent multiple remittances per stall per day
         if RemittanceRecord.objects.filter(
-            stall=stall, created_at__date=today
+            stall=stall, created_at__date=target_date
         ).exists():
             raise serializers.ValidationError(
                 {
                     "non_field_errors": [
-                        "A remittance has already been submitted for this stall today."
+                        f"A remittance already exists for this stall on {target_date.strftime('%b %d, %Y')}."
                     ]
                 }
             )
 
-        # 💰 Compute sales by payment type
+        # 💰 Compute sales by payment type for the target date
         total_sales = {
-            pt: self._sum_sales(stall, today, pt)
+            pt: self._sum_sales(stall, target_date, pt)
             for pt in ["cash", "gcash", "credit", "debit", "cheque"]
         }
 
-        # 📉 Get total expenses
+        # 📉 Get total expenses for the target date
         total_expenses = (
-            Expense.objects.filter(stall=stall, created_at__date=today).aggregate(
+            Expense.objects.filter(stall=stall, created_at__date=target_date).aggregate(
                 total=Sum("paid_amount")
             )["total"]
             or 0
@@ -164,15 +182,25 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         remitted_amt = self._compute_total(breakdown_data, declared=False)
         declared_amt = self._compute_total(breakdown_data, declared=True)
 
+        # 📅 Set created_at: use noon of target date for backdated, or now for today
+        if remittance_date:
+            from datetime import datetime, time
+            created_at = timezone.make_aware(
+                datetime.combine(remittance_date, time(12, 0))
+            )
+        else:
+            created_at = timezone.now()
+
         # 🧾 Create the record
         remittance = RemittanceRecord.objects.create(
             stall=stall,
             remitted_by=user,
-            created_at=timezone.now(),
+            created_at=created_at,
             notes=notes,
             remitted_amount=remitted_amt,
             declared_amount=declared_amt,
             total_expenses=total_expenses,
+            is_remitted=bool(mark_as_acknowledged),
             **{f"total_sales_{k}": v for k, v in total_sales.items()},
         )
 
@@ -185,6 +213,9 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         breakdown_data = validated_data.pop("cash_breakdown", None)
+        # Remove write-only fields that don't apply to updates
+        validated_data.pop("remittance_date", None)
+        validated_data.pop("mark_as_acknowledged", None)
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
