@@ -81,6 +81,8 @@ class Command(BaseCommand):
                 # Also sync sales transaction items (labor + unit prices)
                 if not dry_run:
                     ServicePaymentManager.sync_sales_items(service)
+                    # Recalculate payment status after revenue changes
+                    service.update_payment_status()
 
                 # Check if changed
                 if old_main != new_main or old_sub != new_sub or old_total != new_total:

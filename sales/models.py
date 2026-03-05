@@ -121,6 +121,14 @@ class SalesPayment(models.Model):
     payment_type = models.CharField(max_length=10, choices=PaymentType.choices)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     payment_date = models.DateTimeField(default=timezone.now)
+    cheque_collection = models.ForeignKey(
+        "receivables.ChequeCollection",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sales_payments",
+        help_text="Linked cheque collection if payment type is cheque",
+    )
 
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)

@@ -15,6 +15,7 @@ from clients.models import Client
 from django.db import transaction
 from installations.models import AirconUnit
 from inventory.models import Stall, Stock
+from receivables.models import ChequeCollection
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
 from services.business_logic import (
@@ -687,6 +688,7 @@ class ServiceSerializer(serializers.ModelSerializer):
 
     appliances = ServiceApplianceSerializer(many=True, required=False)
     payments = serializers.SerializerMethodField()
+    refunds = serializers.SerializerMethodField()
     installation_units = serializers.SerializerMethodField()
 
     # Write-only fields for datetime inputs from frontend
@@ -783,6 +785,7 @@ class ServiceSerializer(serializers.ModelSerializer):
             "appliances",
             "technician_assignments",
             "payments",
+            "refunds",
             "next_schedule",
         ]
         read_only_fields = [
@@ -825,30 +828,27 @@ class ServiceSerializer(serializers.ModelSerializer):
         return fields
 
     def get_payment_status(self, obj):
-        """Calculate payment status based on total_paid and total_cost."""
-        try:
-            total_cost = float(obj.total_revenue or 0)
-            # Use prefetched payments to avoid extra DB hit
-            payments = obj.payments.all()
-            total_paid = float(sum(p.amount for p in payments))
-
-            # If no cost calculated yet (no items/labor added), status is pending
-            if total_cost == 0:
-                return "pending"
-
-            if total_paid >= total_cost:
-                return "paid"
-            elif total_paid > 0:
-                return "partial"
-            else:
-                return "unpaid"
-        except (ValueError, TypeError):
+        """Return the DB payment status which accounts for refunds."""
+        # Use the stored payment_status which is kept in sync by
+        # update_payment_status() (called on payment save and refund).
+        status = obj.payment_status
+        if status:
+            return status
+        # Fallback for services with no revenue yet
+        total_cost = float(obj.total_revenue or 0)
+        if total_cost == 0:
             return "unpaid"
+        return "unpaid"
 
     def get_payments(self, obj):
         """Get all payments for this service."""
         payments = obj.payments.all()
         return ServicePaymentSerializer(payments, many=True).data
+
+    def get_refunds(self, obj):
+        """Get all refunds for this service."""
+        refunds = obj.refunds.all()
+        return ServiceRefundSerializer(refunds, many=True).data
 
     def get_installation_units(self, obj):
         """Get all aircon units for installation services."""
@@ -1470,6 +1470,9 @@ class ServicePaymentSerializer(serializers.ModelSerializer):
     payment_type_display = serializers.CharField(
         source="get_payment_type_display", read_only=True
     )
+    cheque_number = serializers.CharField(
+        source="cheque_collection.cheque_number", read_only=True
+    )
 
     class Meta:
         model = ServicePayment
@@ -1482,6 +1485,8 @@ class ServicePaymentSerializer(serializers.ModelSerializer):
             "payment_date",
             "received_by",
             "received_by_name",
+            "cheque_collection",
+            "cheque_number",
             "notes",
             "created_at",
             "updated_at",
@@ -1528,11 +1533,33 @@ class CreateServicePaymentSerializer(serializers.Serializer):
     payment_type = serializers.ChoiceField(choices=PaymentType.choices)
     amount = serializers.DecimalField(max_digits=10, decimal_places=2)
     notes = serializers.CharField(required=False, allow_blank=True, default="")
+    cheque_collection = serializers.PrimaryKeyRelatedField(
+        queryset=ChequeCollection.objects.all(),
+        required=False,
+        allow_null=True,
+        default=None,
+        help_text="Linked cheque collection ID (for cheque payments)",
+    )
 
     def validate_amount(self, value):
         """Validate payment amount is positive."""
         if value <= 0:
             raise ValidationError("Payment amount must be greater than zero.")
+        return value
+
+    def validate_cheque_collection(self, value):
+        """Validate cheque is not already linked to another payment."""
+        if value is not None:
+            # Check if cheque is already linked to a service payment
+            if value.service_payments.exists():
+                raise ValidationError(
+                    "This cheque is already linked to another service payment."
+                )
+            # Check if cheque is already linked to a sales payment
+            if value.sales_payments.exists():
+                raise ValidationError(
+                    "This cheque is already linked to a sales payment."
+                )
         return value
 
     def validate(self, data):
@@ -1550,6 +1577,12 @@ class CreateServicePaymentSerializer(serializers.Serializer):
                 f"Total revenue: ₱{service.total_revenue}, Already paid: ₱{service.total_paid}"
             )
 
+        # Validate cheque is provided for cheque payment type
+        if data["payment_type"] == "cheque" and not data.get("cheque_collection"):
+            raise ValidationError(
+                "A cheque collection must be selected for cheque payments."
+            )
+
         return data
 
     def save(self):
@@ -1565,6 +1598,7 @@ class CreateServicePaymentSerializer(serializers.Serializer):
             amount=self.validated_data["amount"],
             received_by=user,
             notes=self.validated_data.get("notes", ""),
+            cheque_collection=self.validated_data.get("cheque_collection"),
         )
 
         return payment

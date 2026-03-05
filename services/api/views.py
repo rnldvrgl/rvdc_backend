@@ -106,6 +106,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 "appliances__technician_assignments__technician",
                 "technician_assignments__technician",
                 "payments",
+                "refunds",
                 "installation_units__model__brand",
                 "schedules",
             )

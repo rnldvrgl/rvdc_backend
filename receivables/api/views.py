@@ -1,4 +1,5 @@
 from rest_framework import viewsets, filters
+from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from utils.enums import ChequeStatus
 from utils.filters.role_filters import get_role_based_filter_response
@@ -69,3 +70,39 @@ class ChequeCollectionViewSet(viewsets.ModelViewSet):
         ]
 
         return get_role_based_filter_response(request, filters_config, ordering_config)
+
+    @action(detail=False, methods=["get"], url_path="choices")
+    def get_choices(self, request):
+        """Return cheques available for linking to payments."""
+        queryset = self.get_queryset()
+        
+        # Filter by client if provided
+        client_id = request.query_params.get("client")
+        if client_id:
+            queryset = queryset.filter(client_id=client_id)
+        
+        # Only show pending or deposited cheques (not encashed, returned, bounced, or cancelled)
+        status_filter = request.query_params.getlist("status")
+        if status_filter:
+            queryset = queryset.filter(status__in=status_filter)
+        else:
+            queryset = queryset.filter(status__in=["pending", "deposited"])
+        
+        # Exclude cheques already linked to any payment
+        queryset = queryset.exclude(service_payments__isnull=False)
+        queryset = queryset.exclude(sales_payments__isnull=False)
+        
+        # Return simplified data for dropdown
+        data = [
+            {
+                "id": cheque.id,
+                "cheque_number": cheque.cheque_number,
+                "cheque_amount": str(cheque.cheque_amount),
+                "client_name": cheque.client.full_name if cheque.client else "",
+                "bank_name": cheque.bank_name,
+                "cheque_date": cheque.cheque_date,
+            }
+            for cheque in queryset
+        ]
+        
+        return Response(data)

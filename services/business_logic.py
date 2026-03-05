@@ -943,7 +943,7 @@ class ServicePaymentManager:
         return sales_transaction
 
     @staticmethod
-    def create_payment(service, payment_type, amount, received_by=None, notes=""):
+    def create_payment(service, payment_type, amount, received_by=None, notes="", cheque_collection=None):
         """
         Create a payment for a service.
 
@@ -953,6 +953,7 @@ class ServicePaymentManager:
             amount: Payment amount (Decimal)
             received_by: User who received the payment (optional)
             notes: Additional notes (optional)
+            cheque_collection: ChequeCollection instance (optional, for cheque payments)
 
         Returns:
             ServicePayment instance
@@ -967,15 +968,13 @@ class ServicePaymentManager:
         if amount <= 0:
             raise ValidationError("Payment amount must be greater than zero.")
 
-        # Check for overpayment
-        total_revenue = service.total_revenue
-        total_paid = service.total_paid
-        balance_due = total_revenue - total_paid
+        # Check for overpayment using balance_due property (accounts for refunds)
+        balance_due = service.balance_due
 
         if amount > balance_due:
             raise ValidationError(
                 f"Payment amount (₱{amount}) exceeds balance due (₱{balance_due}). "
-                f"Total revenue: ₱{total_revenue}, Already paid: ₱{total_paid}"
+                f"Total revenue: ₱{service.total_revenue}, Already paid: ₱{service.total_paid}"
             )
 
         # Create payment
@@ -986,6 +985,7 @@ class ServicePaymentManager:
                 amount=amount,
                 received_by=received_by,
                 notes=notes,
+                cheque_collection=cheque_collection,
             )
             # Payment status is automatically updated by the model's save() method
 
@@ -1394,6 +1394,9 @@ class ServicePaymentManager:
             service.total_refunded = (service.total_refunded or 0) + refund_amount
             service.last_refund_date = timezone.now()
             service.save(update_fields=['total_refunded', 'last_refund_date'])
+            
+            # Update payment status to reflect refund
+            service.update_payment_status()
             
             # DO NOT return parts to stock (already used)
             # DO NOT void sales transactions (costs already incurred)

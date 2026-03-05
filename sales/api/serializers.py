@@ -38,10 +38,13 @@ class SalesItemSerializer(serializers.ModelSerializer):
 class SalesPaymentSerializer(serializers.ModelSerializer):
     id = serializers.IntegerField(required=False)
     payment_date = serializers.DateTimeField(required=False, read_only=True)
+    cheque_number = serializers.CharField(
+        source="cheque_collection.cheque_number", read_only=True
+    )
 
     class Meta:
         model = SalesPayment
-        fields = ["id", "payment_type", "amount", "payment_date"]
+        fields = ["id", "payment_type", "amount", "payment_date", "cheque_collection", "cheque_number"]
         read_only_fields = ["id", "payment_date"]
 
 

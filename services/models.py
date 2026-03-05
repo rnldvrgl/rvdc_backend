@@ -266,8 +266,9 @@ class Service(models.Model):
 
     @property
     def balance_due(self):
-        """Remaining balance for this service."""
-        return max(self.total_revenue - self.total_paid, 0)
+        """Remaining balance for this service, accounting for refunds."""
+        net_paid = self.total_paid - (self.total_refunded or 0)
+        return max(self.total_revenue - net_paid, 0)
     
     @property
     def net_revenue(self):
@@ -280,24 +281,24 @@ class Service(models.Model):
         return (self.total_refunded or 0) > 0
 
     def update_payment_status(self):
-        """Update payment status based on total paid vs total revenue."""
+        """Update payment status based on net paid (paid minus refunded) vs total revenue."""
         # Complementary services don't require payment
         if self.is_complementary:
             self.payment_status = PaymentStatus.NOT_APPLICABLE
-            self.save(update_fields=["payment_status"])
+            self.save(update_fields=["payment_status"], skip_validation=True)
             return
         
         total = self.total_revenue
-        paid = self.total_paid
+        net_paid = self.total_paid - (self.total_refunded or 0)
 
-        if paid == 0:
+        if net_paid <= 0:
             self.payment_status = PaymentStatus.UNPAID
-        elif paid < total:
+        elif net_paid < total:
             self.payment_status = PaymentStatus.PARTIAL
         else:
             self.payment_status = PaymentStatus.PAID
 
-        self.save(update_fields=["payment_status"])
+        self.save(update_fields=["payment_status"], skip_validation=True)
 
 
 # ----------------------------------
@@ -324,6 +325,14 @@ class ServicePayment(models.Model):
         related_name="service_payments_received",
         help_text="User who received this payment",
     )
+    cheque_collection = models.ForeignKey(
+        "receivables.ChequeCollection",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="service_payments",
+        help_text="Linked cheque collection if payment type is cheque",
+    )
     notes = models.TextField(
         blank=True, help_text="Additional notes about this payment"
     )
@@ -342,7 +351,10 @@ class ServicePayment(models.Model):
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
         # Automatically update the related service's payment status
-        self.service.update_payment_status()
+        # Fetch a fresh Service instance to avoid stale prefetch cache
+        from services.models import Service
+        fresh_service = Service.objects.get(pk=self.service_id)
+        fresh_service.update_payment_status()
 
 
 # ----------------------------------
