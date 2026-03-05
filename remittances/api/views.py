@@ -113,7 +113,7 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
         def sum_sales(payment_type: str):
             qs = SalesPayment.objects.filter(
                 transaction__stall=stall,
-                transaction__created_at__date=target_date,
+                payment_date__date=target_date,
                 transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
                 payment_type=payment_type,
             ).annotate(

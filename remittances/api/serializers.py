@@ -139,6 +139,26 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"cash_breakdown": "At least one denomination must be provided."}
             )
+
+        user = self.context["request"].user
+
+        # Non-admin users can only remit for their assigned stall
+        if user.role != "admin":
+            stall = attrs.get("stall")
+            if stall and user.assigned_stall and stall != user.assigned_stall:
+                raise serializers.ValidationError(
+                    {"stall": "You can only create remittances for your assigned stall."}
+                )
+            # Non-admin cannot backdate or auto-acknowledge
+            if attrs.get("remittance_date"):
+                raise serializers.ValidationError(
+                    {"remittance_date": "Only administrators can backdate remittances."}
+                )
+            if attrs.get("mark_as_acknowledged"):
+                raise serializers.ValidationError(
+                    {"mark_as_acknowledged": "Only administrators can mark remittances as acknowledged."}
+                )
+
         return attrs
 
     def create(self, validated_data):
@@ -247,7 +267,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
     def _sum_sales(self, stall, date_val, payment_type: str):
         qs = SalesPayment.objects.filter(
             transaction__stall=stall,
-            transaction__created_at__date=date_val,
+            payment_date__date=date_val,
             transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
             payment_type=payment_type,
         ).annotate(
