@@ -755,8 +755,12 @@ class ServicePaymentManager:
     @staticmethod
     def sync_sales_items(service):
         """
-        Sync sales transaction items with current service appliances' labor fees.
-        Updates line items when labor fees change.
+        Sync sales transaction items with current service charges.
+        Updates line items when labor fees or unit prices change.
+        
+        Includes:
+        - Labor fees (discounted) for each appliance
+        - Aircon unit prices for installation services (brand-new & second-hand)
         
         Note: Parts are NOT synced here - they have separate sub stall transactions.
         
@@ -770,12 +774,20 @@ class ServicePaymentManager:
             
         sales_transaction = service.related_transaction
         
-        # Clear existing items and recreate (LABOR FEES ONLY)
+        # Clear existing items and recreate
         sales_transaction.items.all().delete()
         
-        # Add labor fees for each appliance
+        # Pre-build set of installation unit serial numbers
+        installation_unit_serials = set()
+        if service.service_type == 'installation':
+            installation_unit_serials = set(
+                service.installation_units.values_list('serial_number', flat=True)
+            )
+        
+        # Add labor fees for each appliance (use discounted fee)
         for appliance in service.appliances.all():
-            if appliance.labor_fee > 0 and not appliance.labor_is_free:
+            labor_charge = appliance.discounted_labor_fee or Decimal('0.00')
+            if labor_charge > 0 and not appliance.labor_is_free:
                 appliance_name = appliance.appliance_type.name if appliance.appliance_type else "Appliance"
                 brand_info = f" ({appliance.brand})" if appliance.brand else ""
                 SalesItem.objects.create(
@@ -783,8 +795,41 @@ class ServicePaymentManager:
                     item=None,
                     description=f"Labor Fee - {appliance_name}{brand_info}",
                     quantity=1,
-                    final_price_per_unit=appliance.labor_fee,
+                    final_price_per_unit=labor_charge,
                 )
+            # Add unit_price for second-hand / non-installation appliances
+            if appliance.unit_price and appliance.serial_number not in installation_unit_serials:
+                SalesItem.objects.create(
+                    transaction=sales_transaction,
+                    item=None,
+                    description=f"Unit: {appliance.brand or ''} {appliance.model or ''} (Second-hand)",
+                    quantity=1,
+                    final_price_per_unit=appliance.unit_price,
+                )
+        
+        # Add aircon unit prices for installation services (Main stall revenue)
+        if service.service_type == 'installation':
+            for unit in service.installation_units.all():
+                if unit.model:
+                    # Check for custom unit_price override on linked appliance
+                    matching_appliance = service.appliances.filter(
+                        serial_number=unit.serial_number
+                    ).first()
+                    if matching_appliance and matching_appliance.unit_price:
+                        unit_final_price = matching_appliance.unit_price
+                    else:
+                        unit_final_price = unit.model.selling_price
+                    if unit_final_price > 0:
+                        SalesItem.objects.create(
+                            transaction=sales_transaction,
+                            item=None,
+                            description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                            quantity=1,
+                            final_price_per_unit=unit_final_price,
+                        )
+        
+        # Update payment status after syncing items
+        sales_transaction.update_payment_status()
 
     @staticmethod
     def recreate_sales_transaction(service):
