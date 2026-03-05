@@ -262,12 +262,21 @@ class RevenueCalculator:
         main_revenue = Decimal('0.00')
         sub_revenue = Decimal('0.00')
 
+        # Pre-build set of installation unit serial numbers
+        # so we don't double-count brand_new unit prices
+        installation_unit_serials = set()
+        if service.service_type == 'installation':
+            installation_unit_serials = set(
+                service.installation_units.values_list('serial_number', flat=True)
+            )
+
         # Calculate labor fees (Main stall revenue) with discounts
         for appliance in service.appliances.all():
             # Use discounted_labor_fee which accounts for labor discounts
             main_revenue += appliance.discounted_labor_fee or Decimal('0.00')
-            # Add custom unit_price for second-hand or manually priced units
-            if appliance.unit_price:
+            # Add unit_price only for second-hand / non-installation appliances.
+            # Brand-new installation units are handled in the installation_units loop below.
+            if appliance.unit_price and appliance.serial_number not in installation_unit_serials:
                 main_revenue += appliance.unit_price
 
         # Add aircon unit prices for installation services (Main stall revenue)
