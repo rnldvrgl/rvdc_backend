@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from inventory.models import (
     Item,
     ProductCategory,
@@ -75,7 +77,9 @@ class StockReadSerializer(serializers.ModelSerializer):
     status = serializers.SerializerMethodField()
     stock_room_quantity = serializers.SerializerMethodField()
     stock_room_status = serializers.SerializerMethodField()
-    reserved_quantity = serializers.IntegerField(read_only=True)
+    quantity = serializers.DecimalField(max_digits=10, decimal_places=2, coerce_to_string=False, read_only=True)
+    reserved_quantity = serializers.DecimalField(max_digits=10, decimal_places=2, coerce_to_string=False, read_only=True)
+    low_stock_threshold = serializers.DecimalField(max_digits=10, decimal_places=2, coerce_to_string=False, read_only=True)
     available_quantity = serializers.SerializerMethodField()
 
     class Meta:
@@ -101,7 +105,7 @@ class StockReadSerializer(serializers.ModelSerializer):
     def get_stock_room_quantity(self, obj):
         # Use select_related stockroom_stock (OneToOne) to avoid N+1 queries
         stock_room_stock = getattr(obj.item, 'stockroom_stock', None)
-        return stock_room_stock.quantity if stock_room_stock else 0
+        return float(stock_room_stock.quantity) if stock_room_stock else 0
 
     def get_stock_room_status(self, obj):
         # Use select_related stockroom_stock (OneToOne) to avoid N+1 queries
@@ -109,7 +113,7 @@ class StockReadSerializer(serializers.ModelSerializer):
         return stock_room_stock.status() if stock_room_stock else "no_stock"
 
     def get_available_quantity(self, obj):
-        return obj.quantity - obj.reserved_quantity
+        return float(obj.quantity - obj.reserved_quantity)
 
 
 class StockWriteSerializer(serializers.ModelSerializer):
@@ -161,6 +165,8 @@ class StockPatchSerializer(serializers.ModelSerializer):
 class StockRoomStockSerializer(serializers.ModelSerializer):
     item = ItemSerializer(read_only=True)
     status = serializers.SerializerMethodField()
+    quantity = serializers.DecimalField(max_digits=10, decimal_places=2, coerce_to_string=False, read_only=True)
+    low_stock_threshold = serializers.DecimalField(max_digits=10, decimal_places=2, coerce_to_string=False, read_only=True)
 
     class Meta:
         model = StockRoomStock
@@ -179,9 +185,9 @@ class StockRoomStockSerializer(serializers.ModelSerializer):
 
 
 class StockRestockSerializer(serializers.Serializer):
-    quantity = serializers.IntegerField(min_value=1)
+    quantity = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal('0.01'))
 
     def validate_quantity(self, value):
         if value <= 0:
-            raise serializers.ValidationError("Quantity must be a positive integer.")
+            raise serializers.ValidationError("Quantity must be a positive number.")
         return value

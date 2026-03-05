@@ -271,8 +271,8 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                     "item": stock.item.name,
                     "item_id": stock.item.id,
                     "stock_id": stock.id,
-                    "quantity": quantity,
-                    "new_total": stock.quantity,
+                    "quantity": float(quantity),
+                    "new_total": float(stock.quantity),
                 },
                 message=f"{quantity} {stock.item.unit_of_measure} of '{stock.item.name}' restocked to {stock.stall.name}.",
             )
@@ -322,8 +322,8 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                     "item": stock.item.name,
                     "item_id": stock.item.id,
                     "stock_id": stock.id,
-                    "quantity": quantity,
-                    "new_total": stock.quantity,
+                    "quantity": float(quantity),
+                    "new_total": float(stock.quantity),
                 },
                 message=f"{quantity} {stock.item.unit_of_measure} of '{stock.item.name}' added to {stock.stall.name} (direct add).",
             )
@@ -331,7 +331,7 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         return Response(
             {
                 "detail": f"Stock added successfully. New quantity: {stock.quantity}",
-                "quantity": stock.quantity,
+                "quantity": float(stock.quantity),
             }
         )
 

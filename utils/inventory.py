@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import transaction
 from inventory.models import Item, Stall, Stock
 from rest_framework.exceptions import ValidationError
@@ -29,6 +31,7 @@ def create_item_with_initial_stock(validated_data, user=None):
         technician_price=validated_data.get("technician_price", 0),
         cost_price=validated_data.get("cost_price", 0),
         unit_of_measure=validated_data.get("unit_of_measure", "pcs"),
+        waste_tolerance_percentage=validated_data.get("waste_tolerance_percentage", 0),
         description=validated_data.get("description"),
     )
 
@@ -100,7 +103,7 @@ def reserve_stock(item, stall, quantity):
 @transaction.atomic
 def unreserve_stock(item, stall, quantity):
     stock = Stock.objects.select_for_update().get(item=item, stall=stall)
-    stock.reserved_quantity = max(stock.reserved_quantity - quantity, 0)
+    stock.reserved_quantity = max(stock.reserved_quantity - quantity, Decimal("0"))
     stock.save(update_fields=["reserved_quantity"])
     return stock
 

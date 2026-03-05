@@ -35,7 +35,12 @@ class BaseItemUsed(models.Model):
     """Abstract base for any item used in a service or appliance repair."""
 
     item = models.ForeignKey(Item, on_delete=models.SET_NULL, null=True)
-    quantity = models.PositiveIntegerField(default=1)
+    quantity = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=1,
+        help_text="Quantity used (supports decimals for kg, ft, etc.).",
+    )
 
     class Meta:
         abstract = True
@@ -704,7 +709,7 @@ class ApplianceItemUsed(BaseItemUsed):
         """Total for this line item after discounts"""
         if self.is_free:
             return Decimal('0.00')
-        charged_qty = Decimal(str(self.quantity - self.free_quantity))
+        charged_qty = self.quantity - Decimal(str(self.free_quantity))
         result = self.discounted_price * charged_qty
         # Round to 2 decimal places
         return result.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)

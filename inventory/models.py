@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 
 from django.db import models
 
@@ -67,6 +68,12 @@ class Item(models.Model):
     cost_price = models.DecimalField(
         max_digits=10, decimal_places=2, default=0, null=True, blank=True
     )
+    waste_tolerance_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        help_text="Acceptable waste/loss % when dispensing (e.g. 5.00 = 5% tolerance for freon, copper tubes).",
+    )
     is_deleted = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -130,11 +137,20 @@ class Stock(models.Model):
 
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE, related_name="stocks")
 
-    quantity = models.PositiveIntegerField(default=0)
+    quantity = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Total quantity in stock (supports decimals for kg, ft, etc.).",
+    )
 
-    reserved_quantity = models.PositiveIntegerField(default=0)
+    reserved_quantity = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Quantity reserved for active services.",
+    )
 
-    low_stock_threshold = models.PositiveIntegerField(default=0)
+    low_stock_threshold = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Threshold below which stock is considered low.",
+    )
 
     track_stock = models.BooleanField(default=True)
 
@@ -177,7 +193,7 @@ class Stock(models.Model):
     @property
     def available_quantity(self):
         """Quantity that can still be sold or used for new services."""
-        return max(self.quantity - self.reserved_quantity, 0)
+        return max(self.quantity - self.reserved_quantity, Decimal("0"))
 
     def status(self):
         # Check available quantity (not total) for status
@@ -200,9 +216,15 @@ class StockRoomStock(models.Model):
         Item, on_delete=models.CASCADE, related_name="stockroom_stock"
     )
 
-    quantity = models.PositiveIntegerField(default=0)
+    quantity = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Total quantity in stockroom (supports decimals for kg, ft, etc.).",
+    )
 
-    low_stock_threshold = models.PositiveIntegerField(default=0)
+    low_stock_threshold = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Threshold below which stock is considered low.",
+    )
 
     is_deleted = models.BooleanField(default=False)
 

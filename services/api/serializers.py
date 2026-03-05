@@ -79,6 +79,9 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
     )
 
     # Read-only fields
+    quantity = serializers.DecimalField(
+        max_digits=10, decimal_places=2, coerce_to_string=False
+    )
     free_quantity = serializers.IntegerField(read_only=True)
     promo_name = serializers.CharField(read_only=True)
     charged_quantity = serializers.SerializerMethodField()
@@ -174,23 +177,36 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
             # This is an update - only validate if quantity is increasing
             old_qty = self.instance.quantity
             new_qty = qty
-            additional_qty_needed = new_qty - old_qty
+            additional_qty_needed = Decimal(str(new_qty)) - Decimal(str(old_qty))
             
             if additional_qty_needed > 0:
-                # Need more stock - check availability
+                # Need more stock - check availability with tolerance
                 available = stock.quantity - stock.reserved_quantity
-                if additional_qty_needed > available:
+                tolerance_buffer = StockReservationManager._get_tolerance_buffer(item, additional_qty_needed)
+                minimum_required = max(additional_qty_needed - tolerance_buffer, Decimal('0'))
+
+                if available < minimum_required:
+                    tolerance_note = ""
+                    if tolerance_buffer > 0:
+                        tolerance_note = f" (with {item.waste_tolerance_percentage}% waste tolerance)"
                     raise ValidationError(
-                        f"Insufficient stock for {item.name}. "
+                        f"Insufficient stock for {item.name}{tolerance_note}. "
                         f"Available: {available}, Additional needed: {additional_qty_needed}"
                     )
             # If reducing quantity or same, no stock check needed
         else:
-            # This is a create - check full quantity
+            # This is a create - check full quantity with tolerance
             available = stock.quantity - stock.reserved_quantity
-            if qty > available:
+            qty_dec = Decimal(str(qty))
+            tolerance_buffer = StockReservationManager._get_tolerance_buffer(item, qty_dec)
+            minimum_required = max(qty_dec - tolerance_buffer, Decimal('0'))
+
+            if available < minimum_required:
+                tolerance_note = ""
+                if tolerance_buffer > 0:
+                    tolerance_note = f" (with {item.waste_tolerance_percentage}% waste tolerance)"
                 raise ValidationError(
-                    f"Insufficient stock for {item.name}. "
+                    f"Insufficient stock for {item.name}{tolerance_note}. "
                     f"Available: {available}, Requested: {qty}"
                 )
 
