@@ -557,7 +557,12 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             appliance.brand = unit.model.brand.name if unit.model and unit.model.brand else ''
             appliance.model = unit.model.name if unit.model else ''
             appliance.serial_number = unit.serial_number
-            appliance.unit_price = None  # brand_new uses model retail price
+            # Support unit_price override for brand_new units
+            unit_price = install_data.get('unit_price')
+            if unit_price is not None:
+                appliance.unit_price = Decimal(str(unit_price))
+            else:
+                appliance.unit_price = None  # brand_new uses model selling price
             appliance.save(update_fields=['brand', 'model', 'serial_number', 'unit_price'])
 
             # Recalculate revenue
@@ -619,7 +624,13 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             appliance.brand = unit.model.brand.name if unit.model and unit.model.brand else ''
             appliance.model = unit.model.name if unit.model else ''
             appliance.serial_number = unit.serial_number
-            appliance.save(update_fields=['brand', 'model', 'serial_number'])
+            # Support unit_price override for brand_new units
+            unit_price = install_data.get('unit_price')
+            if unit_price is not None:
+                appliance.unit_price = Decimal(str(unit_price))
+            else:
+                appliance.unit_price = None  # brand_new uses model selling price
+            appliance.save(update_fields=['brand', 'model', 'serial_number', 'unit_price'])
             
             # Recalculate service revenue to include unit price
             RevenueCalculator.calculate_service_revenue(service, save=True)

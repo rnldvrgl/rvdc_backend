@@ -274,8 +274,15 @@ class RevenueCalculator:
         if service.service_type == 'installation':
             for unit in service.installation_units.all():
                 if unit.model:
-                    # Use promo_price which includes any discounts
-                    main_revenue += unit.model.promo_price
+                    # Check if there's an appliance with a custom unit_price override
+                    matching_appliance = service.appliances.filter(
+                        serial_number=unit.serial_number
+                    ).first()
+                    if matching_appliance and matching_appliance.unit_price:
+                        main_revenue += matching_appliance.unit_price
+                    else:
+                        # Use selling_price which is promo_price if set, else retail
+                        main_revenue += unit.model.selling_price
 
         # Calculate parts revenue (Sub stall revenue) with discounts
         for appliance in service.appliances.all():
@@ -502,14 +509,23 @@ class ServiceCompletionHandler:
                     # Add aircon unit prices for installation services (Main stall revenue)
                     if service.service_type == 'installation':
                         for unit in service.installation_units.all():
-                            if unit.model and unit.model.promo_price > 0:
-                                SalesItem.objects.create(
-                                    transaction=main_receipt,
-                                    item=None,
-                                    description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
-                                    quantity=1,
-                                    final_price_per_unit=unit.model.promo_price,
-                                )
+                            if unit.model:
+                                # Check for custom unit_price override on linked appliance
+                                matching_appliance = service.appliances.filter(
+                                    serial_number=unit.serial_number
+                                ).first()
+                                if matching_appliance and matching_appliance.unit_price:
+                                    unit_final_price = matching_appliance.unit_price
+                                else:
+                                    unit_final_price = unit.model.selling_price
+                                if unit_final_price > 0:
+                                    SalesItem.objects.create(
+                                        transaction=main_receipt,
+                                        item=None,
+                                        description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                                        quantity=1,
+                                        final_price_per_unit=unit_final_price,
+                                    )
                     
                     # Link main receipt to service
                     service.related_transaction = main_receipt
@@ -589,14 +605,23 @@ class ServiceCompletionHandler:
         # Add aircon unit prices for installation services (Main stall revenue)
         if service.service_type == 'installation':
             for unit in service.installation_units.all():
-                if unit.model and unit.model.promo_price > 0:
-                    SalesItem.objects.create(
-                        transaction=receipt,
-                        item=None,
-                        description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
-                        quantity=1,
-                        final_price_per_unit=unit.model.promo_price,
-                    )
+                if unit.model:
+                    # Check for appliance-level unit_price override
+                    matching_appliance = service.appliances.filter(
+                        serial_number=unit.serial_number
+                    ).first()
+                    if matching_appliance and matching_appliance.unit_price:
+                        unit_price = matching_appliance.unit_price
+                    else:
+                        unit_price = unit.model.selling_price
+                    if unit_price > 0:
+                        SalesItem.objects.create(
+                            transaction=receipt,
+                            item=None,
+                            description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                            quantity=1,
+                            final_price_per_unit=unit_price,
+                        )
 
         # Add parts charges
         for appliance in service.appliances.all():
@@ -801,14 +826,23 @@ class ServicePaymentManager:
             # Add aircon unit prices for installation services (Main stall revenue)
             if service.service_type == 'installation':
                 for unit in service.installation_units.all():
-                    if unit.model and unit.model.promo_price > 0:
-                        SalesItem.objects.create(
-                            transaction=sales_transaction,
-                            item=None,
-                            description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
-                            quantity=1,
-                            final_price_per_unit=unit.model.promo_price,
-                        )
+                    if unit.model:
+                        # Check for appliance-level unit_price override
+                        matching_appliance = service.appliances.filter(
+                            serial_number=unit.serial_number
+                        ).first()
+                        if matching_appliance and matching_appliance.unit_price:
+                            unit_price = matching_appliance.unit_price
+                        else:
+                            unit_price = unit.model.selling_price
+                        if unit_price > 0:
+                            SalesItem.objects.create(
+                                transaction=sales_transaction,
+                                item=None,
+                                description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                                quantity=1,
+                                final_price_per_unit=unit_price,
+                            )
             
             # Collect all parts from all appliances
             parts_to_add = []
@@ -948,14 +982,23 @@ class ServicePaymentManager:
                 # Add aircon unit prices for installation services (Main stall revenue)
                 if service.service_type == 'installation':
                     for unit in service.installation_units.all():
-                        if unit.model and unit.model.promo_price > 0:
-                            SalesItem.objects.create(
-                                transaction=sales_transaction,
-                                item=None,
-                                description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
-                                quantity=1,
-                                final_price_per_unit=unit.model.promo_price,
-                            )
+                        if unit.model:
+                            # Check for appliance-level unit_price override
+                            matching_appliance = service.appliances.filter(
+                                serial_number=unit.serial_number
+                            ).first()
+                            if matching_appliance and matching_appliance.unit_price:
+                                unit_price = matching_appliance.unit_price
+                            else:
+                                unit_price = unit.model.selling_price
+                            if unit_price > 0:
+                                SalesItem.objects.create(
+                                    transaction=sales_transaction,
+                                    item=None,
+                                    description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                                    quantity=1,
+                                    final_price_per_unit=unit_price,
+                                )
                 
                 # Collect all parts from all appliances
                 parts_to_add = []

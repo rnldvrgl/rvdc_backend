@@ -20,9 +20,9 @@ class ModelPriceHistorySerializer(serializers.ModelSerializer):
             "id",
             "aircon_model",
             "retail_price",
-            "discount_percentage",
+            "promo_price",
             "old_retail_price",
-            "old_discount_percentage",
+            "old_promo_price",
             "effective_price",
             "price_change_amount",
             "change_type",
@@ -49,7 +49,7 @@ class AirconModelSerializer(serializers.ModelSerializer):
         source="brand", queryset=AirconBrand.objects.all(), write_only=True
     )
     has_discount = serializers.ReadOnlyField()
-    promo_price = serializers.ReadOnlyField()
+    selling_price = serializers.ReadOnlyField()
     parts_warranty_years = serializers.ReadOnlyField()
     labor_warranty_years = serializers.ReadOnlyField()
     price_history = ModelPriceHistorySerializer(many=True, read_only=True)
@@ -65,10 +65,10 @@ class AirconModelSerializer(serializers.ModelSerializer):
             "cost_price",
             "aircon_type",
             "horsepower",
-            "discount_percentage",
+            "promo_price",
             "is_inverter",
             "has_discount",
-            "promo_price",
+            "selling_price",
             "parts_warranty_months",
             "labor_warranty_months",
             "parts_warranty_years",

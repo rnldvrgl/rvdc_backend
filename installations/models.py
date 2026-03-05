@@ -28,11 +28,12 @@ class AirconModel(models.Model):
         default=Decimal("0.00"),
         help_text="Dealer/purchase cost price of this aircon model.",
     )
-    discount_percentage = models.DecimalField(
-        max_digits=5,
+    promo_price = models.DecimalField(
+        max_digits=10,
         decimal_places=2,
-        default=Decimal("0.00"),
-        help_text="Discount percentage applied to retail price (0–100).",
+        null=True,
+        blank=True,
+        help_text="Manual promotional price. If set and less than retail, this is the selling price.",
     )
     aircon_type = models.CharField(
         max_length=30, choices=AirconType.choices, default=AirconType.WINDOW
@@ -75,16 +76,18 @@ class AirconModel(models.Model):
 
     @property
     def has_discount(self) -> bool:
-        """Returns True if the model has a valid discount applied."""
-        return self.discount_percentage > 0
+        """Returns True if the model has a valid promo price set below retail."""
+        return (
+            self.promo_price is not None
+            and self.promo_price > 0
+            and self.promo_price < self.retail_price
+        )
 
     @property
-    def promo_price(self) -> Decimal:
-        """Final price after applying discount, if any."""
+    def selling_price(self) -> Decimal:
+        """Final selling price: promo_price if set and valid, else retail_price."""
         if self.has_discount:
-            discount_fraction = self.discount_percentage / Decimal("100")
-            discount_amount = self.retail_price * discount_fraction
-            return self.retail_price - discount_amount
+            return self.promo_price
         return self.retail_price
 
     def save(self, *args, **kwargs):
@@ -92,13 +95,13 @@ class AirconModel(models.Model):
         track_history = kwargs.pop("track_history", True)
         is_new = self.pk is None
         old_retail = None
-        old_discount = None
+        old_promo = None
 
         if not is_new and track_history:
             try:
                 old = AirconModel.objects.get(pk=self.pk)
                 old_retail = old.retail_price
-                old_discount = old.discount_percentage
+                old_promo = old.promo_price
             except AirconModel.DoesNotExist:
                 pass
 
@@ -110,21 +113,21 @@ class AirconModel(models.Model):
                 ModelPriceHistory.objects.create(
                     aircon_model=self,
                     retail_price=self.retail_price,
-                    discount_percentage=self.discount_percentage,
+                    promo_price=self.promo_price,
                     change_type="initial",
                     notes="Initial price set on model creation",
                 )
             elif old_retail is not None:
                 price_changed = old_retail != self.retail_price
-                discount_changed = old_discount != self.discount_percentage
-                if price_changed or discount_changed:
-                    change_type = "price_and_discount" if (price_changed and discount_changed) else ("price" if price_changed else "discount")
+                promo_changed = old_promo != self.promo_price
+                if price_changed or promo_changed:
+                    change_type = "price_and_promo" if (price_changed and promo_changed) else ("price" if price_changed else "promo")
                     ModelPriceHistory.objects.create(
                         aircon_model=self,
                         retail_price=self.retail_price,
-                        discount_percentage=self.discount_percentage,
+                        promo_price=self.promo_price,
                         old_retail_price=old_retail,
-                        old_discount_percentage=old_discount,
+                        old_promo_price=old_promo,
                         change_type=change_type,
                     )
 
@@ -135,8 +138,8 @@ class ModelPriceHistory(models.Model):
     CHANGE_TYPE_CHOICES = [
         ("initial", "Initial Price"),
         ("price", "Price Change"),
-        ("discount", "Discount Change"),
-        ("price_and_discount", "Price & Discount Change"),
+        ("promo", "Promo Price Change"),
+        ("price_and_promo", "Price & Promo Change"),
     ]
 
     aircon_model = models.ForeignKey(
@@ -145,16 +148,17 @@ class ModelPriceHistory(models.Model):
         related_name="price_history",
     )
     retail_price = models.DecimalField(max_digits=10, decimal_places=2)
-    discount_percentage = models.DecimalField(
-        max_digits=5, decimal_places=2, default=Decimal("0.00")
+    promo_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Promo price at this point in history",
     )
     old_retail_price = models.DecimalField(
         max_digits=10, decimal_places=2, null=True, blank=True,
         help_text="Previous retail price (null for initial)",
     )
-    old_discount_percentage = models.DecimalField(
-        max_digits=5, decimal_places=2, null=True, blank=True,
-        help_text="Previous discount percentage (null for initial)",
+    old_promo_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Previous promo price (null for initial)",
     )
     change_type = models.CharField(
         max_length=20, choices=CHANGE_TYPE_CHOICES, default="price"
@@ -169,10 +173,9 @@ class ModelPriceHistory(models.Model):
 
     @property
     def effective_price(self) -> Decimal:
-        """Computed promo price at this point in history."""
-        if self.discount_percentage > 0:
-            discount_fraction = self.discount_percentage / Decimal("100")
-            return self.retail_price - (self.retail_price * discount_fraction)
+        """Effective selling price at this point in history."""
+        if self.promo_price and self.promo_price > 0 and self.promo_price < self.retail_price:
+            return self.promo_price
         return self.retail_price
 
     @property
@@ -183,7 +186,7 @@ class ModelPriceHistory(models.Model):
         return None
 
     def __str__(self):
-        return f"{self.aircon_model} - ₱{self.retail_price} ({self.change_type}) @ {self.changed_at}"
+        return f"{self.aircon_model} - ₱{self.retail_price} (promo: {self.promo_price or 'N/A'}) ({self.change_type}) @ {self.changed_at}"
 
 
 class AirconUnit(models.Model):
@@ -273,7 +276,7 @@ class AirconUnit(models.Model):
                     {"installation_service": "Service must be an INSTALLATION service."}
                 )
             tx = self.installation_service.related_transaction
-            if tx and self.sale != tx:
+            if tx and self.sale and self.sale != tx:
                 raise ValidationError(
                     {"sale": "Sale must match the installation's transaction."}
                 )
@@ -442,9 +445,9 @@ class AirconUnit(models.Model):
 
     @property
     def sale_price(self):
-        """Get the actual sale price (promo price if available, else retail)."""
+        """Get the actual sale price (selling price from model)."""
         if self.model:
-            return self.model.promo_price
+            return self.model.selling_price
         return Decimal("0.00")
 
     def __str__(self):
