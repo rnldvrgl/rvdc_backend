@@ -27,7 +27,6 @@ class AirconModelAdmin(admin.ModelAdmin):
         "promo_price",
         "aircon_type",
         "is_inverter",
-        "discount_percentage",
         "has_discount",
     ]
     list_filter = ["brand", "aircon_type", "horsepower", "is_inverter"]
@@ -39,8 +38,8 @@ class PriceHistoryInline(admin.TabularInline):
     model = ModelPriceHistory
     extra = 0
     readonly_fields = [
-        "retail_price", "discount_percentage", "old_retail_price",
-        "old_discount_percentage", "change_type", "notes", "changed_at",
+        "retail_price", "promo_price", "old_retail_price",
+        "old_promo_price", "change_type", "notes", "changed_at",
     ]
     ordering = ["-changed_at"]
 
@@ -52,7 +51,7 @@ AirconModelAdmin.inlines = [PriceHistoryInline]
 @admin.register(ModelPriceHistory)
 class ModelPriceHistoryAdmin(admin.ModelAdmin):
     list_display = [
-        "id", "aircon_model", "retail_price", "discount_percentage",
+        "id", "aircon_model", "retail_price", "promo_price",
         "change_type", "changed_at",
     ]
     list_filter = ["change_type", "aircon_model__brand"]
