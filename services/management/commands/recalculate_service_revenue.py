@@ -10,7 +10,7 @@ Usage:
 from django.core.management.base import BaseCommand
 from django.db.models import Q
 from services.models import Service
-from services.business_logic import RevenueCalculator
+from services.business_logic import RevenueCalculator, ServicePaymentManager
 
 
 class Command(BaseCommand):
@@ -77,6 +77,10 @@ class Command(BaseCommand):
                 new_main = result['main_revenue']
                 new_sub = result['sub_revenue']
                 new_total = result['total_revenue']
+
+                # Also sync sales transaction items (labor + unit prices)
+                if not dry_run:
+                    ServicePaymentManager.sync_sales_items(service)
 
                 # Check if changed
                 if old_main != new_main or old_sub != new_sub or old_total != new_total:
