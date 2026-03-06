@@ -1047,14 +1047,18 @@ class WeeklyPayroll(models.Model):
                 source_id = None
                 
                 # Priority 1: Check for employee-specific override first (highest priority)
+                # Use week_end for effective_start check so overrides starting
+                # mid-week are picked up (e.g. override starts Friday, week
+                # starts Saturday prior).
+                week_end_date = self.week_end or (self.week_start + timedelta(days=6))
                 override = EmployeeBenefitOverride.objects.filter(
                     employee=self.employee,
                     benefit_type=benefit_type,
                     is_active=True,
-                    effective_start__lte=self.week_start,
+                    effective_start__lte=week_end_date,
                 ).filter(
                     models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
-                ).first()
+                ).order_by('-effective_start').first()
                 
                 if override:
                     # Use override amount (weekly fixed)
@@ -1066,10 +1070,10 @@ class WeeklyPayroll(models.Model):
                     govt_benefit = GovernmentBenefit.objects.filter(
                         benefit_type=benefit_type,
                         is_active=True,
-                        effective_start__lte=self.week_start,
+                        effective_start__lte=week_end_date,
                     ).filter(
                         models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
-                    ).first()
+                    ).order_by('-effective_start').first()
                     
                     if govt_benefit:
                         # Use GovernmentBenefit's calculation method
