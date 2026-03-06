@@ -10,6 +10,7 @@ from inventory.api.serializers import (
     ItemSerializer,
     ProductCategorySerializer,
     StallSerializer,
+    StockAuditSerializer,
     StockPatchSerializer,
     StockReadSerializer,
     StockRestockSerializer,
@@ -334,6 +335,92 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 "quantity": float(stock.quantity),
             }
         )
+
+    @action(detail=True, methods=["get", "post"], permission_classes=[IsAdminUser], url_path="audit")
+    @transaction.atomic
+    def audit(self, request, pk=None):
+        """
+        Stock audit/reconciliation tool (admin only).
+        
+        GET: Returns the current stock breakdown and active reservations.
+        POST: Accepts physical_count and adjusts system quantity to match,
+              preserving reserved_quantity.
+        """
+        from services.models import ApplianceItemUsed, Service
+
+        stock = self.get_object()
+
+        # Gather active services that have reserved items from this stock
+        active_statuses = ["pending", "in_progress", "on_hold"]
+        reserved_items = (
+            ApplianceItemUsed.objects.filter(
+                stall_stock=stock,
+                is_cancelled=False,
+                appliance__service__status__in=active_statuses,
+            )
+            .select_related(
+                "appliance__service__client",
+                "item",
+            )
+            .order_by("-appliance__service__created_at")
+        )
+
+        reservations = []
+        for aiu in reserved_items:
+            service = aiu.appliance.service
+            reservations.append({
+                "service_id": service.id,
+                "client_name": str(service.client) if service.client else "N/A",
+                "service_type": service.service_type,
+                "service_status": service.status,
+                "item_name": aiu.item.name if aiu.item else "N/A",
+                "quantity_used": float(aiu.quantity),
+                "created_at": service.created_at.isoformat(),
+            })
+
+        breakdown = {
+            "stock_id": stock.id,
+            "item_name": stock.item.name,
+            "item_unit": stock.item.unit_of_measure,
+            "stall_name": stock.stall.name if stock.stall else "N/A",
+            "system_quantity": float(stock.quantity),
+            "reserved_quantity": float(stock.reserved_quantity),
+            "available_quantity": float(stock.available_quantity),
+            "reservations": reservations,
+        }
+
+        if request.method == "GET":
+            return Response(breakdown)
+
+        # POST - reconcile
+        serializer = StockAuditSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        physical_count = serializer.validated_data["physical_count"]
+
+        old_quantity = stock.quantity
+        # The physical count represents the TOTAL items physically present,
+        # which includes items reserved for active services.
+        # So system quantity should be set to the physical count.
+        stock.quantity = physical_count
+
+        # Ensure reserved_quantity doesn't exceed new quantity
+        if stock.reserved_quantity > stock.quantity:
+            stock.reserved_quantity = stock.quantity
+
+        stock.save(update_fields=["quantity", "reserved_quantity", "updated_at"])
+
+        discrepancy = float(physical_count) - float(old_quantity)
+
+        return Response({
+            **breakdown,
+            "system_quantity": float(stock.quantity),
+            "reserved_quantity": float(stock.reserved_quantity),
+            "available_quantity": float(stock.available_quantity),
+            "physical_count": float(physical_count),
+            "old_quantity": float(old_quantity),
+            "discrepancy": discrepancy,
+            "adjusted": True,
+        })
 
 
 class StockRoomStockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):

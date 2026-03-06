@@ -191,3 +191,12 @@ class StockRestockSerializer(serializers.Serializer):
         if value <= 0:
             raise serializers.ValidationError("Quantity must be a positive number.")
         return value
+
+
+class StockAuditSerializer(serializers.Serializer):
+    physical_count = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal('0'))
+
+    def validate_physical_count(self, value):
+        if value < 0:
+            raise serializers.ValidationError("Physical count cannot be negative.")
+        return value
