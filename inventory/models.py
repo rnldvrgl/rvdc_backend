@@ -185,11 +185,8 @@ class Stock(models.Model):
                 raise ValidationError(
                     "Stock can only be associated with the Sub stall (inventory_enabled=True)."
                 )
-            # Optional: strict by name/location if flags are misconfigured
-            if (self.stall.name or "").strip() != "Sub" or (
-                self.stall.location or ""
-            ).strip() != "Parts":
-                raise ValidationError("Stock must be in Sub (Parts) stall only.")
+            if getattr(self.stall, "stall_type", None) != "sub":
+                raise ValidationError("Stock must be in Sub stall only.")
 
     @property
     def available_quantity(self):
