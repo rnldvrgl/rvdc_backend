@@ -1,6 +1,7 @@
 import uuid
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -177,18 +178,18 @@ class Stock(models.Model):
         if self.stall:
             # Require system-managed Sub stall as the only inventory owner
             if not getattr(self.stall, "is_system", False):
-                raise ValueError(
+                raise ValidationError(
                     "Stock can only be associated with system-managed Sub stall."
                 )
             if not getattr(self.stall, "inventory_enabled", False):
-                raise ValueError(
+                raise ValidationError(
                     "Stock can only be associated with the Sub stall (inventory_enabled=True)."
                 )
             # Optional: strict by name/location if flags are misconfigured
             if (self.stall.name or "").strip() != "Sub" or (
                 self.stall.location or ""
             ).strip() != "Parts":
-                raise ValueError("Stock must be in Sub (Parts) stall only.")
+                raise ValidationError("Stock must be in Sub (Parts) stall only.")
 
     @property
     def available_quantity(self):
