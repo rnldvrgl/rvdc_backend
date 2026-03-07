@@ -17,7 +17,7 @@ from utils.inventory import (
 class ProductCategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = ProductCategory
-        fields = ["id", "name", "description", "created_at", "updated_at"]
+        fields = ["id", "name", "created_at", "updated_at"]
         read_only_fields = ["created_at", "updated_at"]
 
     def validate_name(self, value):
@@ -40,7 +40,7 @@ class ItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Item
-        exclude = ["created_at", "updated_at", "is_deleted"]
+        exclude = ["created_at", "updated_at", "is_deleted", "description"]
 
     def get_display_name(self, obj):
         return f"{obj.name} (Deleted)" if obj.is_deleted else obj.name

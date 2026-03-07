@@ -67,6 +67,7 @@ class DailyAttendance(models.Model):
         ('PARTIAL', 'Partial Hours'),
         ('ABSENT', 'Absent'),
         ('LEAVE', 'On Leave'),
+        ('SHOP_CLOSED', 'Shop Closed'),
         ('INVALID', 'Invalid'),
     ]
     
@@ -213,8 +214,8 @@ class DailyAttendance(models.Model):
                     'clock_out': 'Clock-out time must be after clock-in time.'
                 })
         
-        # LEAVE and ABSENT types should not have clock times
-        if self.attendance_type in ['LEAVE', 'ABSENT']:
+        # LEAVE, ABSENT, and SHOP_CLOSED types should not have clock times
+        if self.attendance_type in ['LEAVE', 'ABSENT', 'SHOP_CLOSED']:
             if self.clock_in or self.clock_out:
                 raise ValidationError(
                     'LEAVE and ABSENT attendance types should not have clock-in/out times.'
@@ -239,7 +240,7 @@ class DailyAttendance(models.Model):
         - INVALID/REJECTED → Unexcused ✓
         """
         # Full day work or full day leave with approval → Excused
-        if self.attendance_type in ['FULL_DAY', 'LEAVE']:
+        if self.attendance_type in ['FULL_DAY', 'LEAVE', 'SHOP_CLOSED']:
             return False
         
         # Full absence without leave → Unexcused
@@ -987,6 +988,8 @@ class LeaveBalance(models.Model):
             return self.sick_leave_remaining >= days
         elif leave_type == 'EMERGENCY':
             return self.emergency_leave_remaining >= days
+        elif leave_type == 'SPECIAL':
+            return True
         return False
     
     def deduct_leave(self, leave_type: str, days: Decimal = Decimal('1.00')):
@@ -1050,6 +1053,7 @@ class LeaveRequest(models.Model):
     LEAVE_TYPE_CHOICES = [
         ('SICK', 'Sick Leave'),
         ('EMERGENCY', 'Emergency Leave'),
+        ('SPECIAL', 'Special Leave'),
     ]
     
     STATUS_CHOICES = [

@@ -373,9 +373,14 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         Required fields:
         - employee_ids: List of employee IDs to mark absent
         - date: Date to mark absent for (YYYY-MM-DD)
+        
+        Optional fields:
+        - reason: 'shop_closed' to mark as Shop Closed (no AWOL counting)
         """
         employee_ids = request.data.get('employee_ids', [])
         target_date = request.data.get('date')
+        reason = request.data.get('reason', '')
+        is_shop_closed = reason == 'shop_closed'
 
         if not employee_ids:
             return Response(
@@ -415,8 +420,8 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 defaults={'attendance_type': 'PENDING'},
             )
 
-            # Skip if already marked as ABSENT or LEAVE
-            if attendance.attendance_type in ['ABSENT', 'LEAVE']:
+            # Skip if already marked as ABSENT, LEAVE, or SHOP_CLOSED
+            if attendance.attendance_type in ['ABSENT', 'LEAVE', 'SHOP_CLOSED']:
                 skipped.append({
                     'employee_id': employee.id,
                     'name': employee.get_full_name(),
@@ -433,13 +438,29 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 })
                 continue
 
-            attendance.mark_absent()
+            if is_shop_closed:
+                from decimal import Decimal
+                attendance.attendance_type = 'SHOP_CLOSED'
+                attendance.consecutive_absences = 0
+                attendance.is_awol = False
+                attendance.clock_in = None
+                attendance.clock_out = None
+                attendance.total_hours = Decimal('0.00')
+                attendance.paid_hours = Decimal('0.00')
+                attendance.break_hours = Decimal('0.00')
+                attendance.is_late = False
+                attendance.late_minutes = 0
+                attendance.late_penalty_amount = Decimal('0.00')
+                attendance.status = 'APPROVED'
+            else:
+                attendance.mark_absent()
             attendance.save()
             marked_count += 1
 
+        action_label = 'shop closed' if is_shop_closed else 'absent'
         return Response(
             {
-                'detail': f'{marked_count} employee(s) marked as absent for {target_date}.',
+                'detail': f'{marked_count} employee(s) marked as {action_label} for {target_date}.',
                 'marked_count': marked_count,
                 'skipped': skipped,
             },
@@ -690,12 +711,13 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Deduct balance
+        # Deduct balance (skip for SPECIAL leave - no balance consumed)
         if leave_type == 'SICK':
             leave_balance.sick_leave_used += days_count
+            leave_balance.save()
         elif leave_type == 'EMERGENCY':
             leave_balance.emergency_leave_used += days_count
-        leave_balance.save()
+            leave_balance.save()
 
         # Create the leave request
         leave_request = LeaveRequest.objects.create(**validated_data)

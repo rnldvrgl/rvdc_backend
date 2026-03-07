@@ -204,7 +204,7 @@ class RejectLeaveSerializer(serializers.Serializer):
 class ValidateLeaveBalanceSerializer(serializers.Serializer):
     """Serializer for validating leave balance before submission."""
     employee = serializers.IntegerField(required=False, help_text='Employee ID (optional for admin, auto-set for others)')
-    leave_type = serializers.ChoiceField(choices=['SICK', 'EMERGENCY'])
+    leave_type = serializers.ChoiceField(choices=['SICK', 'EMERGENCY', 'SPECIAL'])
     start_date = serializers.DateField()
     end_date = serializers.DateField()
     is_half_day = serializers.BooleanField(default=False)

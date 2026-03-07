@@ -510,6 +510,47 @@ class StockRoomStockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             }
         )
 
+    @action(detail=True, methods=["get", "post"], permission_classes=[IsAdminUser], url_path="audit")
+    @transaction.atomic
+    def audit(self, request, pk=None):
+        """
+        Stock room audit/reconciliation tool (admin only).
+
+        GET: Returns the current stock breakdown.
+        POST: Accepts physical_count and adjusts system quantity to match.
+        """
+        stock = self.get_object()
+
+        breakdown = {
+            "stock_id": stock.id,
+            "item_name": stock.item.name,
+            "item_unit": stock.item.unit_of_measure,
+            "system_quantity": float(stock.quantity),
+        }
+
+        if request.method == "GET":
+            return Response(breakdown)
+
+        # POST - reconcile
+        serializer = StockAuditSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        physical_count = serializer.validated_data["physical_count"]
+
+        old_quantity = stock.quantity
+        stock.quantity = physical_count
+        stock.save(update_fields=["quantity", "updated_at"])
+
+        discrepancy = float(physical_count) - float(old_quantity)
+
+        return Response({
+            **breakdown,
+            "system_quantity": float(stock.quantity),
+            "physical_count": float(physical_count),
+            "old_quantity": float(old_quantity),
+            "discrepancy": discrepancy,
+            "adjusted": True,
+        })
+
 
 class ProductCategoryViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     queryset = ProductCategory.objects.all()
