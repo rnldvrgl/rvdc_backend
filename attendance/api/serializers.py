@@ -380,12 +380,15 @@ class HalfDayScheduleSerializer(serializers.ModelSerializer):
     """Serializer for HalfDaySchedule model."""
     
     created_by_name = serializers.SerializerMethodField()
+    schedule_type_display = serializers.CharField(source='get_schedule_type_display', read_only=True)
     
     class Meta:
         model = HalfDaySchedule
         fields = [
             'id',
             'date',
+            'schedule_type',
+            'schedule_type_display',
             'reason',
             'created_by',
             'created_by_name',
@@ -393,7 +396,7 @@ class HalfDayScheduleSerializer(serializers.ModelSerializer):
             'updated_at',
             'is_deleted',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'created_by_name']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by', 'created_by_name', 'schedule_type_display']
     
     def get_created_by_name(self, obj):
         """Get full name of the user who created the schedule."""

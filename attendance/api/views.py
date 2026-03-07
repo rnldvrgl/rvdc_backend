@@ -1262,6 +1262,11 @@ class HalfDayScheduleViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         """Get non-deleted half-day schedules."""
         queryset = HalfDaySchedule.objects.filter(is_deleted=False).select_related('created_by')
         
+        # Filter by schedule type if provided
+        schedule_type = self.request.query_params.get('schedule_type')
+        if schedule_type:
+            queryset = queryset.filter(schedule_type=schedule_type)
+        
         # Filter by date range if provided
         start_date = self.request.query_params.get('start_date')
         end_date = self.request.query_params.get('end_date')

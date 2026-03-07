@@ -742,6 +742,7 @@ class DailyAttendance(models.Model):
         is_forced_half_day = HalfDaySchedule.objects.filter(
             date=local_date,
             is_deleted=False,
+            schedule_type='half_day',
         ).exists()
         
         if is_forced_half_day:
@@ -750,6 +751,23 @@ class DailyAttendance(models.Model):
             self.break_hours = total_break
             self.paid_hours = min(work_hours_after_break, Decimal("4.00"))
             self._update_awol_tracking()
+            return
+
+        # Check if this date is a shop-closed schedule (admin-designated)
+        is_shop_closed_day = HalfDaySchedule.objects.filter(
+            date=local_date,
+            is_deleted=False,
+            schedule_type='shop_closed',
+        ).exists()
+
+        if is_shop_closed_day:
+            self.attendance_type = "SHOP_CLOSED"
+            self.break_hours = Decimal("0.00")
+            self.paid_hours = Decimal("0.00")
+            self.total_hours = Decimal("0.00")
+            self.consecutive_absences = 0
+            self.is_awol = False
+            self.status = "APPROVED"
             return
 
         # Check for approved leave to determine expected shift
@@ -1439,17 +1457,30 @@ class OvertimeRequest(models.Model):
 
 class HalfDaySchedule(models.Model):
     """
-    Admin-designated half-day schedule.
+    Admin-designated day schedule override.
     
     When an admin marks a specific date as a half-day, all employees'
     attendance on that date will be capped at 4 paid hours (half-day),
     regardless of how long they actually worked.
     
+    When marked as shop-closed, all employees will automatically get
+    SHOP_CLOSED attendance with 0 paid hours for that date.
+    
     This is used for occasions like company events, holidays-eve,
-    or any date the admin decides should only be a half-day work schedule.
+    shop closures, or any date the admin decides should have a schedule override.
     """
     
+    SCHEDULE_TYPE_CHOICES = [
+        ('half_day', 'Half Day'),
+        ('shop_closed', 'Shop Closed'),
+    ]
+    
     date = models.DateField(unique=True)
+    schedule_type = models.CharField(
+        max_length=20,
+        choices=SCHEDULE_TYPE_CHOICES,
+        default='half_day',
+    )
     reason = models.CharField(max_length=200, blank=True, default='')
     created_by = models.ForeignKey(
         'users.CustomUser',
@@ -1467,7 +1498,9 @@ class HalfDaySchedule(models.Model):
         indexes = [
             models.Index(fields=['date']),
             models.Index(fields=['is_deleted']),
+            models.Index(fields=['schedule_type']),
         ]
     
     def __str__(self):
-        return f"Half Day - {self.date} ({self.reason})"
+        type_label = 'Shop Closed' if self.schedule_type == 'shop_closed' else 'Half Day'
+        return f"{type_label} - {self.date} ({self.reason})"
