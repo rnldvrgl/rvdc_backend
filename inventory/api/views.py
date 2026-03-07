@@ -218,6 +218,23 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         return get_role_based_filter_response(request, filters_config, ordering_config)
 
+    @action(detail=False, methods=["get"], url_path="status-counts")
+    def status_counts(self, request):
+        qs = self.get_queryset()
+        no_stock = qs.filter(available_expr__lte=0).count()
+        low_stock = qs.filter(
+            available_expr__gt=0,
+            available_expr__lte=models.F("low_stock_threshold"),
+        ).count()
+        high_stock = qs.filter(
+            available_expr__gt=models.F("low_stock_threshold"),
+        ).count()
+        return Response({
+            "no_stock": no_stock,
+            "low_stock": low_stock,
+            "high_stock": high_stock,
+        })
+
     @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
     @transaction.atomic
     def restock(self, request, pk=None):
@@ -457,6 +474,23 @@ class StockRoomStockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         ]
 
         return get_role_based_filter_response(request, filters_config, ordering_config)
+
+    @action(detail=False, methods=["get"], url_path="status-counts")
+    def status_counts(self, request):
+        qs = self.get_queryset()
+        no_stock = qs.filter(quantity=0).count()
+        low_stock = qs.filter(
+            quantity__gt=0,
+            quantity__lte=models.F("low_stock_threshold"),
+        ).count()
+        high_stock = qs.filter(
+            quantity__gt=models.F("low_stock_threshold"),
+        ).count()
+        return Response({
+            "no_stock": no_stock,
+            "low_stock": low_stock,
+            "high_stock": high_stock,
+        })
 
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUser])
     @transaction.atomic

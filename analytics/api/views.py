@@ -124,10 +124,12 @@ class SummaryStatsView(APIView):
         else:
             stock_qs = Stock.objects.filter(
                 is_deleted=False, track_stock=True, **stall_filter
+            ).annotate(
+                available_expr=F('quantity') - F('reserved_quantity')
             )
-            no_stock_count = stock_qs.filter(quantity=0).count()
+            no_stock_count = stock_qs.filter(available_expr__lte=0).count()
             low_stock_count = stock_qs.filter(
-                quantity__gt=0, quantity__lte=F("low_stock_threshold")
+                available_expr__gt=0, available_expr__lte=F("low_stock_threshold")
             ).count()
 
         # Expenses
