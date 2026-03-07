@@ -179,7 +179,7 @@ class DeductionsField(serializers.Field):
 
 class WeeklyPayrollSerializer(serializers.ModelSerializer):
 
-    employee_detail = MinimalUserSerializer(source=\"employee\", read_only=True)
+    employee_detail = MinimalUserSerializer(source="employee", read_only=True)
     employee_name = serializers.SerializerMethodField(read_only=True)
     week_end = serializers.DateField(required=False, allow_null=True)
     total_hours = serializers.SerializerMethodField(read_only=True)
@@ -188,7 +188,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
     employee = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(), required=True
     )
-    status_display = serializers.CharField(source=\"get_status_display\", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
 
     class Meta:
         model = WeeklyPayroll
