@@ -179,7 +179,7 @@ class DeductionsField(serializers.Field):
 
 class WeeklyPayrollSerializer(serializers.ModelSerializer):
 
-    employee_detail = MinimalUserSerializer(source="employee", read_only=True)
+    employee_detail = MinimalUserSerializer(source=\"employee\", read_only=True)
     employee_name = serializers.SerializerMethodField(read_only=True)
     week_end = serializers.DateField(required=False, allow_null=True)
     total_hours = serializers.SerializerMethodField(read_only=True)
@@ -188,8 +188,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
     employee = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(), required=True
     )
-    received_by_detail = MinimalUserSerializer(source="received_by", read_only=True)
-    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    status_display = serializers.CharField(source=\"get_status_display\", read_only=True)
 
     class Meta:
         model = WeeklyPayroll
@@ -222,12 +221,6 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "net_pay",
             "status",
             "status_display",
-            "received_at",
-            "received_by",
-            "received_by_detail",
-            "disputed",
-            "disputed_reason",
-            "disputed_at",
             "notes",
             "is_deleted",
             "created_at",
@@ -248,12 +241,6 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "holiday_pay_special",
             "holiday_pay_total",
             "total_deductions",
-            "received_at",
-            "received_by",
-            "received_by_detail",
-            "disputed",
-            "disputed_reason",
-            "disputed_at",
             "status_display",
             "created_at",
             "updated_at",

@@ -542,7 +542,6 @@ class WeeklyPayroll(models.Model):
         ("draft", "Draft"),
         ("approved", "Approved"),
         ("paid", "Paid"),
-        ("received", "Received"),
     ]
 
     employee = models.ForeignKey(

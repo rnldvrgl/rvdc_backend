@@ -884,12 +884,17 @@ class WeeklyPayrollRecomputeView(APIView):
     def post(self, request, pk: int, *args, **kwargs):
         payroll = self.get_object(pk)
 
-        # Prevent recomputing payrolls that have been paid or received
-        if payroll.status in ['paid', 'received']:
+        # Prevent recomputing payrolls that have been paid
+        if payroll.status == 'paid':
             return Response(
-                {"detail": "Cannot recompute payroll that has been paid or received."},
+                {"detail": "Cannot recompute payroll that has been paid."},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        # Refresh hourly_rate from employee's current basic_salary
+        employee = payroll.employee
+        if employee.basic_salary and employee.basic_salary > 0:
+            payroll.hourly_rate = Decimal(employee.basic_salary) / Decimal('8.00')
 
         include_unapproved = bool(request.data.get("include_unapproved") or False)
 
@@ -961,6 +966,7 @@ class WeeklyPayrollRecomputeView(APIView):
 
         payroll.save(
             update_fields=[
+                "hourly_rate",
                 "regular_hours",
                 "night_diff_hours",
                 "approved_ot_hours",
@@ -981,7 +987,6 @@ class WeeklyPayrollRecomputeView(APIView):
         )
 
         data = WeeklyPayrollSerializer(payroll).data
-        print(data)
 
         return Response(data, status=status.HTTP_200_OK)
 
@@ -1149,100 +1154,6 @@ class WeeklyPayrollBulkGenerateView(APIView):
             'skipped': skipped,
             'errors': errors
         }, status=status.HTTP_200_OK if not errors else status.HTTP_207_MULTI_STATUS)
-
-
-class WeeklyPayrollMarkReceivedView(APIView):
-    """
-    POST to mark a payroll as received by the employee.
-    Only allowed if status is 'paid'.
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_object(self, pk: int) -> WeeklyPayroll:
-        try:
-            return WeeklyPayroll.objects.get(pk=pk, is_deleted=False)
-        except WeeklyPayroll.DoesNotExist:
-            raise NotFound(detail="Payroll record not found.")
-
-    def post(self, request, pk: int, *args, **kwargs):
-        payroll = self.get_object(pk)
-
-        # Check if payroll belongs to user (unless admin)
-        if not request.user.role or request.user.role not in ['admin', 'manager']:
-            if payroll.employee_id != request.user.id:
-                return Response(
-                    {'detail': 'You can only mark your own payroll as received.'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-
-        # Check if payroll is paid
-        if payroll.status != 'paid':
-            return Response(
-                {'detail': 'Only paid payroll can be marked as received.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Mark as received
-        payroll.status = 'received'
-        payroll.received_at = timezone.now()
-        payroll.received_by = request.user
-        payroll.save(update_fields=['status', 'received_at', 'received_by', 'updated_at'])
-
-        return Response(
-            WeeklyPayrollSerializer(payroll).data,
-            status=status.HTTP_200_OK
-        )
-
-
-class WeeklyPayrollDisputeView(APIView):
-    """
-    POST to dispute a payroll record.
-    Request body:
-    - reason: string (required)
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_object(self, pk: int) -> WeeklyPayroll:
-        try:
-            return WeeklyPayroll.objects.get(pk=pk, is_deleted=False)
-        except WeeklyPayroll.DoesNotExist:
-            raise NotFound(detail="Payroll record not found.")
-
-    def post(self, request, pk: int, *args, **kwargs):
-        payroll = self.get_object(pk)
-
-        # Check if payroll belongs to user (unless admin)
-        if not request.user.role or request.user.role not in ['admin', 'manager']:
-            if payroll.employee_id != request.user.id:
-                return Response(
-                    {'detail': 'You can only dispute your own payroll.'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-
-        # Check if payroll is paid or received
-        if payroll.status not in ['paid', 'received']:
-            return Response(
-                {'detail': 'Only paid or received payroll can be disputed.'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        reason = request.data.get('reason', '').strip()
-        if not reason:
-            return Response(
-                {'reason': ['Dispute reason is required.']},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Mark as disputed
-        payroll.disputed = True
-        payroll.disputed_reason = reason
-        payroll.disputed_at = timezone.now()
-        payroll.save(update_fields=['disputed', 'disputed_reason', 'disputed_at', 'updated_at'])
-
-        return Response(
-            WeeklyPayrollSerializer(payroll).data,
-            status=status.HTTP_200_OK
-        )
 
 
 class WeeklyPayrollBulkUpdateStatusView(APIView):

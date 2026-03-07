@@ -73,18 +73,6 @@ urlpatterns = [
         views.WeeklyPayrollBulkUpdateStatusView.as_view(),
         name="weeklypayroll-bulk-update-status",
     ),
-    # Mark as received
-    path(
-        "weekly-payrolls/<int:pk>/mark-received/",
-        views.WeeklyPayrollMarkReceivedView.as_view(),
-        name="weeklypayroll-mark-received",
-    ),
-    # Dispute payroll
-    path(
-        "weekly-payrolls/<int:pk>/dispute/",
-        views.WeeklyPayrollDisputeView.as_view(),
-        name="weeklypayroll-dispute",
-    ),
     # Weekly payroll filters
     path(
         "weekly-payrolls/filters/",
