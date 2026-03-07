@@ -20,6 +20,7 @@ class CalendarEvent(models.Model):
     """
     
     EVENT_TYPES = [
+        ('birthday', 'Birthday'),
         ('meeting', 'Meeting'),
         ('maintenance', 'Maintenance'),
         ('training', 'Training'),
