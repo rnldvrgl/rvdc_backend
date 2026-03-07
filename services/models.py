@@ -282,14 +282,24 @@ class Service(models.Model):
 
     def update_payment_status(self):
         """Update payment status based on net paid (paid minus refunded) vs total revenue."""
+        from django.db.models import Sum
+
         # Complementary services don't require payment
         if self.is_complementary:
             self.payment_status = PaymentStatus.NOT_APPLICABLE
             self.save(update_fields=["payment_status"], skip_validation=True)
             return
-        
+
+        # Refresh total_revenue from DB to avoid stale in-memory values
+        self.refresh_from_db(fields=["total_revenue", "total_refunded"])
         total = self.total_revenue
-        net_paid = self.total_paid - (self.total_refunded or 0)
+
+        # Use DB aggregate to bypass prefetch cache and get accurate total
+        paid_result = ServicePayment.objects.filter(service_id=self.pk).aggregate(
+            total=Sum("amount")
+        )
+        total_paid = paid_result["total"] or Decimal("0")
+        net_paid = total_paid - (self.total_refunded or Decimal("0"))
 
         if net_paid <= 0:
             self.payment_status = PaymentStatus.UNPAID

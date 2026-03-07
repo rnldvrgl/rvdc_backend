@@ -327,6 +327,8 @@ class RevenueCalculator:
                 'total_revenue',
                 'updated_at'
             ])
+            # Recalculate payment status whenever revenue changes
+            service.update_payment_status()
 
         return {
             'main_revenue': main_revenue,
