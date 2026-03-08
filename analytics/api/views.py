@@ -1131,19 +1131,22 @@ class CalendarEventsView(APIView):
             date__gte=start_date,
             date__lte=end_date
         ).select_related('created_by').values(
-            'id', 'date', 'reason', 'created_by__first_name', 'created_by__last_name'
+            'id', 'date', 'reason', 'schedule_type', 'created_by__first_name', 'created_by__last_name'
         )
         
         for half_day in half_day_schedules:
-            reason = half_day['reason'] or 'Half Day'
+            is_shop_closed = half_day['schedule_type'] == 'shop_closed'
+            default_label = 'Shop Closed' if is_shop_closed else 'Half Day'
+            reason = half_day['reason'] or default_label
+            event_type = 'shop_closed' if is_shop_closed else 'half_day'
             events.append({
                 'id': f"halfday-{half_day['id']}",
-                'title': f"Half Day - {reason}",
+                'title': f"{default_label} - {reason}",
                 'start': half_day['date'].isoformat(),
                 'end': half_day['date'].isoformat(),
                 'allDay': True,
                 'extendedProps': {
-                    'type': 'half_day',
+                    'type': event_type,
                     'half_day_id': half_day['id'],
                     'reason': reason,
                     'created_by': f"{half_day['created_by__first_name']} {half_day['created_by__last_name']}",
