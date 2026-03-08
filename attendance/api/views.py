@@ -1286,3 +1286,48 @@ class HalfDayScheduleViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
             return [IsAdminOrManager()]
         return [IsAuthenticated()]
+
+    def perform_create(self, serializer):
+        """Create schedule and auto-mark employees as SHOP_CLOSED if applicable."""
+        schedule = serializer.save()
+
+        if schedule.schedule_type == 'shop_closed':
+            self._auto_mark_shop_closed(schedule)
+
+    def _auto_mark_shop_closed(self, schedule):
+        """Auto-create SHOP_CLOSED attendance for all payroll employees."""
+        from decimal import Decimal
+        from users.models import CustomUser
+
+        employees = CustomUser.objects.filter(
+            is_active=True,
+            is_deleted=False,
+            include_in_payroll=True,
+        ).exclude(role='admin')
+
+        for employee in employees:
+            attendance, created = DailyAttendance.objects.get_or_create(
+                employee=employee,
+                date=schedule.date,
+                defaults={'attendance_type': 'PENDING'},
+            )
+            # Skip if already on leave or already clocked in (emergency service)
+            if attendance.attendance_type == 'LEAVE':
+                continue
+            if attendance.clock_in:
+                continue
+
+            attendance.attendance_type = 'SHOP_CLOSED'
+            attendance.consecutive_absences = 0
+            attendance.is_awol = False
+            attendance.clock_in = None
+            attendance.clock_out = None
+            attendance.total_hours = Decimal('0.00')
+            attendance.paid_hours = Decimal('0.00')
+            attendance.break_hours = Decimal('0.00')
+            attendance.is_late = False
+            attendance.late_minutes = 0
+            attendance.late_penalty_amount = Decimal('0.00')
+            attendance.status = 'APPROVED'
+            attendance.notes = f'Shop Closed - {schedule.reason}' if schedule.reason else 'Shop Closed'
+            attendance.save()

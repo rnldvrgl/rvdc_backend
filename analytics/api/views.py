@@ -1137,11 +1137,16 @@ class CalendarEventsView(APIView):
         for half_day in half_day_schedules:
             is_shop_closed = half_day['schedule_type'] == 'shop_closed'
             default_label = 'Shop Closed' if is_shop_closed else 'Half Day'
-            reason = half_day['reason'] or default_label
+            reason = half_day['reason'] or ''
             event_type = 'shop_closed' if is_shop_closed else 'half_day'
+            # Avoid redundant title like "Shop Closed - Shop Closed"
+            if reason and reason.lower() != default_label.lower():
+                title = f"{default_label} - {reason}"
+            else:
+                title = default_label
             events.append({
                 'id': f"halfday-{half_day['id']}",
-                'title': f"{default_label} - {reason}",
+                'title': title,
                 'start': half_day['date'].isoformat(),
                 'end': half_day['date'].isoformat(),
                 'allDay': True,

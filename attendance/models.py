@@ -754,6 +754,8 @@ class DailyAttendance(models.Model):
             return
 
         # Check if this date is a shop-closed schedule (admin-designated)
+        # If employee actually clocked in on a shop-closed day, they are
+        # working emergency service — compute their hours normally.
         is_shop_closed_day = HalfDaySchedule.objects.filter(
             date=local_date,
             is_deleted=False,
@@ -761,14 +763,11 @@ class DailyAttendance(models.Model):
         ).exists()
 
         if is_shop_closed_day:
-            self.attendance_type = "SHOP_CLOSED"
-            self.break_hours = Decimal("0.00")
-            self.paid_hours = Decimal("0.00")
-            self.total_hours = Decimal("0.00")
-            self.consecutive_absences = 0
-            self.is_awol = False
-            self.status = "APPROVED"
-            return
+            # Employee clocked in despite shop closure = emergency service
+            # Continue to compute hours normally; just add a note
+            if not self.notes:
+                self.notes = 'Emergency service - worked during shop closure'
+            # Don't return — let the normal computation continue
 
         # Check for approved leave to determine expected shift
         approved_leave = None

@@ -62,6 +62,19 @@ class Command(BaseCommand):
             )
             return
         
+        # Check if shop is closed
+        from attendance.models import HalfDaySchedule
+        shop_closed_schedule = HalfDaySchedule.objects.filter(
+            date=target_date,
+            schedule_type='shop_closed',
+            is_deleted=False,
+        ).first()
+        
+        if shop_closed_schedule:
+            self.stdout.write(
+                self.style.WARNING(f'Shop closed on {target_date}: {shop_closed_schedule.reason or "No reason"}')
+            )
+        
         # Get all active employees included in payroll (excluding admin role as they don't clock in/out)
         employees = CustomUser.objects.filter(
             is_active=True,
@@ -80,20 +93,41 @@ class Command(BaseCommand):
                 }
             )
             
-            # If no clock in/out and not already marked as LEAVE or ABSENT
+            # If no clock in/out and not already marked as LEAVE or ABSENT or SHOP_CLOSED
             if not attendance.clock_in and not attendance.clock_out:
-                if attendance.attendance_type not in ['LEAVE', 'ABSENT']:
-                    attendance.mark_absent()
-                    attendance.save()
-                    
-                    count += 1
-                    status = 'AWOL' if attendance.is_awol else 'ABSENT'
-                    self.stdout.write(
-                        self.style.WARNING(
-                            f'Marked {status}: {employee.get_full_name()} '
-                            f'({attendance.consecutive_absences} consecutive)'
+                if attendance.attendance_type not in ['LEAVE', 'ABSENT', 'SHOP_CLOSED']:
+                    if shop_closed_schedule:
+                        # Mark as SHOP_CLOSED instead of ABSENT
+                        from decimal import Decimal
+                        attendance.attendance_type = 'SHOP_CLOSED'
+                        attendance.consecutive_absences = 0
+                        attendance.is_awol = False
+                        attendance.total_hours = Decimal('0.00')
+                        attendance.paid_hours = Decimal('0.00')
+                        attendance.break_hours = Decimal('0.00')
+                        attendance.is_late = False
+                        attendance.late_minutes = 0
+                        attendance.late_penalty_amount = Decimal('0.00')
+                        attendance.status = 'APPROVED'
+                        attendance.notes = f'Shop Closed - {shop_closed_schedule.reason}' if shop_closed_schedule.reason else 'Shop Closed'
+                        attendance.save()
+                        count += 1
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f'Marked SHOP_CLOSED: {employee.get_full_name()}'
+                            )
                         )
-                    )
+                    else:
+                        attendance.mark_absent()
+                        attendance.save()
+                        count += 1
+                        status = 'AWOL' if attendance.is_awol else 'ABSENT'
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f'Marked {status}: {employee.get_full_name()} '
+                                f'({attendance.consecutive_absences} consecutive)'
+                            )
+                        )
         
         if count == 0:
             self.stdout.write(
