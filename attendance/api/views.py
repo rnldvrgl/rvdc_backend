@@ -477,6 +477,7 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             )
 
         employee_id = request.query_params.get("employee_id")
+        search = request.query_params.get("search", "").strip()
 
         queryset = (
             DailyAttendance.objects.filter(
@@ -489,6 +490,13 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         if employee_id:
             queryset = queryset.filter(employee_id=employee_id)
+
+        if search:
+            queryset = queryset.filter(
+                models.Q(employee__first_name__icontains=search)
+                | models.Q(employee__last_name__icontains=search)
+                | models.Q(notes__icontains=search)
+            )
 
         serializer = self.get_serializer(queryset, many=True)
 

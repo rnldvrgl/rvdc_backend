@@ -196,7 +196,10 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         return StockReadSerializer
 
     def get_queryset(self):
-        queryset = super().get_queryset().filter(is_deleted=False)
+        queryset = super().get_queryset().filter(
+            is_deleted=False,
+            item__is_deleted=False,
+        )
         # Annotate with available quantity for filtering
         queryset = queryset.annotate(
             available_expr=models.F('quantity') - models.F('reserved_quantity')
@@ -453,7 +456,10 @@ class StockRoomStockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     ordering_fields = "__all__"
 
     def get_queryset(self):
-        qs = super().get_queryset().filter(is_deleted=False)
+        qs = super().get_queryset().filter(
+            is_deleted=False,
+            item__is_deleted=False,
+        )
         return filter_by_date_range(self.request, qs)
 
     @action(detail=False, methods=["get"], url_path="filters")
