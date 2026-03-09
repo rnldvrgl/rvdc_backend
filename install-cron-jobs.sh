@@ -392,6 +392,29 @@ echo "✅ Log maintenance complete" >> "$LOG_FILE"
 echo "" >> "$LOG_FILE"
 EOF
 
+# ═══════════════════════════════════════════════════════════
+# 11. CLEANUP ARCHIVED QUOTATIONS (Daily)
+# ═══════════════════════════════════════════════════════════
+echo "Creating cleanup-archived-quotations.sh..."
+
+cat > "$SCRIPT_DIR/cleanup-archived-quotations.sh" << 'EOF'
+#!/bin/bash
+LOG_FILE="/var/log/cron-cleanup-archived-quotations.log"
+CONTAINER_NAME="CONTAINER_NAME_PLACEHOLDER"
+export TZ=Asia/Manila
+
+echo "=== Cleanup Archived Quotations - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
+
+docker exec "$CONTAINER_NAME" python manage.py cleanup_archived_quotations --days 14 >> "$LOG_FILE" 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "✅ Cleanup complete - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
+else
+    echo "❌ Cleanup failed - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
+fi
+echo "" >> "$LOG_FILE"
+EOF
+
 # Replace placeholder with actual container name
 sed -i "s/CONTAINER_NAME_PLACEHOLDER/$CONTAINER_NAME/g" "$SCRIPT_DIR"/*.sh
 
@@ -491,6 +514,9 @@ cat >> "$TEMP_CRON" << 'CRONEND'
 # Daily at 2:00 AM Philippines (6:00 PM previous day UTC) - Delete old notifications (older than 7 days)
 0 18 * * * /opt/cron-scripts/delete-old-notifications.sh
 
+# Daily at 3:00 AM Philippines (7:00 PM previous day UTC) - Cleanup archived quotations (older than 14 days)
+0 19 * * * /opt/cron-scripts/cleanup-archived-quotations.sh
+
 # WEEKLY TASKS (Philippines Time)
 # Every Friday at 11:00 PM Philippines (3:00 PM UTC) - Fix last week's attendance & refresh payroll (Sat-Fri → Sat payday)
 0 15 * * 5 /opt/cron-scripts/weekly-attendance-payroll-fix.sh
@@ -551,6 +577,7 @@ echo -e "${YELLOW}Schedule Summary (Philippines Time):${NC}"
 echo ""
 echo -e "${BLUE}Daily:${NC}"
 echo "  2:00 AM  → Delete old notifications (7+ days)"
+echo "  3:00 AM  → Cleanup archived quotations (14+ days)"
 echo "  5:00 AM  → Truncate large log files (>10MB)"
 echo "  6:00 AM  → Disk usage check (auto-cleanup at 90%+)"
 echo "  9:00 PM  → Auto-close attendance"
