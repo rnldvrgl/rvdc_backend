@@ -75,6 +75,12 @@ class Quotation(models.Model):
     authorized_signature = models.TextField(blank=True)
     client_signature = models.TextField(blank=True)
 
+    # Printed name & date below signatures
+    authorized_name = models.CharField(max_length=255, blank=True)
+    authorized_date = models.DateField(null=True, blank=True)
+    client_acceptance_name = models.CharField(max_length=255, blank=True)
+    client_acceptance_date = models.DateField(null=True, blank=True)
+
     created_by = models.ForeignKey(
         "users.CustomUser",
         on_delete=models.SET_NULL,
