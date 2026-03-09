@@ -1,7 +1,8 @@
+
 #!/bin/bash
 
 ###############################################################################
-# RVDC Cron Jobs Installation Script (Updated for Weekly Payroll)
+# RVDC Cron Jobs Installation Script (Updated for Weekly Payroll + Disk Mgmt)
 #
 # This script automatically sets up cron jobs for your Dockerized Django app
 # on a DigitalOcean droplet.
@@ -10,11 +11,15 @@
 # - Daily: Auto-close attendance (9:00 PM Philippines time)
 # - Daily: Mark absences (11:30 PM Philippines time)
 # - Daily: Delete old notifications (2:00 AM Philippines time)
+# - Daily: Disk usage check + alert (6:00 AM Philippines time)
+# - Daily: Log truncation for large logs (5:00 AM Philippines time)
 # - Weekly: Fix attendance & refresh payroll (Friday 11 PM Philippines time)
+# - Weekly: Docker system prune (Sunday 3:00 AM Philippines time)
+# - Weekly: Cleanup unused profile images (Sunday 3:30 AM Philippines time)
+# - Monthly: Clean old logs (1st of month, 3:00 AM Philippines time)
 # - Yearly: Update holiday years to new year (Jan 1, 2:00 AM Philippines time)
 # - Yearly: Replenish leave balances (Jan 1, 3:00 AM Philippines time)
 # - Yearly: Archive old payrolls (Jan 2, 2:00 AM Philippines time)
-# - Monthly: Clean old logs (1st of month, 3:00 AM Philippines time)
 #
 # Usage:
 #   1. Upload this script to your droplet
@@ -36,10 +41,10 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="/opt/cron-scripts"
 LOG_DIR="/var/log"
 
-echo -e "${GREEN}╔════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║   RVDC Cron Jobs Installation Script      ║${NC}"
-echo -e "${GREEN}║        (Weekly Payroll Edition)            ║${NC}"
-echo -e "${GREEN}╚════════════════════════════════════════════╝${NC}"
+echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║   RVDC Cron Jobs Installation Script          ║${NC}"
+echo -e "${GREEN}║   (Weekly Payroll + Disk Management Edition)  ║${NC}"
+echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
 echo ""
 
 # Check if running as root
@@ -260,13 +265,140 @@ fi
 echo "" >> "$LOG_FILE"
 EOF
 
+# Script 8: Docker system prune (Weekly Sunday 3:00 AM)
+cat > "$SCRIPT_DIR/docker-system-prune.sh" << 'EOF'
+#!/bin/bash
+LOG_FILE="/var/log/cron-docker-prune.log"
+export TZ=Asia/Manila
+
+echo "=== Docker System Prune - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
+
+# Remove stopped containers, unused networks, dangling images, and build cache
+echo "--- Pruning containers, networks, and dangling images ---" >> "$LOG_FILE"
+docker system prune -f >> "$LOG_FILE" 2>&1
+
+# Remove unused images older than 7 days
+echo "--- Removing unused images older than 7 days ---" >> "$LOG_FILE"
+docker image prune -a --filter "until=168h" -f >> "$LOG_FILE" 2>&1
+
+# Show remaining disk usage
+echo "--- Docker disk usage after prune ---" >> "$LOG_FILE"
+docker system df >> "$LOG_FILE" 2>&1
+
+echo "✅ Docker prune complete - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
+echo "" >> "$LOG_FILE"
+EOF
+
+# Script 9: Cleanup unused profile images (Weekly Sunday 3:30 AM)
+cat > "$SCRIPT_DIR/cleanup-unused-images.sh" << 'EOF'
+#!/bin/bash
+LOG_FILE="/var/log/cron-cleanup-images.log"
+CONTAINER_NAME="CONTAINER_NAME_PLACEHOLDER"
+export TZ=Asia/Manila
+
+echo "=== Cleanup Unused Images - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
+docker exec "$CONTAINER_NAME" python manage.py cleanup_unused_images >> "$LOG_FILE" 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "✅ Success - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
+else
+    echo "❌ Failed - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
+fi
+echo "" >> "$LOG_FILE"
+EOF
+
+# Script 10: Disk usage check + alert (Daily 6:00 AM)
+cat > "$SCRIPT_DIR/disk-usage-check.sh" << 'EOF'
+#!/bin/bash
+LOG_FILE="/var/log/cron-disk-usage.log"
+export TZ=Asia/Manila
+
+DISK_THRESHOLD=80
+DISK_CRITICAL=90
+DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
+DISK_AVAIL=$(df -h / | awk 'NR==2 {print $4}')
+
+echo "=== Disk Usage Check - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
+echo "Disk usage: ${DISK_USAGE}% (Available: ${DISK_AVAIL})" >> "$LOG_FILE"
+
+if [ "$DISK_USAGE" -ge "$DISK_CRITICAL" ]; then
+    echo "🚨 CRITICAL: Disk usage ${DISK_USAGE}% exceeds ${DISK_CRITICAL}%!" >> "$LOG_FILE"
+    echo "Running emergency cleanup..." >> "$LOG_FILE"
+
+    # Emergency: clean apt cache
+    apt-get clean 2>/dev/null
+
+    # Emergency: clean journal logs
+    journalctl --vacuum-size=50M 2>/dev/null
+
+    # Emergency: truncate large cron logs (keep last 1000 lines)
+    for logfile in /var/log/cron-*.log; do
+        if [ -f "$logfile" ] && [ $(wc -l < "$logfile") -gt 1000 ]; then
+            tail -1000 "$logfile" > "${logfile}.tmp" && mv "${logfile}.tmp" "$logfile"
+            echo "  Truncated: $logfile" >> "$LOG_FILE"
+        fi
+    done
+
+    # Emergency: Docker prune
+    docker system prune -f >> "$LOG_FILE" 2>&1
+
+    NEW_USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
+    echo "After cleanup: ${NEW_USAGE}%" >> "$LOG_FILE"
+
+elif [ "$DISK_USAGE" -ge "$DISK_THRESHOLD" ]; then
+    echo "⚠️  WARNING: Disk usage ${DISK_USAGE}% exceeds ${DISK_THRESHOLD}% threshold" >> "$LOG_FILE"
+    echo "Consider running: docker system prune -a" >> "$LOG_FILE"
+else
+    echo "✅ Disk usage OK" >> "$LOG_FILE"
+fi
+echo "" >> "$LOG_FILE"
+EOF
+
+# Script 11: Log truncation (Daily 5:00 AM)
+cat > "$SCRIPT_DIR/truncate-large-logs.sh" << 'EOF'
+#!/bin/bash
+LOG_FILE="/var/log/cron-log-maintenance.log"
+export TZ=Asia/Manila
+MAX_LOG_SIZE_KB=10240  # 10MB
+
+echo "=== Log Truncation - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
+
+for logfile in /var/log/cron-*.log; do
+    if [ -f "$logfile" ] && [ "$logfile" != "$LOG_FILE" ]; then
+        SIZE_KB=$(du -k "$logfile" | cut -f1)
+        if [ "$SIZE_KB" -gt "$MAX_LOG_SIZE_KB" ]; then
+            LINES=$(wc -l < "$logfile")
+            tail -500 "$logfile" > "${logfile}.tmp" && mv "${logfile}.tmp" "$logfile"
+            echo "  Truncated $logfile (was ${SIZE_KB}KB, ${LINES} lines)" >> "$LOG_FILE"
+        fi
+    fi
+done
+
+# Also truncate system logs if too large
+for syslog in /var/log/syslog /var/log/kern.log /var/log/auth.log; do
+    if [ -f "$syslog" ]; then
+        SIZE_KB=$(du -k "$syslog" | cut -f1)
+        if [ "$SIZE_KB" -gt 51200 ]; then  # 50MB
+            tail -2000 "$syslog" > "${syslog}.tmp" && mv "${syslog}.tmp" "$syslog"
+            echo "  Truncated $syslog (was ${SIZE_KB}KB)" >> "$LOG_FILE"
+        fi
+    fi
+done
+
+# Clean old journal logs
+journalctl --vacuum-size=100M >> "$LOG_FILE" 2>&1
+
+echo "✅ Log maintenance complete" >> "$LOG_FILE"
+echo "" >> "$LOG_FILE"
+EOF
+
 # Replace placeholder with actual container name
 sed -i "s/CONTAINER_NAME_PLACEHOLDER/$CONTAINER_NAME/g" "$SCRIPT_DIR"/*.sh
 
 # Make scripts executable
 chmod +x "$SCRIPT_DIR"/*.sh
 
-echo -e "${GREEN}✅ Created 7 cron scripts${NC}"
+echo -e "${GREEN}✅ Created 10 cron scripts${NC}"
 
 # Step 4: Test scripts
 echo ""
@@ -295,7 +427,6 @@ echo ""
 echo -e "${BLUE}DAILY TASKS (Philippines Time):${NC}"
 echo "  • 9:00 PM - Auto-close attendance"
 echo "  • 11:30 PM - Mark absences"
-echo "  • 2:00 AM - Delete old notifications (7+ days)"
 echo ""
 echo -e "${BLUE}WEEKLY TASKS (Philippines Time):${NC}"
 echo "  • Friday 11:00 PM - Fix attendance & refresh payroll (for Saturday payday)"
@@ -307,8 +438,12 @@ echo ""
 echo -e "${BLUE}YEARLY TASKS (January 2nd, Philippines Time):${NC}"
 echo "  • 2:00 AM - Archive/delete old payrolls"
 echo ""
-echo -e "${BLUE}MAINTENANCE:${NC}"
-echo "  • Monthly - Clean logs older than 90 days"
+echo -e "${BLUE}DISK MAINTENANCE (Philippines Time):${NC}"
+echo "  • 5:00 AM Daily  - Truncate large log files (>10MB)"
+echo "  • 6:00 AM Daily  - Disk usage check (auto-cleanup at 90%+)"
+echo "  • Sun 3:00 AM    - Docker system prune (unused images/containers)"
+echo "  • Sun 3:30 AM    - Cleanup unused profile images"
+echo "  • Monthly        - Clean logs older than 90 days"
 echo ""
 read -p "Install cron jobs? (yes/no): " CONFIRM
 
@@ -331,10 +466,10 @@ fi
 echo ""
 echo -e "${YELLOW}Installing cron jobs...${NC}"
 
-# Get existing crontab and remove old RVDC entries to avoid duplicates
+# Get existing crontab (if any)
 TEMP_CRON=$(mktemp)
 if crontab -l > /dev/null 2>&1; then
-    crontab -l | sed '/# ===.*RVDC Attendance/,/\/var\/log\/cron-\*\.log.*-delete/d' | sed '/^$/N;/^\n$/d' > "$TEMP_CRON"
+    crontab -l > "$TEMP_CRON"
 fi
 
 # Add RVDC cron jobs
@@ -371,8 +506,20 @@ cat >> "$TEMP_CRON" << 'CRONEND'
 # January 2nd at 2:00 AM Philippines (6:00 PM Jan 1 UTC) - Archive old payrolls
 0 18 1 1 * /opt/cron-scripts/yearly-archive-payrolls.sh
 
-# MAINTENANCE
-# 1st of every month at 3:00 AM Philippines (7:00 PM previous day UTC) - Rotate logs (keep 90 days)
+# DISK MAINTENANCE (Philippines Time)
+# Daily at 5:00 AM Philippines (9:00 PM previous day UTC) - Truncate large log files
+0 21 * * * /opt/cron-scripts/truncate-large-logs.sh
+
+# Daily at 6:00 AM Philippines (10:00 PM previous day UTC) - Check disk usage, auto-cleanup at 90%+
+0 22 * * * /opt/cron-scripts/disk-usage-check.sh
+
+# Every Sunday at 3:00 AM Philippines (7:00 PM Saturday UTC) - Docker system prune
+0 19 * * 6 /opt/cron-scripts/docker-system-prune.sh
+
+# Every Sunday at 3:30 AM Philippines (7:30 PM Saturday UTC) - Cleanup unused profile images
+30 19 * * 6 /opt/cron-scripts/cleanup-unused-images.sh
+
+# 1st of every month at 3:00 AM Philippines (7:00 PM previous day UTC) - Delete old log files (90+ days)
 0 19 * * * [ "$(date +\%d)" = "01" ] && find /var/log/cron-*.log -type f -mtime +90 -delete
 
 CRONEND
@@ -403,12 +550,19 @@ echo ""
 echo -e "${YELLOW}Schedule Summary (Philippines Time):${NC}"
 echo ""
 echo -e "${BLUE}Daily:${NC}"
+echo "  2:00 AM  → Delete old notifications (7+ days)"
+echo "  5:00 AM  → Truncate large log files (>10MB)"
+echo "  6:00 AM  → Disk usage check (auto-cleanup at 90%+)"
 echo "  9:00 PM  → Auto-close attendance"
 echo "  11:30 PM → Mark absences"
-echo "  2:00 AM  → Delete old notifications (7+ days)"
 echo ""
 echo -e "${BLUE}Weekly:${NC}"
 echo "  Fri 11 PM   → Fix attendance + refresh payroll (for Sat payday)"
+echo "  Sun 3:00 AM  → Docker system prune (unused images/containers)"
+echo "  Sun 3:30 AM  → Cleanup unused profile images"
+echo ""
+echo -e "${BLUE}Monthly:${NC}"
+echo "  1st 3:00 AM  → Delete old log files (90+ days)"
 echo ""
 echo -e "${BLUE}Yearly (Jan 1):${NC}"
 echo "  2:00 AM → Update holidays to new year"
@@ -426,6 +580,8 @@ echo ""
 echo -e "${YELLOW}Manual testing:${NC}"
 echo "  $SCRIPT_DIR/auto-close-attendance.sh"
 echo "  $SCRIPT_DIR/weekly-attendance-payroll-fix.sh"
+echo "  $SCRIPT_DIR/disk-usage-check.sh"
+echo "  $SCRIPT_DIR/docker-system-prune.sh"
 echo ""
 echo -e "${GREEN}Installation log saved to: /root/cron-install-$(date +%Y%m%d).log${NC}"
 echo ""
