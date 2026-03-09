@@ -5,4 +5,4 @@ from sales.models import SalesTransaction
 class SalesTransactionFilter(filters.FilterSet):
     class Meta:
         model = SalesTransaction
-        fields = ["stall", "payment_status", "voided"]
+        fields = ["stall", "client", "payment_status", "voided"]
