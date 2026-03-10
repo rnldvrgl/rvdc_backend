@@ -118,6 +118,7 @@ class ManualDeduction(models.Model):
         help_text="Date when deduction becomes effective. Required for recurring deductions, optional for one-time (auto-applied to next payroll)"
     )
     end_date = models.DateField(null=True, blank=True, help_text="Optional end date for recurring deductions")
+    is_recurring = models.BooleanField(default=False, help_text="For per_employee deductions: whether this repeats every payroll")
     is_active = models.BooleanField(default=True)
 
     # For one-time deductions tracking

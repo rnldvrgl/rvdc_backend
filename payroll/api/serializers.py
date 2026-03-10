@@ -367,6 +367,7 @@ class ManualDeductionSerializer(serializers.ModelSerializer):
             "amount",
             "effective_date",
             "end_date",
+            "is_recurring",
             "is_active",
             "applied_date",
             "is_deleted",
