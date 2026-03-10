@@ -152,3 +152,38 @@ class QuotationItem(models.Model):
     def save(self, *args, **kwargs):
         self.total_price = self.quantity * self.unit_price
         super().save(*args, **kwargs)
+
+
+class QuotationPayment(models.Model):
+    """Structured payment record for a quotation (e.g. downpayment, completion)."""
+
+    class PaymentMethod(models.TextChoices):
+        CASH = "cash", "Cash"
+        GCASH = "gcash", "GCash"
+        BANK_TRANSFER = "bank_transfer", "Bank Transfer"
+
+    quotation = models.ForeignKey(
+        Quotation, on_delete=models.CASCADE, related_name="payments"
+    )
+    label = models.CharField(
+        max_length=255,
+        help_text="e.g. '50% Downpayment', '50% Upon Job Completion'",
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    payment_method = models.CharField(
+        max_length=20, choices=PaymentMethod.choices, blank=True
+    )
+    payment_date = models.DateField(null=True, blank=True)
+    reference_number = models.CharField(max_length=100, blank=True)
+    si_number = models.CharField(
+        max_length=100, blank=True, help_text="Sales Invoice / Receipt number"
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"{self.label} — ₱{self.amount}"

@@ -29,7 +29,7 @@ class QuotationTermsTemplateViewSet(viewsets.ModelViewSet):
 
 
 class QuotationViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
-    queryset = Quotation.objects.select_related("client", "created_by").prefetch_related("items")
+    queryset = Quotation.objects.select_related("client", "created_by").prefetch_related("items", "payments")
     permission_classes = [IsAuthenticated]
     filter_backends = [
         DjangoFilterBackend,
