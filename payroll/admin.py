@@ -316,6 +316,7 @@ class ManualDeductionAdmin(admin.ModelAdmin):
         "amount",
         "effective_date",
         "end_date",
+        "is_recurring",
         "is_active",
         "applied_date",
         "is_deleted",
@@ -351,6 +352,7 @@ class ManualDeductionAdmin(admin.ModelAdmin):
                     "effective_date",
                     "end_date",
                     "applied_date",
+                    "is_recurring",
                     "is_active",
                 )
             },
