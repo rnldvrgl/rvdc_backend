@@ -921,11 +921,21 @@ class WeeklyPayroll(models.Model):
             )
 
             for deduction in per_employee_deductions:
-                # Determine if this is one-time or recurring:
-                # One-time: has effective_date but NO end_date (applied once)
-                # Recurring: has effective_date AND end_date (applied multiple times)
+                # Use is_recurring field to determine deduction type
 
-                if deduction.end_date is None:
+                if deduction.is_recurring:
+                    # Recurring deduction: apply if within effective date range
+                    if deduction.effective_date and deduction.effective_date <= self.week_end:
+                        # Check if still within end_date range (if end_date is set)
+                        if deduction.end_date is None or deduction.end_date >= self.week_start:
+                            key = self._generate_deduction_key(deduction.name, deductions_map)
+                            deductions_map[key] = self._q(Decimal(deduction.amount))
+                            deduction_metadata_map[key] = {
+                                'source_type': 'ManualDeduction',
+                                'source_id': deduction.id,
+                                'category': 'manual',
+                            }
+                else:
                     # One-time deduction: apply once if not yet applied
                     should_apply = False
 
@@ -950,18 +960,6 @@ class WeeklyPayroll(models.Model):
                             'category': 'manual',
                         }
                         # Note: Don't mark as applied here - only mark when payroll is approved
-                else:
-                    # Recurring deduction: apply if within effective date range
-                    if deduction.effective_date and deduction.effective_date <= self.week_end:
-                        # Check if still within end_date range
-                        if deduction.end_date >= self.week_start:
-                            key = self._generate_deduction_key(deduction.name, deductions_map)
-                            deductions_map[key] = self._q(Decimal(deduction.amount))
-                            deduction_metadata_map[key] = {
-                                'source_type': 'ManualDeduction',
-                                'source_id': deduction.id,
-                                'category': 'manual',
-                            }
 
             # Get recurring_all deductions that apply to all employees
             recurring_all = ManualDeduction.objects.filter(
@@ -1254,7 +1252,7 @@ class WeeklyPayroll(models.Model):
             is_active=True,
             deduction_type='per_employee',
             employee=self.employee,
-            end_date__isnull=True,  # One-time deductions only
+            is_recurring=False,  # One-time deductions only
             applied_date__isnull=True,  # Not yet applied
         )
 
@@ -1452,7 +1450,14 @@ class WeeklyPayroll(models.Model):
             )
 
             for deduction in per_employee_deductions:
-                if deduction.end_date is None:
+                if deduction.is_recurring:
+                    # Recurring deduction: apply if within effective date range
+                    if deduction.effective_date and deduction.effective_date <= self.week_end:
+                        if deduction.end_date is None or deduction.end_date >= self.week_start:
+                            key = self._generate_deduction_key(deduction.name, deductions_map)
+                            amount = self._q(Decimal(deduction.amount))
+                            deductions_map[key] = amount
+                else:
                     # One-time deduction
                     should_apply = False
 
@@ -1474,13 +1479,6 @@ class WeeklyPayroll(models.Model):
                         if mark_as_applied:
                             deduction.applied_date = self.week_start
                             deduction.save(update_fields=['applied_date'])
-                else:
-                    # Recurring deduction
-                    if deduction.effective_date and deduction.effective_date <= self.week_end:
-                        if deduction.end_date >= self.week_start:
-                            key = self._generate_deduction_key(deduction.name, deductions_map)
-                            amount = self._q(Decimal(deduction.amount))
-                            deductions_map[key] = amount
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
