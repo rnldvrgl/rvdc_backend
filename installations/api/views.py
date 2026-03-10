@@ -39,6 +39,7 @@ from utils.filters.role_filters import get_role_based_filter_response
 from utils.query import (
     get_role_filtered_queryset,
 )
+from utils.soft_delete import SoftDeleteViewSetMixin
 
 
 class AirconBrandViewSet(viewsets.ModelViewSet):
@@ -96,7 +97,7 @@ class AirconModelViewSet(viewsets.ModelViewSet):
         return get_role_based_filter_response(request, filters_config, ordering_config)
 
 
-class AirconUnitViewSet(viewsets.ModelViewSet):
+class AirconUnitViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     Aircon unit inventory management.
     
@@ -138,9 +139,12 @@ class AirconUnitViewSet(viewsets.ModelViewSet):
     filterset_class = AirconUnitFilter
     search_fields = ["serial_number", "model__name", "model__brand__name"]
     ordering_fields = ["serial_number", "created_at"]
+    ordering = ["-created_at"]
 
     def get_queryset(self):
-        return get_role_filtered_queryset(self.request, super().get_queryset())
+        return get_role_filtered_queryset(
+            self.request, super().get_queryset().filter(is_deleted=False)
+        )
 
     @action(detail=False, methods=["get"], url_path="available")
     def available_units(self, request):
@@ -393,7 +397,7 @@ class WarrantyClaimViewSet(viewsets.ModelViewSet):
             'service',
             'reviewed_by'
         )
-        return get_role_filtered_queryset(self.request, queryset)
+        return get_role_filtered_queryset(self.request, queryset, stall_field="unit__stall")
 
     def create(self, request, *args, **kwargs):
         """

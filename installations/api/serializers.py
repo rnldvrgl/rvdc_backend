@@ -51,6 +51,7 @@ class AirconModelSerializer(serializers.ModelSerializer):
     has_discount = serializers.ReadOnlyField()
     selling_price = serializers.ReadOnlyField()
     parts_warranty_years = serializers.ReadOnlyField()
+    compressor_warranty_years = serializers.ReadOnlyField()
     labor_warranty_years = serializers.ReadOnlyField()
     price_history = ModelPriceHistorySerializer(many=True, read_only=True)
 
@@ -70,8 +71,10 @@ class AirconModelSerializer(serializers.ModelSerializer):
             "has_discount",
             "selling_price",
             "parts_warranty_months",
+            "compressor_warranty_months",
             "labor_warranty_months",
             "parts_warranty_years",
+            "compressor_warranty_years",
             "labor_warranty_years",
             "price_history",
         ]
@@ -136,6 +139,9 @@ class AirconUnitSerializer(serializers.ModelSerializer):
             "reserved_at",
             "warranty_start_date",
             "warranty_period_months",
+            "labor_warranty_months",
+            "compressor_warranty_months",
+            "parts_warranty_months",
             "free_cleaning_redeemed",
             "free_cleaning_service",
             "is_sold",
@@ -158,6 +164,8 @@ class AirconUnitSerializer(serializers.ModelSerializer):
             "client_name",
             "sold_date",
             "installed_date",
+            "is_deleted",
+            "deleted_at",
             "created_at",
             "updated_at",
         ]
@@ -257,11 +265,6 @@ class AirconUnitSerializer(serializers.ModelSerializer):
                     validated_data['stall'] = main_stall
         
         return super().create(validated_data)
-
-    def validate_serial_number(self, value):
-        if AirconUnit.objects.filter(serial_number__iexact=value).exists():
-            raise serializers.ValidationError("This serial number is already in use.")
-        return value
 
     def validate_free_cleaning_redeemed(self, value):
         """

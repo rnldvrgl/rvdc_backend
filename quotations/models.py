@@ -71,6 +71,11 @@ class Quotation(models.Model):
         max_length=20, choices=Status.choices, default=Status.DRAFT
     )
 
+    notes = models.TextField(
+        blank=True,
+        help_text="Notes displayed below items before subtotal (e.g. warranty info)",
+    )
+
     # E-signature data URLs (base64)
     authorized_signature = models.TextField(blank=True)
     client_signature = models.TextField(blank=True)
@@ -113,6 +118,20 @@ class Quotation(models.Model):
 class QuotationItem(models.Model):
     quotation = models.ForeignKey(
         Quotation, on_delete=models.CASCADE, related_name="items"
+    )
+    aircon_model = models.ForeignKey(
+        "installations.AirconModel",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Optional link to an aircon model for this line item",
+    )
+    aircon_unit = models.ForeignKey(
+        "installations.AirconUnit",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Optional link to a specific aircon unit from inventory",
     )
     description = models.CharField(max_length=500)
     quantity = models.PositiveIntegerField(default=1)

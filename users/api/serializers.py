@@ -7,7 +7,9 @@ from drf_extra_fields.fields import Base64ImageField
 
 class EmployeesSerializer(serializers.ModelSerializer):
     profile_image = Base64ImageField(required=False, allow_null=True)
+    e_signature = Base64ImageField(required=False, allow_null=True)
     username = serializers.CharField(required=False, allow_blank=True)
+    full_name = serializers.SerializerMethodField()
 
     class Meta:
         model = CustomUser
@@ -17,6 +19,7 @@ class EmployeesSerializer(serializers.ModelSerializer):
             "email",
             "first_name",
             "last_name",
+            "full_name",
             "role",
             "gender",
             "birthday",
@@ -26,6 +29,7 @@ class EmployeesSerializer(serializers.ModelSerializer):
             "barangay",
             "contact_number",
             "profile_image",
+            "e_signature",
             "is_active",
             "sss_number",
             "philhealth_number",
@@ -39,7 +43,24 @@ class EmployeesSerializer(serializers.ModelSerializer):
             "has_cash_ban",
         ]
         read_only_fields = ("id", "cash_ban_balance")
-    
+
+    def get_full_name(self, obj):
+        return obj.get_full_name()
+
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        request = self.context.get("request")
+        # Build absolute URLs for image fields
+        for field_name in ("profile_image", "e_signature"):
+            image = getattr(instance, field_name, None)
+            if image and request:
+                rep[field_name] = request.build_absolute_uri(image.url)
+            elif image:
+                rep[field_name] = image.url
+            else:
+                rep[field_name] = None
+        return rep
+
     def validate_role(self, value):
         """Only allow manager, clerk, and technician roles for employees"""
         allowed_roles = ['manager', 'clerk', 'technician']
@@ -99,6 +120,7 @@ class EmployeesSerializer(serializers.ModelSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     profile_image = Base64ImageField(required=False, allow_null=True)
+    e_signature = Base64ImageField(required=False, allow_null=True)
     current_password = serializers.CharField(write_only=True, required=False)
     new_password = serializers.CharField(write_only=True, required=False)
     assigned_stall = StallSerializer(read_only=True)
@@ -119,6 +141,7 @@ class UserSerializer(serializers.ModelSerializer):
             "address",
             "contact_number",
             "profile_image",
+            "e_signature",
             "is_active",
             "assigned_stall",
             "current_password",
@@ -142,14 +165,14 @@ class UserSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         rep = super().to_representation(instance)
         request = self.context.get("request")
-        if instance.profile_image and request:
-            rep["profile_image"] = request.build_absolute_uri(
-                instance.profile_image.url
-            )
-        elif instance.profile_image:
-            rep["profile_image"] = instance.profile_image.url
-        else:
-            rep["profile_image"] = None
+        for field_name in ("profile_image", "e_signature"):
+            image = getattr(instance, field_name, None)
+            if image and request:
+                rep[field_name] = request.build_absolute_uri(image.url)
+            elif image:
+                rep[field_name] = image.url
+            else:
+                rep[field_name] = None
         return rep
 
     def update(self, instance, validated_data):

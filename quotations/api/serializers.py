@@ -27,6 +27,8 @@ class QuotationItemSerializer(serializers.ModelSerializer):
         model = QuotationItem
         fields = [
             "id",
+            "aircon_model",
+            "aircon_unit",
             "description",
             "quantity",
             "unit_price",
@@ -96,6 +98,7 @@ class QuotationSerializer(serializers.ModelSerializer):
             "total",
             "terms_conditions",
             "payment_terms",
+            "notes",
             "status",
             "authorized_signature",
             "client_signature",

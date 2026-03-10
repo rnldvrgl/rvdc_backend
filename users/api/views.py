@@ -72,6 +72,7 @@ class EmployeesListView(generics.ListCreateAPIView):
         "province",
         "city",
         "barangay",
+        "role",
     ]
     search_fields = [
         "username",
@@ -87,7 +88,10 @@ class EmployeesListView(generics.ListCreateAPIView):
     ordering_fields = "__all__"
 
     def get_queryset(self):
-        return filter_by_date_range(self.request, super().get_queryset())
+        qs = CustomUser.objects.filter(is_deleted=False)
+        if self.request.query_params.get("include_admins") != "true":
+            qs = qs.exclude(role="admin")
+        return filter_by_date_range(self.request, qs)
 
 
 class UseraDetailView(generics.RetrieveUpdateDestroyAPIView):

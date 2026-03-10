@@ -43,6 +43,11 @@ class CustomUser(AbstractUser):
         null=True,
         blank=True,
     )
+    e_signature = models.ImageField(
+        upload_to="e_signatures/",
+        null=True,
+        blank=True,
+    )
     sss_number = models.CharField(max_length=50, blank=True, null=True)
     philhealth_number = models.CharField(max_length=50, blank=True, null=True)
     tin_number = models.CharField(max_length=50, blank=True, null=True)

@@ -53,6 +53,10 @@ class AirconModel(models.Model):
         default=60,
         help_text="Parts (unit) warranty duration in months (default: 60 = 5 years)",
     )
+    compressor_warranty_months = models.PositiveIntegerField(
+        default=60,
+        help_text="Compressor warranty duration in months (default: 60 = 5 years)",
+    )
     labor_warranty_months = models.PositiveIntegerField(
         default=12,
         help_text="Labor warranty duration in months (default: 12 = 1 year)",
@@ -68,6 +72,11 @@ class AirconModel(models.Model):
     def parts_warranty_years(self) -> float:
         """Parts warranty in years (for display)."""
         return round(self.parts_warranty_months / 12, 1)
+
+    @property
+    def compressor_warranty_years(self) -> float:
+        """Compressor warranty in years (for display)."""
+        return round(self.compressor_warranty_months / 12, 1)
 
     @property
     def labor_warranty_years(self) -> float:
@@ -243,6 +252,21 @@ class AirconUnit(models.Model):
 
     warranty_start_date = models.DateField(null=True, blank=True)
     warranty_period_months = models.PositiveIntegerField(default=12)
+    labor_warranty_months = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Labor warranty duration in months (overrides model default if set)"
+    )
+    compressor_warranty_months = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Compressor warranty duration in months (if different from parts warranty)"
+    )
+    parts_warranty_months = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Parts warranty duration in months (overrides model default if set)"
+    )
     free_cleaning_redeemed = models.BooleanField(default=False)
     free_cleaning_service = models.ForeignKey(
         Service,
@@ -259,8 +283,14 @@ class AirconUnit(models.Model):
         help_text="Marks if unit has been sold to customer",
     )
 
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
 
     def clean(self):
         # Validate stall is Main stall
@@ -355,14 +385,16 @@ class AirconUnit(models.Model):
 
     @property
     def parts_warranty_end_date(self):
-        if self.warranty_start_date and self.model and self.model.parts_warranty_months:
-            return self.warranty_start_date + relativedelta(months=self.model.parts_warranty_months)
+        months = self.parts_warranty_months or (self.model.parts_warranty_months if self.model else None)
+        if self.warranty_start_date and months:
+            return self.warranty_start_date + relativedelta(months=months)
         return None
 
     @property
     def labor_warranty_end_date(self):
-        if self.warranty_start_date and self.model and self.model.labor_warranty_months:
-            return self.warranty_start_date + relativedelta(months=self.model.labor_warranty_months)
+        months = self.labor_warranty_months or (self.model.labor_warranty_months if self.model else None)
+        if self.warranty_start_date and months:
+            return self.warranty_start_date + relativedelta(months=months)
         return None
 
     @property
@@ -381,7 +413,8 @@ class AirconUnit(models.Model):
 
     @property
     def parts_warranty_status(self):
-        if not self.model or not self.model.parts_warranty_months:
+        months = self.parts_warranty_months or (self.model.parts_warranty_months if self.model else None)
+        if not months:
             return "No Warranty"
         if not self.warranty_start_date:
             return "Not Started"
@@ -389,7 +422,8 @@ class AirconUnit(models.Model):
 
     @property
     def labor_warranty_status(self):
-        if not self.model or not self.model.labor_warranty_months:
+        months = self.labor_warranty_months or (self.model.labor_warranty_months if self.model else None)
+        if not months:
             return "No Warranty"
         if not self.warranty_start_date:
             return "Not Started"

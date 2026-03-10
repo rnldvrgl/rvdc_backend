@@ -32,14 +32,25 @@ def filter_by_date_range(request, queryset, date_field="created_at"):
     return queryset.filter(**filters)
 
 
-def get_role_filtered_queryset(request, base_queryset, date_field="created_at"):
+def get_role_filtered_queryset(request, base_queryset, date_field="created_at", stall_field="stall"):
+    """
+    Filter queryset based on user role and assigned stall.
+    
+    Args:
+        request: The HTTP request object
+        base_queryset: The base queryset to filter
+        date_field: Field name for date range filtering (default: "created_at")
+        stall_field: Field name or lookup path for stall filtering (default: "stall")
+                     Use "unit__stall" for models that have stall through a relationship
+    """
     user = request.user
 
     if user.role == "admin":
         return filter_by_date_range(request, base_queryset, date_field)
 
     if user.role in ["manager", "clerk"] and user.assigned_stall:
-        qs = base_queryset.filter(stall=user.assigned_stall)
+        filter_kwargs = {stall_field: user.assigned_stall}
+        qs = base_queryset.filter(**filter_kwargs)
         return filter_by_date_range(request, qs, date_field)
 
     return base_queryset.none()
