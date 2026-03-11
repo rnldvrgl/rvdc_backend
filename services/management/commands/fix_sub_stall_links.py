@@ -108,6 +108,11 @@ class Command(BaseCommand):
             sub_filled += s_share
             processed += 1
 
+        # Update payment_status on both TXs (QuerySet.delete doesn't trigger signals)
+        if not dry_run:
+            main_tx.update_payment_status()
+            sub_tx.update_payment_status()
+
         return processed
 
     def handle(self, *args, **options):

@@ -1139,33 +1139,22 @@ class ServicePaymentManager:
             sub_sales_tx = None
 
             if not sales_transaction:
-                # Create new main stall sales transaction for this service
-                target_stall = service.stall if service.stall else main_stall
-                sales_transaction = SalesTransaction.objects.create(
-                    stall=target_stall,
-                    client=service.client,
-                    sales_clerk=received_by,
-                )
-                service.related_transaction = sales_transaction
-
-                # Create sales items for all appliances' labor fees (MAIN STALL)
+                # Collect labor items first to decide whether main TX is needed
+                labor_items = []
                 for appliance in service.appliances.all():
                     if appliance.labor_fee > 0 and not appliance.labor_is_free:
                         appliance_name = appliance.appliance_type.name if appliance.appliance_type else "Appliance"
                         brand_info = f" ({appliance.brand})" if appliance.brand else ""
-                        SalesItem.objects.create(
-                            transaction=sales_transaction,
-                            item=None,
-                            description=f"Labor Fee - {appliance_name}{brand_info}",
-                            quantity=1,
-                            final_price_per_unit=appliance.labor_fee,
-                        )
+                        labor_items.append({
+                            'description': f"Labor Fee - {appliance_name}{brand_info}",
+                            'fee': appliance.labor_fee,
+                        })
 
-                # Add aircon unit prices for installation services (Main stall revenue)
+                # Collect aircon unit items for installation services
+                unit_items = []
                 if service.service_type == 'installation':
                     for unit in service.installation_units.all():
                         if unit.model:
-                            # Check for appliance-level unit_price override
                             matching_appliance = service.appliances.filter(
                                 serial_number=unit.serial_number
                             ).first()
@@ -1174,13 +1163,38 @@ class ServicePaymentManager:
                             else:
                                 unit_price = unit.model.selling_price
                             if unit_price > 0:
-                                SalesItem.objects.create(
-                                    transaction=sales_transaction,
-                                    item=None,
-                                    description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
-                                    quantity=1,
-                                    final_price_per_unit=unit_price,
-                                )
+                                unit_items.append({
+                                    'description': f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                                    'price': unit_price,
+                                })
+
+                # Only create main stall TX if there are labor/unit items
+                if labor_items or unit_items:
+                    target_stall = service.stall if service.stall else main_stall
+                    sales_transaction = SalesTransaction.objects.create(
+                        stall=target_stall,
+                        client=service.client,
+                        sales_clerk=received_by,
+                    )
+                    service.related_transaction = sales_transaction
+
+                    for item in labor_items:
+                        SalesItem.objects.create(
+                            transaction=sales_transaction,
+                            item=None,
+                            description=item['description'],
+                            quantity=1,
+                            final_price_per_unit=item['fee'],
+                        )
+
+                    for item in unit_items:
+                        SalesItem.objects.create(
+                            transaction=sales_transaction,
+                            item=None,
+                            description=item['description'],
+                            quantity=1,
+                            final_price_per_unit=item['price'],
+                        )
 
                 # Collect all parts from all appliances
                 parts_to_add = []
@@ -1209,7 +1223,7 @@ class ServicePaymentManager:
                             pass
 
                     # Fallback: time-window lookup for transactions from complete_service
-                    if not sub_sales_tx:
+                    if not sub_sales_tx and sales_transaction:
                         sub_sales_tx = SalesTransaction.objects.filter(
                             stall=sub_stall,
                             client=service.client,
@@ -1238,16 +1252,19 @@ class ServicePaymentManager:
                                 final_price_per_unit=part['item'].retail_price,
                             )
 
-                # Link sub transaction to service
+                # Link transactions to service
                 if sub_sales_tx:
                     service.related_sub_transaction = sub_sales_tx
 
-                service.save(update_fields=["related_transaction", "related_sub_transaction"])
+                update_fields = ["related_sub_transaction"]
+                if sales_transaction:
+                    update_fields.append("related_transaction")
+                service.save(update_fields=update_fields)
 
                 # Apply service-level discount to Main stall SalesTransaction only
                 # Service-level discounts reduce labor/service fees, not parts
                 service_discount = Decimal("0")
-                if service.service_discount_percentage and service.service_discount_percentage > 0:
+                if sales_transaction and (service.service_discount_percentage and service.service_discount_percentage > 0):
                     main_subtotal = sales_transaction.subtotal or Decimal("0")
                     sub_subtotal = (sub_sales_tx.subtotal or Decimal("0")) if sub_sales_tx else Decimal("0")
                     combined = main_subtotal + sub_subtotal
@@ -1258,8 +1275,8 @@ class ServicePaymentManager:
                     service_discount = service.service_discount_amount
 
                 if service_discount > 0:
-                    main_subtotal = sales_transaction.subtotal or Decimal("0")
-                    if main_subtotal > 0:
+                    main_subtotal = (sales_transaction.subtotal or Decimal("0")) if sales_transaction else Decimal("0")
+                    if main_subtotal > 0 and sales_transaction:
                         # Spread discount across main stall items (labor fees)
                         items = list(sales_transaction.items.all())
                         remaining_discount = service_discount
@@ -1280,8 +1297,8 @@ class ServicePaymentManager:
                             item.save(update_fields=["final_price_per_unit"])
                             remaining_discount -= item_discount
 
-                # Waterfall-allocate previous service payments to main then sub
-                main_total = sales_transaction.computed_total or Decimal("0")
+                # Waterfall-allocate previous service payments: sub first, then main
+                main_total = (sales_transaction.computed_total or Decimal("0")) if sales_transaction else Decimal("0")
                 sub_total = (sub_sales_tx.computed_total or Decimal("0")) if sub_sales_tx else Decimal("0")
 
                 previous_payments = service.payments.exclude(id=payment.id).order_by('payment_date')
@@ -1294,12 +1311,13 @@ class ServicePaymentManager:
                         main_total - main_filled,
                         sub_total - sub_filled,
                     )
-                    SalesPayment.objects.create(
-                        transaction=sales_transaction,
-                        payment_type=service_payment.payment_type,
-                        amount=m_share,
-                        payment_date=service_payment.payment_date,
-                    )
+                    if m_share > 0 and sales_transaction:
+                        SalesPayment.objects.create(
+                            transaction=sales_transaction,
+                            payment_type=service_payment.payment_type,
+                            amount=m_share,
+                            payment_date=service_payment.payment_date,
+                        )
                     if s_share > 0 and sub_sales_tx:
                         SalesPayment.objects.create(
                             transaction=sub_sales_tx,
@@ -1348,10 +1366,10 @@ class ServicePaymentManager:
                     service.related_sub_transaction = sub_sales_tx
                     service.save(update_fields=["related_sub_transaction"])
 
-            # Waterfall-allocate current payment: fill main first, then sub
-            main_total = sales_transaction.computed_total or Decimal("0")
+            # Waterfall-allocate current payment: fill sub first, then main
+            main_total = (sales_transaction.computed_total or Decimal("0")) if sales_transaction else Decimal("0")
             sub_total = (sub_sales_tx.computed_total or Decimal("0")) if sub_sales_tx else Decimal("0")
-            main_paid = sum(p.amount for p in sales_transaction.payments.all())
+            main_paid = sum(p.amount for p in sales_transaction.payments.all()) if sales_transaction else Decimal("0")
             sub_paid = sum(p.amount for p in sub_sales_tx.payments.all()) if sub_sales_tx else Decimal("0")
 
             m_share, s_share = ServicePaymentManager._waterfall_split(
@@ -1360,11 +1378,12 @@ class ServicePaymentManager:
                 sub_total - sub_paid,
             )
 
-            SalesPayment.objects.create(
-                transaction=sales_transaction,
-                payment_type=payment_type,
-                amount=m_share,
-            )
+            if m_share > 0 and sales_transaction:
+                SalesPayment.objects.create(
+                    transaction=sales_transaction,
+                    payment_type=payment_type,
+                    amount=m_share,
+                )
             if s_share > 0 and sub_sales_tx:
                 SalesPayment.objects.create(
                     transaction=sub_sales_tx,
