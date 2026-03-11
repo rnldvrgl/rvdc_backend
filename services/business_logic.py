@@ -301,7 +301,8 @@ class RevenueCalculator:
 
         total_revenue = main_revenue + sub_revenue
 
-        # Apply service-level discount (percentage or fixed amount)
+        # Apply service-level discount (percentage or fixed amount) to main stall only
+        # Service-level discounts reduce labor/service fees, not parts
         service_discount = Decimal('0.00')
         if service.service_discount_percentage and service.service_discount_percentage > 0:
             service_discount = (total_revenue * service.service_discount_percentage / Decimal('100')).quantize(
@@ -310,7 +311,8 @@ class RevenueCalculator:
         elif service.service_discount_amount and service.service_discount_amount > 0:
             service_discount = service.service_discount_amount
 
-        total_revenue = max(total_revenue - service_discount, Decimal('0.00'))
+        main_revenue = max(main_revenue - service_discount, Decimal('0.00'))
+        total_revenue = main_revenue + sub_revenue
         
         # Round all revenue values to 2 decimal places to prevent validation errors
         main_revenue = main_revenue.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
@@ -1168,6 +1170,42 @@ class ServicePaymentManager:
                     service.related_sub_transaction = sub_sales_tx
 
                 service.save(update_fields=["related_transaction", "related_sub_transaction"])
+
+                # Apply service-level discount to Main stall SalesTransaction only
+                # Service-level discounts reduce labor/service fees, not parts
+                service_discount = Decimal("0")
+                if service.service_discount_percentage and service.service_discount_percentage > 0:
+                    main_subtotal = sales_transaction.subtotal or Decimal("0")
+                    sub_subtotal = (sub_sales_tx.subtotal or Decimal("0")) if sub_sales_tx else Decimal("0")
+                    combined = main_subtotal + sub_subtotal
+                    service_discount = (combined * service.service_discount_percentage / Decimal("100")).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                elif service.service_discount_amount and service.service_discount_amount > 0:
+                    service_discount = service.service_discount_amount
+
+                if service_discount > 0:
+                    main_subtotal = sales_transaction.subtotal or Decimal("0")
+                    if main_subtotal > 0:
+                        # Spread discount across main stall items (labor fees)
+                        items = list(sales_transaction.items.all())
+                        remaining_discount = service_discount
+                        for i, item in enumerate(items):
+                            if i == len(items) - 1:
+                                item_discount = remaining_discount
+                            else:
+                                item_discount = (service_discount * item.line_total / main_subtotal).quantize(
+                                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                                )
+                            per_unit_discount = (item_discount / item.quantity).quantize(
+                                Decimal("0.01"), rounding=ROUND_HALF_UP
+                            )
+                            item.final_price_per_unit = max(
+                                Decimal("0"),
+                                item.final_price_per_unit - per_unit_discount
+                            )
+                            item.save(update_fields=["final_price_per_unit"])
+                            remaining_discount -= item_discount
 
                 # Calculate proportional split between main and sub stall
                 main_total = sales_transaction.computed_total or Decimal("0")
