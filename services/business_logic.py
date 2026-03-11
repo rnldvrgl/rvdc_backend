@@ -405,10 +405,18 @@ class ServiceCompletionHandler:
                 # Skip transaction creation for complementary services
                 if parts_to_sell and not service.is_complementary:
                     existing_sub_transaction = None
-                    
-                    # Only look for existing sub transaction if payments were recorded
-                    if service.related_transaction:
-                        # Look for sub transaction created at the same time as the main transaction
+
+                    # Check if service already has a linked sub transaction
+                    if service.related_sub_transaction_id:
+                        try:
+                            candidate = service.related_sub_transaction
+                            if not candidate.voided:
+                                existing_sub_transaction = candidate
+                        except SalesTransaction.DoesNotExist:
+                            pass
+
+                    # Fallback: look for sub transaction created alongside the main transaction
+                    if not existing_sub_transaction and service.related_transaction:
                         existing_sub_transaction = SalesTransaction.objects.filter(
                             stall=sub_stall,
                             client=service.client,
@@ -417,8 +425,8 @@ class ServiceCompletionHandler:
                                 service.related_transaction.created_at - timedelta(seconds=5),
                                 service.related_transaction.created_at + timedelta(seconds=5)
                             )
-                        ).first()
-                    
+                        ).exclude(id=service.related_transaction.id).first()
+
                     if not existing_sub_transaction:
                         # Create new sub stall transaction
                         sub_sales = SalesTransaction.objects.create(
@@ -426,7 +434,7 @@ class ServiceCompletionHandler:
                             client=service.client,
                             sales_clerk=user
                         )
-                        
+
                         # Add all parts to the single transaction
                         for part in parts_to_sell:
                             SalesItem.objects.create(
@@ -435,6 +443,13 @@ class ServiceCompletionHandler:
                                 quantity=part['quantity'],
                                 final_price_per_unit=part['unit_price'],
                             )
+
+                        # Link sub transaction to service
+                        service.related_sub_transaction = sub_sales
+                        service.save(update_fields=['related_sub_transaction'])
+                    elif not service.related_sub_transaction_id:
+                        service.related_sub_transaction = existing_sub_transaction
+                        service.save(update_fields=['related_sub_transaction'])
 
             # Calculate and save revenue attribution
             revenue_data = RevenueCalculator.calculate_service_revenue(service, save=True)
@@ -541,33 +556,44 @@ class ServiceCompletionHandler:
                     # Link main receipt to service
                     service.related_transaction = main_receipt
                     service.save(update_fields=['related_transaction'])
-                
+
                 # Create Sub stall transaction for parts if any paid parts exist
                 # Only if not already created earlier (check if one exists from the parts_to_sell logic)
                 if has_paid_parts:
-                    # Check if sub transaction was already created in the earlier parts_to_sell logic
-                    existing_sub_transaction = SalesTransaction.objects.filter(
-                        stall=sub_stall,
-                        client=service.client,
-                        voided=False,
-                        created_at__range=(
-                            timezone.now() - timedelta(seconds=10),
-                            timezone.now()
-                        )
-                    ).first()
-                    
+                    # First check linked sub transaction
+                    existing_sub_transaction = None
+                    if service.related_sub_transaction_id:
+                        try:
+                            candidate = service.related_sub_transaction
+                            if not candidate.voided:
+                                existing_sub_transaction = candidate
+                        except SalesTransaction.DoesNotExist:
+                            pass
+
+                    # Fallback: time-window lookup
+                    if not existing_sub_transaction:
+                        existing_sub_transaction = SalesTransaction.objects.filter(
+                            stall=sub_stall,
+                            client=service.client,
+                            voided=False,
+                            created_at__range=(
+                                timezone.now() - timedelta(seconds=10),
+                                timezone.now()
+                            )
+                        ).first()
+
                     if not existing_sub_transaction:
                         sub_receipt = SalesTransaction.objects.create(
                             stall=sub_stall,
                             client=service.client,
                             sales_clerk=user,
                         )
-                        
+
                         for appliance in service.appliances.all():
                             for item_used in appliance.items_used.all():
                                 if item_used.is_free:
                                     continue
-                                
+
                                 charged_qty = item_used.quantity - item_used.free_quantity
                                 if charged_qty > 0 and item_used.item:
                                     SalesItem.objects.create(
@@ -576,6 +602,13 @@ class ServiceCompletionHandler:
                                         quantity=charged_qty,
                                         final_price_per_unit=item_used.item.retail_price,
                                     )
+
+                        # Link sub receipt to service
+                        service.related_sub_transaction = sub_receipt
+                        service.save(update_fields=['related_sub_transaction'])
+                    elif not service.related_sub_transaction_id:
+                        service.related_sub_transaction = existing_sub_transaction
+                        service.save(update_fields=['related_sub_transaction'])
             
             return {
                 'service_id': service.id,
@@ -916,6 +949,7 @@ class ServicePaymentManager:
                         })
             
             # Create ONE sub stall transaction for ALL parts (if any)
+            sub_sales_transaction = None
             if parts_to_add:
                 sub_sales_transaction = SalesTransaction.objects.create(
                     stall=sub_stall,
@@ -932,15 +966,32 @@ class ServicePaymentManager:
                         quantity=part['quantity'],
                         final_price_per_unit=part['item'].retail_price,
                     )
-            
-            # Recreate all sales payments from service payments (MAIN STALL ONLY)
+
+                service.related_sub_transaction = sub_sales_transaction
+                service.save(update_fields=["related_sub_transaction"])
+
+            # Split payments proportionally between main and sub stall
+            main_total = sales_transaction.computed_total or Decimal("0")
+            sub_total = (sub_sales_transaction.computed_total or Decimal("0")) if sub_sales_transaction else Decimal("0")
+            combined_total = main_total + sub_total
+
             for service_payment in service_payments:
+                m_share, s_share = ServicePaymentManager._split_payment(
+                    service_payment.amount, main_total, sub_total, combined_total
+                )
                 SalesPayment.objects.create(
                     transaction=sales_transaction,
                     payment_type=service_payment.payment_type,
-                    amount=service_payment.amount,
+                    amount=m_share,
                     payment_date=service_payment.payment_date,
                 )
+                if s_share > 0 and sub_sales_transaction:
+                    SalesPayment.objects.create(
+                        transaction=sub_sales_transaction,
+                        payment_type=service_payment.payment_type,
+                        amount=s_share,
+                        payment_date=service_payment.payment_date,
+                    )
         
         return sales_transaction
 
@@ -1010,7 +1061,8 @@ class ServicePaymentManager:
             # Get system stalls
             main_stall = get_main_stall()
             sub_stall = get_sub_stall()
-            
+            sub_sales_tx = None
+
             if not sales_transaction:
                 # Create new main stall sales transaction for this service
                 target_stall = service.stall if service.stall else main_stall
@@ -1020,8 +1072,7 @@ class ServicePaymentManager:
                     sales_clerk=received_by,
                 )
                 service.related_transaction = sales_transaction
-                service.save(update_fields=["related_transaction"])
-                
+
                 # Create sales items for all appliances' labor fees (MAIN STALL)
                 for appliance in service.appliances.all():
                     if appliance.labor_fee > 0 and not appliance.labor_is_free:
@@ -1034,7 +1085,7 @@ class ServicePaymentManager:
                             quantity=1,
                             final_price_per_unit=appliance.labor_fee,
                         )
-                
+
                 # Add aircon unit prices for installation services (Main stall revenue)
                 if service.service_type == 'installation':
                     for unit in service.installation_units.all():
@@ -1055,7 +1106,7 @@ class ServicePaymentManager:
                                     quantity=1,
                                     final_price_per_unit=unit_price,
                                 )
-                
+
                 # Collect all parts from all appliances
                 parts_to_add = []
                 for appliance in service.appliances.all():
@@ -1063,21 +1114,98 @@ class ServicePaymentManager:
                         # Skip free items
                         if item_used.is_free:
                             continue
-                            
+
                         charged_qty = item_used.quantity - item_used.free_quantity
                         if charged_qty > 0 and item_used.item:
                             parts_to_add.append({
                                 'item': item_used.item,
                                 'quantity': charged_qty,
                             })
-                
-                # Check if a sub stall transaction already exists (created by complete_service)
-                sub_sales_transaction = None
+
+                # Find or create sub stall transaction for parts
                 if parts_to_add:
-                    # Try to find existing sub stall transaction for this specific service
-                    # Look for sub transactions created within 5 seconds of the main transaction
-                    # to ensure we don't accidentally match another service's transaction
-                    sub_sales_transaction = SalesTransaction.objects.filter(
+                    # Check if service already has a linked sub transaction
+                    if service.related_sub_transaction_id:
+                        try:
+                            existing = service.related_sub_transaction
+                            if not existing.voided:
+                                sub_sales_tx = existing
+                        except SalesTransaction.DoesNotExist:
+                            pass
+
+                    # Fallback: time-window lookup for transactions from complete_service
+                    if not sub_sales_tx:
+                        sub_sales_tx = SalesTransaction.objects.filter(
+                            stall=sub_stall,
+                            client=service.client,
+                            created_at__range=(
+                                sales_transaction.created_at - timedelta(seconds=5),
+                                sales_transaction.created_at + timedelta(seconds=5)
+                            ),
+                            voided=False,
+                        ).exclude(id=sales_transaction.id).first()
+
+                    # If no existing transaction, create ONE for ALL parts
+                    if not sub_sales_tx:
+                        sub_sales_tx = SalesTransaction.objects.create(
+                            stall=sub_stall,
+                            client=service.client,
+                            sales_clerk=received_by,
+                        )
+
+                        # Add all parts to the single sub stall transaction
+                        for part in parts_to_add:
+                            SalesItem.objects.create(
+                                transaction=sub_sales_tx,
+                                item=part['item'],
+                                description=part['item'].name,
+                                quantity=part['quantity'],
+                                final_price_per_unit=part['item'].retail_price,
+                            )
+
+                # Link sub transaction to service
+                if sub_sales_tx:
+                    service.related_sub_transaction = sub_sales_tx
+
+                service.save(update_fields=["related_transaction", "related_sub_transaction"])
+
+                # Calculate proportional split between main and sub stall
+                main_total = sales_transaction.computed_total or Decimal("0")
+                sub_total = (sub_sales_tx.computed_total or Decimal("0")) if sub_sales_tx else Decimal("0")
+                combined_total = main_total + sub_total
+
+                # Recreate existing service payments, split between main and sub
+                previous_payments = service.payments.exclude(id=payment.id).order_by('payment_date')
+
+                for service_payment in previous_payments:
+                    m_share, s_share = ServicePaymentManager._split_payment(
+                        service_payment.amount, main_total, sub_total, combined_total
+                    )
+                    SalesPayment.objects.create(
+                        transaction=sales_transaction,
+                        payment_type=service_payment.payment_type,
+                        amount=m_share,
+                        payment_date=service_payment.payment_date,
+                    )
+                    if s_share > 0 and sub_sales_tx:
+                        SalesPayment.objects.create(
+                            transaction=sub_sales_tx,
+                            payment_type=service_payment.payment_type,
+                            amount=s_share,
+                            payment_date=service_payment.payment_date,
+                        )
+            else:
+                # Reuse existing transaction — find associated sub stall transaction
+                if service.related_sub_transaction_id:
+                    try:
+                        existing = service.related_sub_transaction
+                        if not existing.voided:
+                            sub_sales_tx = existing
+                    except SalesTransaction.DoesNotExist:
+                        pass
+
+                if not sub_sales_tx:
+                    sub_sales_tx = SalesTransaction.objects.filter(
                         stall=sub_stall,
                         client=service.client,
                         created_at__range=(
@@ -1085,48 +1213,41 @@ class ServicePaymentManager:
                             sales_transaction.created_at + timedelta(seconds=5)
                         ),
                         voided=False,
-                    ).order_by('created_at').first()
-                    
-                    # If no existing transaction, create ONE for ALL parts
-                    if not sub_sales_transaction:
-                        sub_sales_transaction = SalesTransaction.objects.create(
-                            stall=sub_stall,
-                            client=service.client,
-                            sales_clerk=received_by,
-                        )
-                        
-                        # Add all parts to the single sub stall transaction
-                        for part in parts_to_add:
-                            SalesItem.objects.create(
-                                transaction=sub_sales_transaction,
-                                item=part['item'],
-                                description=part['item'].name,
-                                quantity=part['quantity'],
-                                final_price_per_unit=part['item'].retail_price,
-                            )
-                
-                # Recreate existing service payments on main stall transaction
-                # All payments go to main stall where cash is physically received
-                # (sub stall gets SalesItems for parts revenue tracking only)
-                previous_payments = service.payments.exclude(id=payment.id).order_by('payment_date')
-                
-                for service_payment in previous_payments:
-                    SalesPayment.objects.create(
-                        transaction=sales_transaction,
-                        payment_type=service_payment.payment_type,
-                        amount=service_payment.amount,
-                        payment_date=service_payment.payment_date,
-                    )
-            
-            # Record payment on main stall transaction where cash is physically received
-            # (sub stall gets SalesItems for parts revenue tracking only)
+                    ).exclude(id=sales_transaction.id).first()
+
+                    # Persist the link if found
+                    if sub_sales_tx:
+                        service.related_sub_transaction = sub_sales_tx
+                        service.save(update_fields=["related_sub_transaction"])
+
+            # Split current payment proportionally between main and sub stall
+            main_total = sales_transaction.computed_total or Decimal("0")
+            sub_total = (sub_sales_tx.computed_total or Decimal("0")) if sub_sales_tx else Decimal("0")
+            combined_total = main_total + sub_total
+            m_share, s_share = ServicePaymentManager._split_payment(amount, main_total, sub_total, combined_total)
+
             SalesPayment.objects.create(
                 transaction=sales_transaction,
                 payment_type=payment_type,
-                amount=amount,
+                amount=m_share,
             )
+            if s_share > 0 and sub_sales_tx:
+                SalesPayment.objects.create(
+                    transaction=sub_sales_tx,
+                    payment_type=payment_type,
+                    amount=s_share,
+                )
 
         return payment
+
+    @staticmethod
+    def _split_payment(amount, main_total, sub_total, combined_total):
+        """Split a payment amount proportionally between main and sub stall."""
+        if combined_total <= 0 or sub_total <= 0:
+            return amount, Decimal("0")
+        sub_share = (amount * sub_total / combined_total).quantize(Decimal("0.01"))
+        main_share = amount - sub_share  # remainder to main to avoid rounding drift
+        return main_share, sub_share
 
     @staticmethod
     def get_outstanding_services(stall=None):

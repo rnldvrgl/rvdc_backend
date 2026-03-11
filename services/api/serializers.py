@@ -749,6 +749,7 @@ class ServiceSerializer(serializers.ModelSerializer):
             "service_type",
             "service_mode",
             "related_transaction",
+            "related_sub_transaction",
             "description",
             "override_address",
             "override_contact_person",

@@ -84,6 +84,14 @@ class Service(models.Model):
     related_transaction = models.ForeignKey(
         "sales.SalesTransaction", null=True, blank=True, on_delete=models.SET_NULL
     )
+    related_sub_transaction = models.ForeignKey(
+        "sales.SalesTransaction",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="sub_stall_services",
+        help_text="Sub stall sales transaction for parts revenue tracking",
+    )
     description = models.TextField(blank=True)
     override_address = models.TextField(blank=True, null=True)
     override_contact_person = models.CharField(max_length=100, blank=True, null=True)
