@@ -356,6 +356,63 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             }
         )
 
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated], url_path="pull-out")
+    @transaction.atomic
+    def pull_out(self, request, pk=None):
+        """
+        Pull out / remove stock from stall (defective, damaged, etc.).
+        Deducts quantity without creating a sales transaction.
+        """
+        stock = self.get_object()
+
+        if not (request.user.role == "admin" or user_can_manage_stall(request.user, stock.stall)):
+            return Response(
+                {"detail": "You do not have permission to pull out stock from this stall."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        quantity = request.data.get("quantity")
+        reason = request.data.get("reason", "")
+
+        if quantity is None:
+            return Response(
+                {"detail": "Quantity is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            quantity = float(quantity)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "Quantity must be a number."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if quantity <= 0:
+            return Response(
+                {"detail": "Quantity must be greater than zero."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if stock.available_quantity < quantity:
+            return Response(
+                {"detail": f"Not enough available stock. Available: {stock.available_quantity}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        old_quantity = stock.quantity
+        stock.quantity -= quantity
+        stock.save()
+
+        return Response({
+            "detail": f"Pulled out {quantity} {stock.item.unit_of_measure} of '{stock.item.name}' from {stock.stall.name}.",
+            "item_name": stock.item.name,
+            "quantity_removed": float(quantity),
+            "old_quantity": float(old_quantity),
+            "new_quantity": float(stock.quantity),
+            "reason": reason,
+        })
+
     @action(detail=True, methods=["get", "post"], permission_classes=[IsAdminUser], url_path="audit")
     @transaction.atomic
     def audit(self, request, pk=None):

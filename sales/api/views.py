@@ -98,7 +98,6 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 "options": lambda: [
                     {"label": "Sale", "value": "sale"},
                     {"label": "Replacement", "value": "replacement"},
-                    {"label": "Pull Out", "value": "pull_out"},
                 ]
             },
         }
