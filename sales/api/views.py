@@ -44,7 +44,7 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     ordering_fields = "__all__"
 
     def get_queryset(self):
-        qs = super().get_queryset().filter(is_deleted=False)
+        qs = super().get_queryset().filter(is_deleted=False, voided=False)
         user = self.request.user
 
         # Custom date filtering: include transactions that were CREATED in the date
@@ -92,12 +92,6 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                     {"label": "Paid", "value": "paid"},
                     {"label": "Unpaid", "value": "unpaid"},
                     {"label": "Partial", "value": "partial"},
-                ]
-            },
-            "voided": {
-                "options": lambda: [
-                    {"label": "Voided", "value": "true"},
-                    {"label": "Not Voided", "value": "false"},
                 ]
             },
         }
@@ -151,6 +145,46 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
+
+    @action(detail=False, methods=["get"], url_path="voided")
+    def voided_list(self, request):
+        """List voided transactions (separate tab in UI)."""
+        qs = SalesTransaction.objects.select_related(
+            'client', 'stall', 'sales_clerk'
+        ).prefetch_related(
+            'items__item__category', 'payments',
+        ).filter(is_deleted=False, voided=True).order_by('-created_at')
+
+        user = request.user
+        if user.role == 'admin':
+            pass
+        elif user.role in ('manager', 'clerk') and getattr(user, 'assigned_stall', None):
+            qs = qs.filter(stall=user.assigned_stall)
+        else:
+            qs = qs.none()
+
+        qs = self.filter_queryset(qs)
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["delete"], url_path="hard-delete-voided")
+    def hard_delete_voided(self, request, pk=None):
+        """Permanently delete a voided transaction."""
+        try:
+            instance = SalesTransaction.objects.get(pk=pk)
+        except SalesTransaction.DoesNotExist:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not instance.voided:
+            return Response(
+                {"detail": "Transaction must be voided before it can be permanently deleted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        instance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["post"])
     def add_payment(self, request, pk=None):

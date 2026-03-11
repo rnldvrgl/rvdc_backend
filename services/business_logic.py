@@ -559,6 +559,41 @@ class ServiceCompletionHandler:
                     service.related_transaction = main_receipt
                     service.save(update_fields=['related_transaction'])
 
+                    # Apply service-level discount to Main stall items
+                    service_discount = Decimal('0')
+                    main_subtotal = main_receipt.subtotal or Decimal('0')
+                    if service.service_discount_percentage and service.service_discount_percentage > 0:
+                        sub_subtotal = Decimal('0')
+                        # We'll compute sub_subtotal after sub receipt is created (if any)
+                        # For now, estimate from revenue data
+                        sub_subtotal = Decimal(str(revenue_data.get('sub_revenue', 0)))
+                        combined = main_subtotal + sub_subtotal
+                        service_discount = (combined * service.service_discount_percentage / Decimal('100')).quantize(
+                            Decimal('0.01'), rounding=ROUND_HALF_UP
+                        )
+                    elif service.service_discount_amount and service.service_discount_amount > 0:
+                        service_discount = service.service_discount_amount
+
+                    if service_discount > 0 and main_subtotal > 0:
+                        items = list(main_receipt.items.all())
+                        remaining_discount = service_discount
+                        for i, item in enumerate(items):
+                            if i == len(items) - 1:
+                                item_discount = remaining_discount
+                            else:
+                                item_discount = (service_discount * item.line_total / main_subtotal).quantize(
+                                    Decimal('0.01'), rounding=ROUND_HALF_UP
+                                )
+                            per_unit_discount = (item_discount / item.quantity).quantize(
+                                Decimal('0.01'), rounding=ROUND_HALF_UP
+                            )
+                            item.final_price_per_unit = max(
+                                Decimal('0'),
+                                item.final_price_per_unit - per_unit_discount,
+                            )
+                            item.save(update_fields=['final_price_per_unit'])
+                            remaining_discount -= item_discount
+
                 # Create Sub stall transaction for parts if any paid parts exist
                 # Only if not already created earlier (check if one exists from the parts_to_sell logic)
                 if has_paid_parts:

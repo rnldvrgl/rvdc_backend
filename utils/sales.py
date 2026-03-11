@@ -36,6 +36,7 @@ def void_sales_transaction(transaction_id: int, user, reason: str):
     transaction.voided_at = now()
     transaction.void_reason = reason
     transaction.save()
+    transaction.update_payment_status()
 
     return transaction
 
@@ -79,5 +80,6 @@ def unvoid_sales_transaction(transaction_id: int, user):
     transaction.voided_at = None
     transaction.void_reason = ""
     transaction.save()
+    transaction.update_payment_status()
 
     return transaction
