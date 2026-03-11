@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('sales', '0010_add_performance_indexes'),
+        ('sales', '0011_add_cheque_collection_to_payments'),
     ]
 
     operations = [
