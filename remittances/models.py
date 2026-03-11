@@ -31,6 +31,7 @@ class RemittanceRecord(models.Model):
         CustomUser, on_delete=models.SET_NULL, null=True, blank=True
     )
     is_remitted = models.BooleanField(default=False)
+    manually_adjusted = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(null=True, blank=True, auto_now=True)

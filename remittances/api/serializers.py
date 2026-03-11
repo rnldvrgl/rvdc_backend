@@ -58,6 +58,26 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         help_text="If true, marks the new remittance as acknowledged on creation."
     )
 
+    # Optional: manual overrides for sales totals (use instead of auto-computed)
+    override_sales_cash = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, write_only=True, allow_null=True,
+    )
+    override_sales_gcash = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, write_only=True, allow_null=True,
+    )
+    override_sales_credit = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, write_only=True, allow_null=True,
+    )
+    override_sales_debit = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, write_only=True, allow_null=True,
+    )
+    override_sales_cheque = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, write_only=True, allow_null=True,
+    )
+    override_expenses = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, write_only=True, allow_null=True,
+    )
+
     class Meta:
         model = RemittanceRecord
         fields = [
@@ -70,6 +90,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             "total_sales_debit",
             "total_sales_cheque",
             "total_expenses",
+            "manually_adjusted",
             "remitted_amount",
             "declared_amount",
             "remitted_by",
@@ -84,7 +105,14 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             "cod_for_today",
             "remittance_date",
             "mark_as_acknowledged",
+            "override_sales_cash",
+            "override_sales_gcash",
+            "override_sales_credit",
+            "override_sales_debit",
+            "override_sales_cheque",
+            "override_expenses",
         ]
+        read_only_fields = ["manually_adjusted"]
 
     def get_stall_data(self, obj):
         return {"id": obj.stall.id, "name": obj.stall.name} if obj.stall else None
@@ -172,6 +200,19 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         remittance_date = validated_data.pop("remittance_date", None)
         mark_as_acknowledged = validated_data.pop("mark_as_acknowledged", False)
 
+        # Extract manual overrides
+        overrides = {
+            k.replace("override_sales_", ""): validated_data.pop(k)
+            for k in list(validated_data.keys())
+            if k.startswith("override_sales_") and validated_data.get(k) is not None
+        }
+        override_expenses = validated_data.pop("override_expenses", None)
+        # Clean remaining override keys
+        for k in [k for k in validated_data if k.startswith("override_")]:
+            validated_data.pop(k)
+
+        manually_adjusted = bool(overrides) or override_expenses is not None
+
         # Use provided date or default to today
         target_date = remittance_date or timezone.localdate()
 
@@ -192,6 +233,9 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             pt: self._sum_sales(stall, target_date, pt)
             for pt in ["cash", "gcash", "credit", "debit", "cheque"]
         }
+        # Apply manual overrides (replace system-computed values)
+        for pt, val in overrides.items():
+            total_sales[pt] = val
 
         # 📉 Get total expenses for the target date
         total_expenses = (
@@ -200,6 +244,8 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             )["total"]
             or 0
         )
+        if override_expenses is not None:
+            total_expenses = override_expenses
 
         # 💵 Compute totals from breakdown
         remitted_amt = self._compute_total(breakdown_data, declared=False)
@@ -224,6 +270,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             declared_amount=declared_amt,
             total_expenses=total_expenses,
             is_remitted=bool(mark_as_acknowledged),
+            manually_adjusted=manually_adjusted,
             **{f"total_sales_{k}": v for k, v in total_sales.items()},
         )
 
@@ -239,6 +286,28 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         # Remove write-only fields that don't apply to updates
         validated_data.pop("remittance_date", None)
         validated_data.pop("mark_as_acknowledged", None)
+
+        # Map override fields → model fields
+        sales_field_map = {
+            "override_sales_cash": "total_sales_cash",
+            "override_sales_gcash": "total_sales_gcash",
+            "override_sales_credit": "total_sales_credit",
+            "override_sales_debit": "total_sales_debit",
+            "override_sales_cheque": "total_sales_cheque",
+            "override_expenses": "total_expenses",
+        }
+        has_override = False
+        for override_key, model_field in sales_field_map.items():
+            val = validated_data.pop(override_key, None)
+            if val is not None:
+                validated_data[model_field] = val
+                has_override = True
+        # Clean any remaining override keys
+        for k in [k for k in validated_data if k.startswith("override_")]:
+            validated_data.pop(k)
+
+        if has_override:
+            validated_data["manually_adjusted"] = True
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)

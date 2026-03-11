@@ -53,14 +53,30 @@ class Command(BaseCommand):
             action="store_true",
             help="Show what would change without saving",
         )
+        parser.add_argument(
+            "--include-manual",
+            action="store_true",
+            help="Also recalculate manually-adjusted records (skipped by default)",
+        )
 
     def handle(self, *args, **options):
         dry_run = options["dry_run"]
+        include_manual = options["include_manual"]
 
         if dry_run:
             self.stdout.write(self.style.WARNING("=== DRY RUN MODE ===\n"))
 
         remittances = RemittanceRecord.objects.select_related("stall").order_by("created_at")
+        if not include_manual:
+            skipped = remittances.filter(manually_adjusted=True).count()
+            remittances = remittances.filter(manually_adjusted=False)
+            if skipped:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Skipping {skipped} manually-adjusted record(s). "
+                        "Use --include-manual to recalculate them too.\n"
+                    )
+                )
         updated_count = 0
 
         for rem in remittances:
