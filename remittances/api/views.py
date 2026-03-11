@@ -12,7 +12,7 @@ from utils.filters.role_filters import get_role_based_filter_response
 
 from decimal import Decimal
 from datetime import date
-from django.db.models import Sum, F, ExpressionWrapper, DecimalField
+from django.db.models import Sum
 from django.utils import timezone
 from inventory.models import Stall
 from sales.models import SalesPayment, PaymentStatus
@@ -111,18 +111,28 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
 
         # Compute sales by payment type
         def sum_sales(payment_type: str):
-            qs = SalesPayment.objects.filter(
+            # Sum all payments of this type for paid/partial transactions on this date
+            total_payments = SalesPayment.objects.filter(
                 transaction__stall=stall,
                 payment_date__date=target_date,
                 transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
                 payment_type=payment_type,
-            ).annotate(
-                net_amount=ExpressionWrapper(
-                    F("amount") - F("transaction__change_amount"),
-                    output_field=DecimalField(max_digits=10, decimal_places=2),
-                )
-            )
-            return qs.aggregate(total=Sum("net_amount"))["total"] or Decimal("0")
+            ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+
+            # Change is always given in cash, so only subtract from cash totals.
+            # Subtract once per transaction (not per payment) to avoid double-counting.
+            if payment_type == "cash":
+                from sales.models import SalesTransaction
+                total_change = SalesTransaction.objects.filter(
+                    stall=stall,
+                    payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                    payments__payment_date__date=target_date,
+                ).distinct().aggregate(
+                    total=Sum("change_amount")
+                )["total"] or Decimal("0")
+                return total_payments - total_change
+
+            return total_payments
 
         sales = {pt: sum_sales(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]}
 

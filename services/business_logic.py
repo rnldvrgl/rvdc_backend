@@ -1105,78 +1105,26 @@ class ServicePaymentManager:
                                 final_price_per_unit=part['item'].retail_price,
                             )
                 
-                # Recreate existing service payments with proper allocation
-                # Get all previous payments (excluding the current one we just created)
+                # Recreate existing service payments on main stall transaction
+                # All payments go to main stall where cash is physically received
+                # (sub stall gets SalesItems for parts revenue tracking only)
                 previous_payments = service.payments.exclude(id=payment.id).order_by('payment_date')
                 
                 for service_payment in previous_payments:
-                    # Allocate each previous payment: prioritize sub stall first
-                    remaining = service_payment.amount
-                    
-                    # 1. Allocate to sub stall first (if it exists and has balance)
-                    if sub_sales_transaction:
-                        sub_total = sub_sales_transaction.computed_total
-                        sub_paid = sub_sales_transaction.total_paid
-                        sub_balance = sub_total - sub_paid
-                        
-                        if sub_balance > 0:
-                            sub_payment_amt = min(remaining, sub_balance)
-                            SalesPayment.objects.create(
-                                transaction=sub_sales_transaction,
-                                payment_type=service_payment.payment_type,
-                                amount=sub_payment_amt,
-                                payment_date=service_payment.payment_date,
-                            )
-                            remaining -= sub_payment_amt
-                    
-                    # 2. Allocate remaining to main stall
-                    if remaining > 0:
-                        SalesPayment.objects.create(
-                            transaction=sales_transaction,
-                            payment_type=service_payment.payment_type,
-                            amount=remaining,
-                            payment_date=service_payment.payment_date,
-                        )
-            else:
-                # Find sub stall transaction (if it exists)
-                # Look for sub transactions created within 5 seconds of the main transaction
-                # to ensure we don't accidentally match another service's transaction
-                sub_sales_transaction = SalesTransaction.objects.filter(
-                    stall=sub_stall,
-                    client=service.client,
-                    created_at__range=(
-                        sales_transaction.created_at - timedelta(seconds=5),
-                        sales_transaction.created_at + timedelta(seconds=5)
-                    ),
-                    voided=False,
-                ).order_by('created_at').first()
-            
-            # Allocate payment: prioritize sub stall (parts) first, then main stall (labor)
-            remaining_amount = amount
-            
-            # 1. Allocate to sub stall first (if it exists and has balance)
-            if sub_sales_transaction:
-                sub_total = sub_sales_transaction.computed_total
-                sub_paid = sub_sales_transaction.total_paid
-                sub_balance = sub_total - sub_paid
-                
-                if sub_balance > 0:
-                    # Allocate to sub stall
-                    sub_payment_amount = min(remaining_amount, sub_balance)
                     SalesPayment.objects.create(
-                        transaction=sub_sales_transaction,
-                        payment_type=payment_type,
-                        amount=sub_payment_amount,
+                        transaction=sales_transaction,
+                        payment_type=service_payment.payment_type,
+                        amount=service_payment.amount,
+                        payment_date=service_payment.payment_date,
                     )
-                    remaining_amount -= sub_payment_amount
             
-            # 2. Allocate remaining amount to main stall
-            if remaining_amount > 0:
-                SalesPayment.objects.create(
-                    transaction=sales_transaction,
-                    payment_type=payment_type,
-                    amount=remaining_amount,
-                )
+            # Record payment on main stall transaction where cash is physically received
+            # (sub stall gets SalesItems for parts revenue tracking only)
+            SalesPayment.objects.create(
+                transaction=sales_transaction,
+                payment_type=payment_type,
+                amount=amount,
+            )
 
         return payment
 
