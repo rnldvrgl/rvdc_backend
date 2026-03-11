@@ -156,7 +156,12 @@ class SalesItem(models.Model):
         help_text="For non-inventory charges like labor fees.",
     )
 
-    quantity = models.PositiveIntegerField(default=1)
+    quantity = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=1,
+        help_text="Quantity sold (supports decimals for kg, ft, etc.)",
+    )
     final_price_per_unit = models.DecimalField(
         max_digits=10,
         decimal_places=2,
