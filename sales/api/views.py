@@ -1,4 +1,4 @@
-from datetime import timezone
+from datetime import timezone, datetime, time as dt_time
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -6,8 +6,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import NotFound
 from django_filters.rest_framework import DjangoFilterBackend
 from django.core.exceptions import ValidationError
+from django.db.models import Q
+from django.utils import timezone as dj_timezone
+from django.utils.dateparse import parse_date
 
-from utils.query import get_role_filtered_queryset
 from sales.models import SalesPayment, SalesTransaction
 from sales.api.serializers import SalesPaymentSerializer, SalesTransactionSerializer
 from utils.sales import void_sales_transaction, unvoid_sales_transaction
@@ -43,7 +45,43 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset().filter(is_deleted=False)
-        return get_role_filtered_queryset(self.request, qs)
+        user = self.request.user
+
+        # Custom date filtering: include transactions that were CREATED in the date
+        # range OR have PAYMENTS in the date range (so service payments on old
+        # receipts show up on the day the money was received)
+        start = self.request.query_params.get("start_date")
+        end = self.request.query_params.get("end_date")
+
+        # Role-based stall filtering
+        if user.role == "admin":
+            pass  # admin sees all stalls
+        elif user.role in ("manager", "clerk") and getattr(user, "assigned_stall", None):
+            qs = qs.filter(stall=user.assigned_stall)
+        else:
+            return qs.none()
+
+        if start or end:
+            created_q = Q()
+            payment_q = Q()
+
+            if start:
+                start_date = parse_date(start)
+                if start_date:
+                    start_dt = dj_timezone.make_aware(datetime.combine(start_date, dt_time.min))
+                    created_q &= Q(created_at__gte=start_dt)
+                    payment_q &= Q(payments__payment_date__gte=start_dt)
+
+            if end:
+                end_date = parse_date(end)
+                if end_date:
+                    end_dt = dj_timezone.make_aware(datetime.combine(end_date, dt_time.max))
+                    created_q &= Q(created_at__lte=end_dt)
+                    payment_q &= Q(payments__payment_date__lte=end_dt)
+
+            qs = qs.filter(created_q | payment_q).distinct()
+
+        return qs
 
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):
