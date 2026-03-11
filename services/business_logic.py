@@ -865,6 +865,39 @@ class ServicePaymentManager:
                             final_price_per_unit=unit_final_price,
                         )
         
+        # Apply service-level discount to Main stall items only
+        service_discount = Decimal('0.00')
+        main_subtotal = sales_transaction.subtotal or Decimal('0.00')
+        if service.service_discount_percentage and service.service_discount_percentage > 0:
+            sub_tx = service.related_sub_transaction
+            sub_subtotal = (sub_tx.subtotal or Decimal('0.00')) if sub_tx else Decimal('0.00')
+            combined = main_subtotal + sub_subtotal
+            service_discount = (combined * service.service_discount_percentage / Decimal('100')).quantize(
+                Decimal('0.01'), rounding=ROUND_HALF_UP
+            )
+        elif service.service_discount_amount and service.service_discount_amount > 0:
+            service_discount = service.service_discount_amount
+
+        if service_discount > 0 and main_subtotal > 0:
+            items = list(sales_transaction.items.all())
+            remaining_discount = service_discount
+            for i, item in enumerate(items):
+                if i == len(items) - 1:
+                    item_discount = remaining_discount
+                else:
+                    item_discount = (service_discount * item.line_total / main_subtotal).quantize(
+                        Decimal('0.01'), rounding=ROUND_HALF_UP
+                    )
+                per_unit_discount = (item_discount / item.quantity).quantize(
+                    Decimal('0.01'), rounding=ROUND_HALF_UP
+                )
+                item.final_price_per_unit = max(
+                    Decimal('0'),
+                    item.final_price_per_unit - per_unit_discount,
+                )
+                item.save(update_fields=['final_price_per_unit'])
+                remaining_discount -= item_discount
+
         # Update payment status after syncing items
         sales_transaction.update_payment_status()
 
