@@ -216,9 +216,46 @@ class Command(BaseCommand):
 
         self.stdout.write(f"  Found {phase2_fixed} payment(s) to rebalance.")
 
+        # ── Phase 3: Clean up ghost SalesTransactions (0 items, 0 amount) ──
+        self.stdout.write(self.style.MIGRATE_HEADING(
+            "\n── Phase 3: Remove ghost transactions (0 items) ──"
+        ))
+
+        ghost_services = Service.objects.filter(
+            related_transaction__isnull=False,
+            is_deleted=False,
+        ).select_related("related_transaction")
+
+        ghosts_cleaned = 0
+        for svc in ghost_services:
+            main_tx = svc.related_transaction
+            if not main_tx or main_tx.voided or main_tx.is_deleted:
+                continue
+
+            # Ghost = 0 items AND 0 payments
+            if main_tx.items.exists():
+                continue
+            if main_tx.payments.exists():
+                continue
+
+            ghosts_cleaned += 1
+            self.stdout.write(
+                f"  Service #{svc.id} ({svc.client}): "
+                f"ghost main TX #{main_tx.id} ({main_tx.payment_status}) — unlinking & deleting"
+            )
+
+            if not dry_run:
+                with transaction.atomic():
+                    svc.related_transaction = None
+                    svc.save(update_fields=["related_transaction"])
+                    main_tx.delete()
+
+        self.stdout.write(f"  Found {ghosts_cleaned} ghost transaction(s).")
+
         prefix = "[DRY RUN] " if dry_run else ""
         self.stdout.write(self.style.SUCCESS(
             f"\n{prefix}Done. "
             f"Linked {linked} sub transactions, "
-            f"fixed {payments_fixed} payment split(s)."
+            f"fixed {payments_fixed} payment split(s), "
+            f"cleaned {ghosts_cleaned} ghost transaction(s)."
         ))
