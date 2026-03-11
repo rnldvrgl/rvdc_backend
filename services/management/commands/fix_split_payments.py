@@ -69,11 +69,20 @@ class Command(BaseCommand):
                 stall=sub_stall,
                 client=service.client,
                 created_at__range=(
-                    main_tx.created_at - timedelta(seconds=5),
-                    main_tx.created_at + timedelta(seconds=5),
+                    main_tx.created_at - timedelta(seconds=60),
+                    main_tx.created_at + timedelta(seconds=60),
                 ),
                 voided=False,
             ).first()
+
+            if not sub_tx:
+                # Broader fallback: same-day lookup
+                sub_tx = SalesTransaction.objects.filter(
+                    stall=sub_stall,
+                    client=service.client,
+                    created_at__date=main_tx.created_at.date(),
+                    voided=False,
+                ).first()
 
             if not sub_tx:
                 continue

@@ -424,8 +424,8 @@ class ServiceCompletionHandler:
                             client=service.client,
                             voided=False,
                             created_at__range=(
-                                service.related_transaction.created_at - timedelta(seconds=5),
-                                service.related_transaction.created_at + timedelta(seconds=5)
+                                service.related_transaction.created_at - timedelta(seconds=60),
+                                service.related_transaction.created_at + timedelta(seconds=60)
                             )
                         ).exclude(id=service.related_transaction.id).first()
 
@@ -614,7 +614,7 @@ class ServiceCompletionHandler:
                             client=service.client,
                             voided=False,
                             created_at__range=(
-                                timezone.now() - timedelta(seconds=10),
+                                timezone.now() - timedelta(seconds=60),
                                 timezone.now()
                             )
                         ).first()
@@ -1209,8 +1209,8 @@ class ServicePaymentManager:
                             stall=sub_stall,
                             client=service.client,
                             created_at__range=(
-                                sales_transaction.created_at - timedelta(seconds=5),
-                                sales_transaction.created_at + timedelta(seconds=5)
+                                sales_transaction.created_at - timedelta(seconds=60),
+                                sales_transaction.created_at + timedelta(seconds=60)
                             ),
                             voided=False,
                         ).exclude(id=sales_transaction.id).first()
@@ -1311,20 +1311,33 @@ class ServicePaymentManager:
                         pass
 
                 if not sub_sales_tx:
+                    # Fallback 1: time-window lookup (±60 seconds around main TX)
                     sub_sales_tx = SalesTransaction.objects.filter(
                         stall=sub_stall,
                         client=service.client,
                         created_at__range=(
-                            sales_transaction.created_at - timedelta(seconds=5),
-                            sales_transaction.created_at + timedelta(seconds=5)
+                            sales_transaction.created_at - timedelta(seconds=60),
+                            sales_transaction.created_at + timedelta(seconds=60)
                         ),
                         voided=False,
                     ).exclude(id=sales_transaction.id).first()
 
-                    # Persist the link if found
-                    if sub_sales_tx:
-                        service.related_sub_transaction = sub_sales_tx
-                        service.save(update_fields=["related_sub_transaction"])
+                if not sub_sales_tx:
+                    # Fallback 2: same-day lookup for sub stall TX created on
+                    # the same date as the main TX (handles services completed
+                    # before related_sub_transaction field existed)
+                    main_date = sales_transaction.created_at.date()
+                    sub_sales_tx = SalesTransaction.objects.filter(
+                        stall=sub_stall,
+                        client=service.client,
+                        created_at__date=main_date,
+                        voided=False,
+                    ).exclude(id=sales_transaction.id).first()
+
+                # Persist the link if found via fallback
+                if sub_sales_tx and not service.related_sub_transaction_id:
+                    service.related_sub_transaction = sub_sales_tx
+                    service.save(update_fields=["related_sub_transaction"])
 
             # Split current payment proportionally between main and sub stall
             main_total = sales_transaction.computed_total or Decimal("0")

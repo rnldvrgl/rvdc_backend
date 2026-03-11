@@ -51,16 +51,25 @@ class Command(BaseCommand):
             if not main_tx or main_tx.voided:
                 continue
 
-            # Find sub stall transaction by time proximity
+            # Find sub stall transaction by time proximity (60s window)
             sub_tx = SalesTransaction.objects.filter(
                 stall=sub_stall,
                 client=svc.client,
                 voided=False,
                 created_at__range=(
-                    main_tx.created_at - timedelta(seconds=5),
-                    main_tx.created_at + timedelta(seconds=5),
+                    main_tx.created_at - timedelta(seconds=60),
+                    main_tx.created_at + timedelta(seconds=60),
                 ),
             ).exclude(id=main_tx.id).first()
+
+            # Broader fallback: same-day lookup
+            if not sub_tx:
+                sub_tx = SalesTransaction.objects.filter(
+                    stall=sub_stall,
+                    client=svc.client,
+                    voided=False,
+                    created_at__date=main_tx.created_at.date(),
+                ).exclude(id=main_tx.id).first()
 
             if not sub_tx:
                 continue
