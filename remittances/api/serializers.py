@@ -273,6 +273,8 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             transaction__stall=stall,
             payment_date__date=date_val,
             transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+            transaction__voided=False,
+            transaction__is_deleted=False,
             payment_type=payment_type,
         ).aggregate(total=Sum("amount"))["total"] or 0
 
@@ -283,6 +285,8 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             total_change = SalesTransaction.objects.filter(
                 stall=stall,
                 payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                voided=False,
+                is_deleted=False,
                 payments__payment_date__date=date_val,
             ).distinct().aggregate(
                 total=Sum("change_amount")
