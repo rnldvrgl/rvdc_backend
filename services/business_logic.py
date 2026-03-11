@@ -1040,14 +1040,17 @@ class ServicePaymentManager:
                 service.related_sub_transaction = sub_sales_transaction
                 service.save(update_fields=["related_sub_transaction"])
 
-            # Split payments proportionally between main and sub stall
+            # Waterfall-allocate payments: fill main first, then sub
             main_total = sales_transaction.computed_total or Decimal("0")
             sub_total = (sub_sales_transaction.computed_total or Decimal("0")) if sub_sales_transaction else Decimal("0")
-            combined_total = main_total + sub_total
+            main_filled = Decimal("0")
+            sub_filled = Decimal("0")
 
             for service_payment in service_payments:
-                m_share, s_share = ServicePaymentManager._split_payment(
-                    service_payment.amount, main_total, sub_total, combined_total
+                m_share, s_share = ServicePaymentManager._waterfall_split(
+                    service_payment.amount,
+                    main_total - main_filled,
+                    sub_total - sub_filled,
                 )
                 SalesPayment.objects.create(
                     transaction=sales_transaction,
@@ -1062,6 +1065,8 @@ class ServicePaymentManager:
                         amount=s_share,
                         payment_date=service_payment.payment_date,
                     )
+                main_filled += m_share
+                sub_filled += s_share
         
         return sales_transaction
 
@@ -1275,17 +1280,19 @@ class ServicePaymentManager:
                             item.save(update_fields=["final_price_per_unit"])
                             remaining_discount -= item_discount
 
-                # Calculate proportional split between main and sub stall
+                # Waterfall-allocate previous service payments to main then sub
                 main_total = sales_transaction.computed_total or Decimal("0")
                 sub_total = (sub_sales_tx.computed_total or Decimal("0")) if sub_sales_tx else Decimal("0")
-                combined_total = main_total + sub_total
 
-                # Recreate existing service payments, split between main and sub
                 previous_payments = service.payments.exclude(id=payment.id).order_by('payment_date')
+                main_filled = Decimal("0")
+                sub_filled = Decimal("0")
 
                 for service_payment in previous_payments:
-                    m_share, s_share = ServicePaymentManager._split_payment(
-                        service_payment.amount, main_total, sub_total, combined_total
+                    m_share, s_share = ServicePaymentManager._waterfall_split(
+                        service_payment.amount,
+                        main_total - main_filled,
+                        sub_total - sub_filled,
                     )
                     SalesPayment.objects.create(
                         transaction=sales_transaction,
@@ -1300,6 +1307,8 @@ class ServicePaymentManager:
                             amount=s_share,
                             payment_date=service_payment.payment_date,
                         )
+                    main_filled += m_share
+                    sub_filled += s_share
             else:
                 # Reuse existing transaction — find associated sub stall transaction
                 if service.related_sub_transaction_id:
@@ -1339,11 +1348,17 @@ class ServicePaymentManager:
                     service.related_sub_transaction = sub_sales_tx
                     service.save(update_fields=["related_sub_transaction"])
 
-            # Split current payment proportionally between main and sub stall
+            # Waterfall-allocate current payment: fill main first, then sub
             main_total = sales_transaction.computed_total or Decimal("0")
             sub_total = (sub_sales_tx.computed_total or Decimal("0")) if sub_sales_tx else Decimal("0")
-            combined_total = main_total + sub_total
-            m_share, s_share = ServicePaymentManager._split_payment(amount, main_total, sub_total, combined_total)
+            main_paid = sum(p.amount for p in sales_transaction.payments.all())
+            sub_paid = sum(p.amount for p in sub_sales_tx.payments.all()) if sub_sales_tx else Decimal("0")
+
+            m_share, s_share = ServicePaymentManager._waterfall_split(
+                amount,
+                main_total - main_paid,
+                sub_total - sub_paid,
+            )
 
             SalesPayment.objects.create(
                 transaction=sales_transaction,
@@ -1360,13 +1375,12 @@ class ServicePaymentManager:
         return payment
 
     @staticmethod
-    def _split_payment(amount, main_total, sub_total, combined_total):
-        """Split a payment amount proportionally between main and sub stall."""
-        if combined_total <= 0 or sub_total <= 0:
-            return amount, Decimal("0")
-        sub_share = (amount * sub_total / combined_total).quantize(Decimal("0.01"))
-        main_share = amount - sub_share  # remainder to main to avoid rounding drift
-        return main_share, sub_share
+    def _waterfall_split(amount, main_remaining, sub_remaining):
+        """Split a payment using waterfall: fill sub first, then main, overpayment to main."""
+        s = min(amount, max(sub_remaining, Decimal("0")))
+        m = min(amount - s, max(main_remaining, Decimal("0")))
+        m += amount - m - s  # overpayment goes to main as change
+        return m, s
 
     @staticmethod
     def get_outstanding_services(stall=None):

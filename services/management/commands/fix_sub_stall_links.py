@@ -6,6 +6,10 @@ Handles TWO cases:
   2. related_sub_transaction IS set but sub TX has no payments while
      main TX is overpaid → rebalance payments between main and sub
 
+Uses ServicePayments as the source of truth.  Deletes all existing
+SalesPayments on both stalls and rebuilds using waterfall allocation
+(fill main stall first, then sub stall, overpayment → main as change).
+
 Run with --dry-run first to preview changes:
     python manage.py fix_sub_stall_links --dry-run
 
@@ -17,10 +21,9 @@ from decimal import Decimal
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from django.db.models import Q
 
 from inventory.models import Stall
-from sales.models import SalesPayment, SalesTransaction, PaymentStatus
+from sales.models import SalesPayment, SalesTransaction
 from services.models import Service
 
 
@@ -33,54 +36,79 @@ def get_sub_stall():
 
 
 class Command(BaseCommand):
-    help = "Fix sub stall payment splits: link missing sub transactions and rebalance overpaid main stalls."
+    help = "Fix sub stall payment splits using waterfall allocation from ServicePayments."
 
     def add_arguments(self, parser):
         parser.add_argument("--dry-run", action="store_true", help="Preview changes without applying them.")
 
-    def _fix_payment_split(self, main_tx, sub_tx, svc, dry_run):
-        """Rebalance payments from main TX to sub TX. Returns number of payments fixed."""
+    def _rebuild_sales_payments(self, main_tx, sub_tx, svc, dry_run):
+        """
+        Delete all SalesPayments on both TXs and rebuild from ServicePayments
+        using waterfall allocation (main first, then sub).
+        Returns number of ServicePayments processed.
+        """
         main_total = main_tx.computed_total or Decimal("0")
         sub_total = sub_tx.computed_total or Decimal("0")
-        combined = main_total + sub_total
-        if combined <= 0 or sub_total <= 0:
+
+        if main_total + sub_total <= 0:
             return 0
 
-        main_payments = list(main_tx.payments.all().order_by("payment_date"))
-        if not main_payments:
+        service_payments = list(svc.payments.all().order_by("payment_date"))
+        if not service_payments:
             return 0
 
         self.stdout.write(
-            f"  Splitting {len(main_payments)} payment(s) between "
-            f"main (₱{main_total}) and sub (₱{sub_total})"
+            f"  Rebuilding from {len(service_payments)} ServicePayment(s) → "
+            f"main (₱{main_total}) + sub (₱{sub_total})"
         )
 
-        fixed = 0
-        for sp in main_payments:
-            sub_share = (sp.amount * sub_total / combined).quantize(Decimal("0.01"))
-            main_share = sp.amount - sub_share
+        if not dry_run:
+            with transaction.atomic():
+                del_main = main_tx.payments.all().delete()[0]
+                del_sub = sub_tx.payments.all().delete()[0]
+                self.stdout.write(f"    Deleted {del_main} main + {del_sub} sub SalesPayment(s)")
 
-            if sub_share <= 0:
-                continue
+        main_filled = Decimal("0")
+        sub_filled = Decimal("0")
+        processed = 0
 
-            fixed += 1
+        for sp in service_payments:
+            amount = sp.amount
+
+            # Waterfall: fill sub first, then main, overpayment → main
+            sub_remaining = max(Decimal("0"), sub_total - sub_filled)
+            s_share = min(amount, sub_remaining)
+            main_remaining = max(Decimal("0"), main_total - main_filled)
+            m_share = min(amount - s_share, main_remaining)
+            m_share += amount - m_share - s_share  # overpayment to main
+
             self.stdout.write(
-                f"    Payment #{sp.id} ₱{sp.amount} → main ₱{main_share}, sub ₱{sub_share}"
+                f"    ServicePayment #{sp.id} ₱{sp.amount} {sp.payment_type}"
+                f" → main ₱{m_share}, sub ₱{s_share}"
             )
 
             if not dry_run:
                 with transaction.atomic():
-                    sp.amount = main_share
-                    sp.save(update_fields=["amount"])
+                    if m_share > 0:
+                        SalesPayment.objects.create(
+                            transaction=main_tx,
+                            payment_type=sp.payment_type,
+                            amount=m_share,
+                            payment_date=sp.payment_date,
+                        )
+                    if s_share > 0:
+                        SalesPayment.objects.create(
+                            transaction=sub_tx,
+                            payment_type=sp.payment_type,
+                            amount=s_share,
+                            payment_date=sp.payment_date,
+                        )
 
-                    SalesPayment.objects.create(
-                        transaction=sub_tx,
-                        payment_type=sp.payment_type,
-                        amount=sub_share,
-                        payment_date=sp.payment_date,
-                    )
+            main_filled += m_share
+            sub_filled += s_share
+            processed += 1
 
-        return fixed
+        return processed
 
     def handle(self, *args, **options):
         dry_run = options["dry_run"]
@@ -133,9 +161,9 @@ class Command(BaseCommand):
                 svc.related_sub_transaction = sub_tx
                 svc.save(update_fields=["related_sub_transaction"])
 
-            # Fix payment split if sub stall has no payments
+            # Rebuild payment split from ServicePayments
             if not sub_tx.payments.exists():
-                payments_fixed += self._fix_payment_split(main_tx, sub_tx, svc, dry_run)
+                payments_fixed += self._rebuild_sales_payments(main_tx, sub_tx, svc, dry_run)
 
         self.stdout.write(f"  Found {linked} unlinked sub transactions.")
 
@@ -177,7 +205,7 @@ class Command(BaseCommand):
                 f"sub #{sub_tx.id} (₱{sub_total}, paid ₱0)"
             )
 
-            count = self._fix_payment_split(main_tx, sub_tx, svc, dry_run)
+            count = self._rebuild_sales_payments(main_tx, sub_tx, svc, dry_run)
             phase2_fixed += count
             payments_fixed += count
 
