@@ -23,6 +23,12 @@ class PaymentStatus(models.TextChoices):
     VOIDED = "voided", _("Voided")
 
 
+class TransactionType(models.TextChoices):
+    SALE = "sale", _("Sale")
+    REPLACEMENT = "replacement", _("Replacement")
+    PULL_OUT = "pull_out", _("Pull Out")
+
+
 class SalesTransaction(models.Model):
     stall = models.ForeignKey(Stall, on_delete=models.CASCADE)
     client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True)
@@ -59,6 +65,13 @@ class SalesTransaction(models.Model):
 
     change_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
+    transaction_type = models.CharField(
+        max_length=20,
+        choices=TransactionType.choices,
+        default=TransactionType.SALE,
+    )
+    note = models.TextField(blank=True, null=True)
+
     class Meta:
         ordering = ["-updated_at"]
         indexes = [
@@ -92,6 +105,12 @@ class SalesTransaction(models.Model):
     def update_payment_status(self):
         if self.voided:
             self.payment_status = PaymentStatus.VOIDED
+            self.change_amount = 0
+        elif self.transaction_type in (
+            TransactionType.REPLACEMENT,
+            TransactionType.PULL_OUT,
+        ):
+            self.payment_status = PaymentStatus.PAID
             self.change_amount = 0
         else:
             total = self.computed_total

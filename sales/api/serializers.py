@@ -74,6 +74,8 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             "total_paid",
             "change_amount",
             "payment_status",
+            "transaction_type",
+            "note",
             "items",
             "payments",
             "created_at",
@@ -107,7 +109,9 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
 
         # Check stock availability before committing anything
         for item_data in items_data:
-            item = item_data["item"]
+            item = item_data.get("item")
+            if not item:
+                continue
             qty = item_data["quantity"]
             stock = Stock.objects.filter(stall=stall, item=item).first()
             if not stock or stock.quantity < qty:
@@ -121,12 +125,13 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
 
             # Deduct stock & create sales items
             for item_data in items_data:
-                item = item_data["item"]
+                item = item_data.get("item")
                 qty = item_data["quantity"]
 
-                stock = Stock.objects.get(stall=stall, item=item)
-                stock.quantity -= qty
-                stock.save()
+                if item:
+                    stock = Stock.objects.get(stall=stall, item=item)
+                    stock.quantity -= qty
+                    stock.save()
 
                 SalesItem.objects.create(transaction=sale_txn, **item_data)
 

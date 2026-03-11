@@ -13,4 +13,4 @@ class SalesTransactionFilter(filters.FilterSet):
 
     class Meta:
         model = SalesTransaction
-        fields = ["stall", "client", "payment_status", "voided"]
+        fields = ["stall", "client", "payment_status", "voided", "transaction_type"]

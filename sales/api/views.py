@@ -94,6 +94,13 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                     {"label": "Partial", "value": "partial"},
                 ]
             },
+            "transaction_type": {
+                "options": lambda: [
+                    {"label": "Sale", "value": "sale"},
+                    {"label": "Replacement", "value": "replacement"},
+                    {"label": "Pull Out", "value": "pull_out"},
+                ]
+            },
         }
 
         ordering_config = [
