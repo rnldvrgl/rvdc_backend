@@ -69,10 +69,49 @@ class RemittanceRecord(models.Model):
         collected_cash = self.total_sales_cash or Decimal("0")
         expenses = self.total_expenses or Decimal("0")
 
-        cod_for_today = RemittanceRecord.get_cod_for_today(self.stall)
-        cod_yesterday = Decimal(cod_for_today.get("cod_amount", 0) or 0)
+        # Use THIS remittance's date to look up the previous day's COD
+        remittance_date = self.created_at.date() if self.created_at else None
+        if remittance_date:
+            cod_info = RemittanceRecord.get_cod_for_date(self.stall, remittance_date)
+        else:
+            cod_info = RemittanceRecord.get_cod_for_today(self.stall)
+        cod_yesterday = Decimal(cod_info.get("cod_amount", 0) or 0)
 
         return max(0, collected_cash + cod_yesterday - expenses)
+
+    @classmethod
+    def get_cod_for_date(cls, stall: Stall, target_date) -> dict:
+        """
+        Returns COD info for a given date based on the remittance of the day before.
+        If no remittance was made the day before, fallback to that day's total_sales_cash.
+        """
+        previous_day = target_date - timedelta(days=1)
+
+        try:
+            remittance = cls.objects.get(stall=stall, created_at__date=previous_day)
+
+            if hasattr(remittance, "cash_breakdown"):
+                return {
+                    "cod_amount": remittance.cash_breakdown.cod_amount,
+                    "cod_breakdown": remittance.cash_breakdown.cod_breakdown,
+                    "source": "remitted",
+                    "date": str(previous_day),
+                }
+            else:
+                return {
+                    "cod_amount": 0,
+                    "cod_breakdown": {},
+                    "source": "remitted (no breakdown)",
+                    "date": str(previous_day),
+                }
+
+        except cls.DoesNotExist:
+            return {
+                "cod_amount": 0,
+                "cod_breakdown": None,
+                "source": "no_remittance",
+                "date": str(previous_day),
+            }
 
     @classmethod
     def get_cod_for_today(cls, stall: Stall) -> dict:
@@ -81,41 +120,7 @@ class RemittanceRecord(models.Model):
         If no remittance was made, fallback to yesterday's total_sales_cash.
         """
         today = localdate()
-        yesterday = today - timedelta(days=1)
-
-        try:
-            remittance = cls.objects.get(stall=stall, created_at__date=yesterday)
-
-            if hasattr(remittance, "cash_breakdown"):
-                return {
-                    "cod_amount": remittance.cash_breakdown.cod_amount,
-                    "cod_breakdown": remittance.cash_breakdown.cod_breakdown,
-                    "source": "remitted",
-                    "date": str(yesterday),
-                }
-            else:
-                return {
-                    "cod_amount": 0,
-                    "cod_breakdown": {},
-                    "source": "remitted (no breakdown)",
-                    "date": str(yesterday),
-                }
-
-        except cls.DoesNotExist:
-            # No remittance means assume all sales_cash is in drawer
-            cash_total = (
-                cls.objects.filter(stall=stall, created_at__date=yesterday).aggregate(
-                    models.Sum("total_sales_cash")
-                )["total_sales_cash__sum"]
-                or 0
-            )
-
-            return {
-                "cod_amount": cash_total,
-                "cod_breakdown": None,
-                "source": "fallback_sales_cash",
-                "date": str(yesterday),
-            }
+        return cls.get_cod_for_date(stall, today)
 
 
 class CashDenominationBreakdown(models.Model):

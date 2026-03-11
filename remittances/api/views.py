@@ -144,8 +144,8 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
             or Decimal("0")
         )
 
-        # COD from previous day
-        cod_info = RemittanceRecord.get_cod_for_today(stall)
+        # COD from previous day (relative to the target date, not today)
+        cod_info = RemittanceRecord.get_cod_for_date(stall, target_date)
         cod_amount = Decimal(str(cod_info.get("cod_amount", 0) or 0))
 
         # Expected remittance

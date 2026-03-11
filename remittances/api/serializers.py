@@ -107,6 +107,9 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         return getattr(obj.cash_breakdown, "cod_amount", 0)
 
     def get_cod_for_today(self, obj):
+        # Use the remittance's own date to look up COD from the day before
+        if obj.created_at:
+            return RemittanceRecord.get_cod_for_date(obj.stall, obj.created_at.date())
         return RemittanceRecord.get_cod_for_today(obj.stall)
 
     @staticmethod
