@@ -97,7 +97,14 @@ class SummaryStatsView(APIView):
         if stall_filter:
             service_qs = service_qs.filter(**stall_filter)
         
-        service_revenue = service_qs.aggregate(total=Sum("total_revenue"))["total"] or Decimal("0")
+        service_agg = service_qs.aggregate(
+            total=Sum("total_revenue"),
+            main=Sum("main_stall_revenue"),
+            sub=Sum("sub_stall_revenue"),
+        )
+        service_revenue = service_agg["total"] or Decimal("0")
+        main_stall_service_revenue = service_agg["main"] or Decimal("0")
+        sub_stall_service_revenue = service_agg["sub"] or Decimal("0")
 
         # Total revenue (sales + services)
         total_revenue = float(sales_revenue) + float(service_revenue)
@@ -257,6 +264,8 @@ class SummaryStatsView(APIView):
                 # Revenue metrics
                 "total_sales": float(sales_revenue),
                 "service_revenue": float(service_revenue),
+                "main_stall_service_revenue": float(main_stall_service_revenue),
+                "sub_stall_service_revenue": float(sub_stall_service_revenue),
                 "total_revenue": total_revenue,
                 "net_income": net_income,
                 
