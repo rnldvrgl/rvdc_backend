@@ -336,6 +336,20 @@ class Service(models.Model):
 
         self.save(update_fields=["payment_status"], skip_validation=True)
 
+        # Sync payment status to related transactions
+        from sales.models import SalesTransaction as SalesTx
+        
+        transactions_to_update = []
+        if self.related_transaction_id:
+            transactions_to_update.append(self.related_transaction_id)
+        if self.related_sub_transaction_id:
+            transactions_to_update.append(self.related_sub_transaction_id)
+        
+        if transactions_to_update:
+            SalesTx.objects.filter(id__in=transactions_to_update).update(
+                payment_status=self.payment_status
+            )
+
 
 # ----------------------------------
 # Service Payment
