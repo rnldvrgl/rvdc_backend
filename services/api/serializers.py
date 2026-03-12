@@ -248,7 +248,7 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
                 for admin_user in admins:
                     Notification.objects.create(
                         user=admin_user,
-                        type="stock_low",
+                        type="stock_request_created",
                         title="Stock Request: Approval Needed",
                         message=(
                             f"{request_user.user.get_full_name() if request_user else 'A clerk'} "
@@ -500,7 +500,7 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
                 for admin_user in admins:
                     Notification.objects.create(
                         user=admin_user,
-                        type="stock_low",
+                        type="stock_request_created",
                         title="Stock Request: Approval Needed",
                         message=(
                             f"{request_user.user.get_full_name() if request_user else 'A clerk'} "

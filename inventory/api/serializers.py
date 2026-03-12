@@ -255,6 +255,7 @@ class StockRequestSerializer(serializers.ModelSerializer):
             "approved_at",
             "decline_reason",
             "declined_at",
+            "available_stock",
             "created_at",
             "updated_at",
         ]

@@ -720,7 +720,7 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
         if stock_request.requested_by:
             Notification.objects.create(
                 user=stock_request.requested_by,
-                type="stock_restocked",
+                type="stock_request_approved",
                 title="Stock Request Approved",
                 message=(
                     f"Your stock request for {stock_request.requested_quantity} "
@@ -774,7 +774,7 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
 
             Notification.objects.create(
                 user=stock_request.requested_by,
-                type="stock_out",
+                type="stock_request_declined",
                 title="Stock Request Declined",
                 message=msg,
                 data={
@@ -839,7 +839,7 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
             if sr.requested_by:
                 Notification.objects.create(
                     user=sr.requested_by,
-                    type="stock_restocked",
+                    type="stock_request_approved",
                     title="Stock Request Approved",
                     message=(
                         f"Your stock request for {sr.requested_quantity} "
