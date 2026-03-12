@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from inventory.models import (
     Item,
+    ItemPriceHistory,
     ProductCategory,
     Stall,
     Stock,
@@ -31,12 +32,28 @@ class ProductCategorySerializer(serializers.ModelSerializer):
         return value
 
 
+class ItemPriceHistorySerializer(serializers.ModelSerializer):
+    price_change_amount = serializers.ReadOnlyField()
+
+    class Meta:
+        model = ItemPriceHistory
+        fields = [
+            "id", "item", "retail_price", "wholesale_price",
+            "technician_price", "cost_price",
+            "old_retail_price", "old_wholesale_price",
+            "old_technician_price", "old_cost_price",
+            "price_change_amount", "change_type", "notes", "changed_at",
+        ]
+        read_only_fields = fields
+
+
 class ItemSerializer(serializers.ModelSerializer):
     category = ProductCategorySerializer(read_only=True)
     category_id = serializers.PrimaryKeyRelatedField(
         source="category", queryset=ProductCategory.objects.all(), write_only=True
     )
     display_name = serializers.SerializerMethodField()
+    price_history = ItemPriceHistorySerializer(many=True, read_only=True)
 
     class Meta:
         model = Item

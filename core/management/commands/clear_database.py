@@ -47,10 +47,10 @@ class Command(BaseCommand):
             'services.Service': 'Services',
             'services.ServicePayment': 'Service Payments',
             'services.ServiceRefund': 'Service Refunds',
-            'services.ServiceStatusHistory': 'Service Status History',
+
             'services.TechnicianAssignment': 'Technician Assignments',
             'services.ServiceAppliance': 'Service Appliances',
-            'services.ApplianceStatusHistory': 'Appliance Status History',
+
             'schedules.Schedule': 'Schedules',
             'schedules.ScheduleStatusHistory': 'Schedule Status History',
             'attendance.DailyAttendance': 'Attendance Records',

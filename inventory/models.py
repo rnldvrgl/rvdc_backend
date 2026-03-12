@@ -87,16 +87,109 @@ class Item(models.Model):
         ordering = ["name"]
 
     def save(self, *args, **kwargs):
+        track_history = kwargs.pop("track_history", True)
+        is_new = self.pk is None
+        old_prices = None
+
         if not self.sku:
             prefix = (
                 self.category.name[:3].ljust(3, "_") if self.category else "SKU"
             ).upper()
             unique = uuid.uuid4().hex[:5].upper()
             self.sku = f"{prefix}-{unique}"
+
+        if not is_new and track_history:
+            try:
+                old = Item.all_objects.get(pk=self.pk)
+                old_prices = {
+                    "retail_price": old.retail_price,
+                    "wholesale_price": old.wholesale_price,
+                    "technician_price": old.technician_price,
+                    "cost_price": old.cost_price,
+                }
+            except Item.DoesNotExist:
+                pass
+
         super().save(*args, **kwargs)
+
+        if track_history:
+            if is_new:
+                ItemPriceHistory.objects.create(
+                    item=self,
+                    retail_price=self.retail_price,
+                    wholesale_price=self.wholesale_price or 0,
+                    technician_price=self.technician_price or 0,
+                    cost_price=self.cost_price or 0,
+                    change_type="initial",
+                    notes="Initial price set on item creation",
+                )
+            elif old_prices is not None:
+                changed = any(
+                    getattr(self, f) != old_prices[f]
+                    for f in old_prices
+                )
+                if changed:
+                    ItemPriceHistory.objects.create(
+                        item=self,
+                        retail_price=self.retail_price,
+                        wholesale_price=self.wholesale_price or 0,
+                        technician_price=self.technician_price or 0,
+                        cost_price=self.cost_price or 0,
+                        old_retail_price=old_prices["retail_price"],
+                        old_wholesale_price=old_prices["wholesale_price"],
+                        old_technician_price=old_prices["technician_price"],
+                        old_cost_price=old_prices["cost_price"],
+                        change_type="price",
+                    )
 
     def __str__(self):
         return self.name
+
+
+class ItemPriceHistory(models.Model):
+    """Tracks price changes for inventory items."""
+
+    CHANGE_TYPE_CHOICES = [
+        ("initial", "Initial Price"),
+        ("price", "Price Change"),
+    ]
+
+    item = models.ForeignKey(
+        Item, on_delete=models.CASCADE, related_name="price_history"
+    )
+    retail_price = models.DecimalField(max_digits=10, decimal_places=2)
+    wholesale_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    technician_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    cost_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    old_retail_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    old_wholesale_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    old_technician_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    old_cost_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    change_type = models.CharField(
+        max_length=20, choices=CHANGE_TYPE_CHOICES, default="price"
+    )
+    notes = models.TextField(blank=True, default="")
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-changed_at"]
+
+    @property
+    def price_change_amount(self):
+        if self.old_retail_price is not None:
+            return self.retail_price - self.old_retail_price
+        return None
+
+    def __str__(self):
+        return f"{self.item.name} - ₱{self.retail_price} ({self.change_type}) @ {self.changed_at}"
 
 
 class Stall(models.Model):

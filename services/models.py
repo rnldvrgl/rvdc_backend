@@ -853,38 +853,4 @@ class ServiceItemUsed(BaseItemUsed):
         return f"{self.item} x{self.quantity} (service #{self.service_id})"
 
 
-# ----------------------------------
-# Status Histories
-# ----------------------------------
-class ApplianceStatusHistory(models.Model):
-    appliance = models.ForeignKey(
-        ServiceAppliance, on_delete=models.CASCADE, related_name="status_history"
-    )
-    status = models.CharField(max_length=30, choices=ApplianceStatus.choices)
-    changed_at = models.DateTimeField(auto_now_add=True)
-    changed_by = models.ForeignKey(
-        CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
-    )
 
-    class Meta:
-        ordering = ["-changed_at"]
-
-    def __str__(self):
-        return f"{self.appliance} → {self.get_status_display()} @ {self.changed_at}"
-
-
-class ServiceStatusHistory(models.Model):
-    service = models.ForeignKey(
-        Service, on_delete=models.CASCADE, related_name="status_history"
-    )
-    status = models.CharField(max_length=30, choices=ServiceStatus.choices)
-    changed_at = models.DateTimeField(auto_now_add=True)
-    changed_by = models.ForeignKey(
-        CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
-    )
-
-    class Meta:
-        ordering = ["-changed_at"]
-
-    def __str__(self):
-        return f"{self.service} → {self.get_status_display()} @ {self.changed_at}"

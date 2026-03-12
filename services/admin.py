@@ -2,12 +2,10 @@ from django.contrib import admin
 
 from .models import (
     ApplianceItemUsed,
-    ApplianceStatusHistory,
     ApplianceType,
     Service,
     ServiceAppliance,
     ServicePayment,
-    ServiceStatusHistory,
     TechnicianAssignment,
 )
 
@@ -117,26 +115,7 @@ class ApplianceTypeAdmin(admin.ModelAdmin):
     list_per_page = 25
 
 
-@admin.register(ApplianceStatusHistory)
-class ApplianceStatusHistoryAdmin(admin.ModelAdmin):
-    list_display = ("id", "appliance", "status", "changed_at", "changed_by")
-    list_filter = ("status", "changed_at")
-    search_fields = ("appliance__service__client__full_name", "changed_by__username")
-    date_hierarchy = "changed_at"
-    ordering = ("-changed_at",)
-    list_select_related = ("appliance", "changed_by")
-    list_per_page = 25
 
-
-@admin.register(ServiceStatusHistory)
-class ServiceStatusHistoryAdmin(admin.ModelAdmin):
-    list_display = ("id", "service", "status", "changed_at", "changed_by")
-    list_filter = ("status", "changed_at")
-    search_fields = ("service__client__full_name", "changed_by__username")
-    date_hierarchy = "changed_at"
-    ordering = ("-changed_at",)
-    list_select_related = ("service", "changed_by")
-    list_per_page = 25
 
 
 @admin.register(ServicePayment)

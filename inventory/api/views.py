@@ -47,7 +47,7 @@ from utils.soft_delete import SoftDeleteViewSetMixin
 
 
 class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
-    queryset = Item.objects.select_related('category').all()
+    queryset = Item.objects.select_related('category').prefetch_related('price_history').all()
     serializer_class = ItemSerializer
     filter_backends = [
         DjangoFilterBackend,

@@ -29,10 +29,10 @@ class Command(BaseCommand):
             'services.Service': {'name': 'Services', 'default': 'delete'},
             'services.ServicePayment': {'name': 'Service Payments', 'default': 'delete'},
             'services.ServiceRefund': {'name': 'Service Refunds', 'default': 'delete'},
-            'services.ServiceStatusHistory': {'name': 'Service Status History', 'default': 'delete'},
+
             'services.TechnicianAssignment': {'name': 'Technician Assignments', 'default': 'delete'},
             'services.ServiceAppliance': {'name': 'Service Appliances', 'default': 'delete'},
-            'services.ApplianceStatusHistory': {'name': 'Appliance Status History', 'default': 'delete'},
+
             'schedules.Schedule': {'name': 'Schedules', 'default': 'delete'},
             'schedules.ScheduleStatusHistory': {'name': 'Schedule Status History', 'default': 'delete'},
             'attendance.DailyAttendance': {'name': 'Attendance Records', 'default': 'delete'},
