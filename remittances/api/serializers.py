@@ -254,7 +254,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
 
         # 🚫 Prevent multiple remittances per stall per day
         if RemittanceRecord.objects.filter(
-            stall=stall, created_at__date=target_date
+            stall=stall, remittance_date=target_date
         ).exists():
             raise serializers.ValidationError(
                 {
@@ -301,6 +301,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             stall=stall,
             remitted_by=user,
             created_at=created_at,
+            remittance_date=target_date,
             notes=notes,
             remitted_amount=remitted_amt,
             declared_amount=declared_amt,

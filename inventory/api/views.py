@@ -674,66 +674,69 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
     def approve(self, request, pk=None):
         """Approve a stock request: add stock and reserve for the service item."""
         from services.business_logic import StockReservationManager
+        from django.db import transaction as db_transaction
 
-        stock_request = self.get_object()
+        with db_transaction.atomic():
+            # Lock the stock request row to prevent double-approval
+            stock_request = StockRequest.objects.select_for_update().get(pk=pk)
 
-        if stock_request.status != "pending":
-            return Response(
-                {"detail": f"Cannot approve a request with status '{stock_request.status}'."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        stock_record, _ = Stock.objects.get_or_create(
-            item=stock_request.item,
-            stall=stock_request.stall,
-            is_deleted=False,
-            defaults={"quantity": 0, "reserved_quantity": 0},
-        )
-        stock_record = Stock.objects.select_for_update().get(pk=stock_record.pk)
-        stock_record.quantity += stock_request.requested_quantity
-        stock_record.save(update_fields=["quantity", "updated_at"])
-
-        item_usage = stock_request.appliance_item or stock_request.service_item
-        if item_usage and item_usage.item:
-            try:
-                StockReservationManager.reserve_stock(
-                    item=item_usage.item,
-                    quantity=item_usage.quantity,
-                    stall_stock=stock_record,
+            if stock_request.status != "pending":
+                return Response(
+                    {"detail": f"Cannot approve a request with status '{stock_request.status}'."},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
-                if not item_usage.stall_stock_id:
-                    item_usage.stall_stock = stock_record
-                item_usage.stock_request_status = "approved"
-                item_usage.save(update_fields=["stall_stock", "stock_request_status"])
-            except Exception:
-                if item_usage.stock_request_status == "pending":
-                    item_usage.stock_request_status = "approved"
-                    item_usage.save(update_fields=["stock_request_status"])
 
-        stock_request.status = "approved"
-        stock_request.approved_by = request.user
-        stock_request.approved_at = timezone.now()
-        stock_request.save(update_fields=[
-            "status", "approved_by", "approved_at", "updated_at",
-        ])
-
-        if stock_request.requested_by:
-            Notification.objects.create(
-                user=stock_request.requested_by,
-                type="stock_request_approved",
-                title="Stock Request Approved",
-                message=(
-                    f"Your stock request for {stock_request.requested_quantity} "
-                    f"{stock_request.item.unit_of_measure} of '{stock_request.item.name}' "
-                    f"has been approved."
-                ),
-                data={
-                    "stock_request_id": stock_request.id,
-                    "item_name": stock_request.item.name,
-                    "quantity": float(stock_request.requested_quantity),
-                    "service_id": stock_request.service_id,
-                },
+            stock_record, _ = Stock.objects.get_or_create(
+                item=stock_request.item,
+                stall=stock_request.stall,
+                is_deleted=False,
+                defaults={"quantity": 0, "reserved_quantity": 0},
             )
+            stock_record = Stock.objects.select_for_update().get(pk=stock_record.pk)
+            stock_record.quantity += stock_request.requested_quantity
+            stock_record.save(update_fields=["quantity", "updated_at"])
+
+            item_usage = stock_request.appliance_item or stock_request.service_item
+            if item_usage and item_usage.item:
+                try:
+                    StockReservationManager.reserve_stock(
+                        item=item_usage.item,
+                        quantity=item_usage.quantity,
+                        stall_stock=stock_record,
+                    )
+                    if not item_usage.stall_stock_id:
+                        item_usage.stall_stock = stock_record
+                    item_usage.stock_request_status = "approved"
+                    item_usage.save(update_fields=["stall_stock", "stock_request_status"])
+                except Exception:
+                    if item_usage.stock_request_status == "pending":
+                        item_usage.stock_request_status = "approved"
+                        item_usage.save(update_fields=["stock_request_status"])
+
+            stock_request.status = "approved"
+            stock_request.approved_by = request.user
+            stock_request.approved_at = timezone.now()
+            stock_request.save(update_fields=[
+                "status", "approved_by", "approved_at", "updated_at",
+            ])
+
+            if stock_request.requested_by:
+                Notification.objects.create(
+                    user=stock_request.requested_by,
+                    type="stock_request_approved",
+                    title="Stock Request Approved",
+                    message=(
+                        f"Your stock request for {stock_request.requested_quantity} "
+                        f"{stock_request.item.unit_of_measure} of '{stock_request.item.name}' "
+                        f"has been approved."
+                    ),
+                    data={
+                        "stock_request_id": stock_request.id,
+                        "item_name": stock_request.item.name,
+                        "quantity": float(stock_request.requested_quantity),
+                        "service_id": stock_request.service_id,
+                    },
+                )
 
         return Response(StockRequestSerializer(stock_request).data)
 
@@ -799,7 +802,7 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        requests_qs = StockRequest.objects.filter(
+        requests_qs = StockRequest.objects.select_for_update().filter(
             id__in=ids, status="pending"
         ).select_related("item", "stall", "appliance_item", "service_item", "requested_by")
 

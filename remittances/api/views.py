@@ -106,7 +106,7 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
 
         # Check if remittance already exists for this stall + date
         already_exists = RemittanceRecord.objects.filter(
-            stall=stall, created_at__date=target_date
+            stall=stall, remittance_date=target_date
         ).exists()
 
         # Compute sales by payment type

@@ -35,11 +35,12 @@ class RemittanceRecord(models.Model):
 
     created_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(null=True, blank=True, auto_now=True)
+    remittance_date = models.DateField(null=True, blank=True, help_text="Business date for this remittance")
 
     notes = models.TextField(blank=True)
 
     class Meta:
-        unique_together = ("stall", "created_at")
+        unique_together = ("stall", "remittance_date")
         ordering = ["-created_at"]
 
     def __str__(self):
@@ -89,7 +90,7 @@ class RemittanceRecord(models.Model):
         previous_day = target_date - timedelta(days=1)
 
         try:
-            remittance = cls.objects.get(stall=stall, created_at__date=previous_day)
+            remittance = cls.objects.get(stall=stall, remittance_date=previous_day)
 
             if hasattr(remittance, "cash_breakdown"):
                 return {

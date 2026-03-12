@@ -366,6 +366,10 @@ class ServiceCompletionHandler:
 
 
         with transaction.atomic():
+            # Re-fetch with row lock to prevent concurrent completion/cancellation
+            from services.models import Service as ServiceModel
+            service = ServiceModel.objects.select_for_update().get(pk=service.pk)
+
             # Validate service can be completed
             if service.status == ServiceStatusEnum.COMPLETED:
                 raise ValidationError("Service is already completed.")
@@ -829,14 +833,18 @@ class ServiceCancellationHandler:
         from utils.enums import ServiceStatus, ApplianceStatus
         from inventory.models import StockRequest
 
-        if service.status == ServiceStatus.COMPLETED:
-            raise ValidationError(
-                "Cannot cancel a completed service. Use reopen or refund instead."
-            )
-        if service.status == ServiceStatus.CANCELLED:
-            raise ValidationError("Service is already cancelled.")
-
         with transaction.atomic():
+            # Re-fetch with row lock to prevent concurrent operations
+            from services.models import Service as ServiceModel
+            service = ServiceModel.objects.select_for_update().get(pk=service.pk)
+
+            if service.status == ServiceStatus.COMPLETED:
+                raise ValidationError(
+                    "Cannot cancel a completed service. Use reopen or refund instead."
+                )
+            if service.status == ServiceStatus.CANCELLED:
+                raise ValidationError("Service is already cancelled.")
+
             released_items = []
             now = timezone.now()
 
@@ -959,6 +967,10 @@ class ServiceReopenHandler:
         from utils.enums import ServiceStatus, ApplianceStatus, ServiceType
 
         with transaction.atomic():
+            # Re-fetch with row lock to prevent concurrent reopen/cancel
+            from services.models import Service as ServiceModel
+            service = ServiceModel.objects.select_for_update().get(pk=service.pk)
+
             if service.status != ServiceStatus.COMPLETED:
                 raise ValidationError("Only completed services can be reopened.")
 
@@ -1460,17 +1472,19 @@ class ServicePaymentManager:
         if amount <= 0:
             raise ValidationError("Payment amount must be greater than zero.")
 
-        # Check for overpayment using balance_due property (accounts for refunds)
-        balance_due = service.balance_due
-
-        if amount > balance_due:
-            raise ValidationError(
-                f"Payment amount (₱{amount}) exceeds balance due (₱{balance_due}). "
-                f"Total revenue: ₱{service.total_revenue}, Already paid: ₱{service.total_paid}"
-            )
-
-        # Create payment
+        # Create payment — lock service row to prevent concurrent overpayment
         with transaction.atomic():
+            from services.models import Service as ServiceModel
+            service = ServiceModel.objects.select_for_update().get(pk=service.pk)
+
+            # Check for overpayment inside atomic block after locking
+            balance_due = service.balance_due
+            if amount > balance_due:
+                raise ValidationError(
+                    f"Payment amount (₱{amount}) exceeds balance due (₱{balance_due}). "
+                    f"Total revenue: ₱{service.total_revenue}, Already paid: ₱{service.total_paid}"
+                )
+
             payment = ServicePayment.objects.create(
                 service=service,
                 payment_type=payment_type,

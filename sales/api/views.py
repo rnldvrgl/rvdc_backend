@@ -202,34 +202,38 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         Allows adding a payment (partial or full) to an existing sales transaction.
         Does NOT overwrite old payments — just adds a new SalesPayment.
         """
-        transaction = self.get_object()
-
-        if transaction.voided:
-            return Response(
-                {"detail": "Cannot add payment to a voided transaction."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        from django.db import transaction as db_transaction
 
         serializer = SalesPaymentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        amount = serializer.validated_data["amount"]
-        balance_due = transaction.computed_total - transaction.total_paid
-        if balance_due <= 0:
-            return Response(
-                {"detail": "Transaction is already fully paid."},
-                status=status.HTTP_400_BAD_REQUEST,
+        with db_transaction.atomic():
+            # Lock the transaction row to prevent concurrent overpayment
+            transaction = SalesTransaction.objects.select_for_update().get(pk=pk)
+
+            if transaction.voided:
+                return Response(
+                    {"detail": "Cannot add payment to a voided transaction."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            amount = serializer.validated_data["amount"]
+            balance_due = transaction.computed_total - transaction.total_paid
+            if balance_due <= 0:
+                return Response(
+                    {"detail": "Transaction is already fully paid."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            SalesPayment.objects.create(
+                transaction=transaction,
+                payment_type=serializer.validated_data["payment_type"],
+                amount=amount,
+                payment_date=serializer.validated_data.get("payment_date")
+                or timezone.now(),
             )
 
-        SalesPayment.objects.create(
-            transaction=transaction,
-            payment_type=serializer.validated_data["payment_type"],
-            amount=amount,
-            payment_date=serializer.validated_data.get("payment_date")
-            or timezone.now(),
-        )
-
-        transaction.update_payment_status()
+            transaction.update_payment_status()
 
         transaction_serializer = self.get_serializer(transaction)
         return Response(transaction_serializer.data, status=status.HTTP_201_CREATED)
