@@ -74,7 +74,7 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             "client",
             "manual_receipt_number",
             "system_receipt_number",
-            "order_discount_rate",
+            "order_discount",
             "subtotal",
             "computed_total",
             "total_paid",

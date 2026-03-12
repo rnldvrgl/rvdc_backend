@@ -46,11 +46,11 @@ class SalesTransaction(models.Model):
     payment_status = models.CharField(
         max_length=10, choices=PaymentStatus.choices, default=PaymentStatus.UNPAID
     )
-    order_discount_rate = models.DecimalField(
-        max_digits=5,
+    order_discount = models.DecimalField(
+        max_digits=10,
         decimal_places=2,
         default=0,
-        help_text="Order-level discount rate (0.00 - 1.00).",
+        help_text="Order-level discount in peso amount.",
     )
 
     voided = models.BooleanField(default=False)
@@ -95,8 +95,8 @@ class SalesTransaction(models.Model):
     @property
     def computed_total(self):
         subtotal = self.subtotal
-        discount_rate = self.order_discount_rate or 0
-        return subtotal * (1 - discount_rate)
+        discount = self.order_discount or 0
+        return max(subtotal - discount, 0)
 
     @property
     def total_paid(self):
