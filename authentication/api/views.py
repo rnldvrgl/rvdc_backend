@@ -6,6 +6,7 @@ from authentication.api.serializers import (
     RegisterSerializer,
     LogoutSerializer,
 )
+from django.contrib.auth import authenticate
 
 
 class LoginView(APIView):
@@ -36,3 +37,28 @@ class LogoutView(APIView):
                 status=status.HTTP_205_RESET_CONTENT,
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class VerifyAdminView(APIView):
+    """Verify admin credentials for privileged operations (e.g. remittance override)."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        username = request.data.get("username")
+        password = request.data.get("password")
+
+        if not username or not password:
+            return Response(
+                {"detail": "Username and password are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = authenticate(username=username, password=password)
+
+        if not user or user.role != "admin":
+            return Response(
+                {"detail": "Invalid admin credentials."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        return Response({"detail": "Admin verified.", "admin_id": user.id})

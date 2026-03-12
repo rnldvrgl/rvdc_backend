@@ -188,3 +188,86 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
         remittance.save()
 
         return Response({"detail": "Remittance marked as remitted."})
+
+    @action(detail=False, methods=["get"], url_path="sub-stall-payable")
+    def sub_stall_payable(self, request):
+        """
+        Compute total sub-stall sales for a given date.
+        The main stall owes this amount to the sub stall at end-of-day settlement.
+        GET /remittances/sub-stall-payable/?date=YYYY-MM-DD
+        """
+        date_str = request.query_params.get("date")
+
+        if date_str:
+            try:
+                target_date = date.fromisoformat(date_str)
+            except ValueError:
+                return Response(
+                    {"detail": "Invalid date format. Use YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            target_date = timezone.localdate()
+
+        sub_stall = Stall.objects.filter(stall_type="sub", is_system=True).first()
+        if not sub_stall:
+            return Response(
+                {"detail": "No sub stall configured."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        def sum_sub_sales(payment_type: str):
+            from sales.models import SalesTransaction
+            total = SalesPayment.objects.filter(
+                transaction__stall=sub_stall,
+                payment_date__date=target_date,
+                transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                transaction__voided=False,
+                transaction__is_deleted=False,
+                payment_type=payment_type,
+            ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+
+            if payment_type == "cash":
+                total_change = SalesTransaction.objects.filter(
+                    stall=sub_stall,
+                    payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                    voided=False,
+                    is_deleted=False,
+                    payments__payment_date__date=target_date,
+                ).distinct().aggregate(
+                    total=Sum("change_amount")
+                )["total"] or Decimal("0")
+                return total - total_change
+
+            return total
+
+        sales = {pt: sum_sub_sales(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]}
+        total = sum(sales.values())
+        e_payments = sales["gcash"] + sales["credit"] + sales["debit"] + sales["cheque"]
+
+        # Sub stall expenses
+        total_expenses = (
+            Expense.objects.filter(
+                stall=sub_stall, created_at__date=target_date
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+
+        # Only cash is payable — e-payments (gcash, credit, debit, cheque)
+        # are received directly by admin and don't need physical settlement.
+        cash_payable = max(Decimal("0"), sales["cash"] - total_expenses)
+
+        return Response({
+            "date": str(target_date),
+            "sub_stall_id": sub_stall.id,
+            "sub_stall_name": sub_stall.name,
+            "sales_cash": str(sales["cash"]),
+            "sales_gcash": str(sales["gcash"]),
+            "sales_credit": str(sales["credit"]),
+            "sales_debit": str(sales["debit"]),
+            "sales_cheque": str(sales["cheque"]),
+            "total_sales": str(total),
+            "e_payments_total": str(e_payments),
+            "total_expenses": str(total_expenses),
+            "cash_payable": str(cash_payable),
+        })

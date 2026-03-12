@@ -6,6 +6,7 @@ from sales.models import SalesPayment, PaymentStatus
 from expenses.models import Expense
 from django.db.models import Sum
 from django.utils import timezone
+from django.contrib.auth import authenticate
 
 
 class CashDenominationBreakdownSerializer(serializers.ModelSerializer):
@@ -78,6 +79,14 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         max_digits=10, decimal_places=2, required=False, write_only=True, allow_null=True,
     )
 
+    # Admin credentials required for non-admin users to apply overrides
+    admin_username = serializers.CharField(
+        required=False, write_only=True, allow_blank=True,
+    )
+    admin_password = serializers.CharField(
+        required=False, write_only=True, allow_blank=True,
+    )
+
     class Meta:
         model = RemittanceRecord
         fields = [
@@ -111,6 +120,8 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             "override_sales_debit",
             "override_sales_cheque",
             "override_expenses",
+            "admin_username",
+            "admin_password",
         ]
         read_only_fields = ["manually_adjusted"]
 
@@ -189,6 +200,31 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"mark_as_acknowledged": "Only administrators can mark remittances as acknowledged."}
                 )
+
+        # Non-admin users must provide valid admin credentials to apply overrides
+        override_fields = [
+            "override_sales_cash", "override_sales_gcash", "override_sales_credit",
+            "override_sales_debit", "override_sales_cheque", "override_expenses",
+        ]
+        has_overrides = any(
+            attrs.get(f) is not None for f in override_fields
+        )
+        if has_overrides and user.role != "admin":
+            admin_username = attrs.get("admin_username", "")
+            admin_password = attrs.get("admin_password", "")
+            if not admin_username or not admin_password:
+                raise serializers.ValidationError(
+                    {"admin_password": "Admin credentials are required to adjust expected sales."}
+                )
+            admin_user = authenticate(username=admin_username, password=admin_password)
+            if not admin_user or admin_user.role != "admin":
+                raise serializers.ValidationError(
+                    {"admin_password": "Invalid admin credentials."}
+                )
+
+        # Remove auth fields before passing to create/update
+        attrs.pop("admin_username", None)
+        attrs.pop("admin_password", None)
 
         return attrs
 
