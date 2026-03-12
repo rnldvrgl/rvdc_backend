@@ -1210,7 +1210,16 @@ class WeeklyPayrollBulkUpdateStatusView(APIView):
 
 
 class PayrollSettingsAdminView(APIView):
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_permissions(self):
+        """
+        Allow authenticated users to read settings (needed for clock in/out),
+        but only admins can modify.
+        """
+        if self.request.method == 'GET':
+            return [permissions.IsAuthenticated()]
+        return [permissions.IsAdminUser()]
 
     def get(self, request):
         settings = PayrollSettings.objects.first()
