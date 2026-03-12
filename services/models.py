@@ -40,7 +40,7 @@ class BaseItemUsed(models.Model):
         ("declined", "Stock Request Declined"),
     ]
 
-    item = models.ForeignKey(Item, on_delete=models.SET_NULL, null=True)
+    item = models.ForeignKey(Item, on_delete=models.SET_NULL, null=True, blank=True)
     quantity = models.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -54,9 +54,26 @@ class BaseItemUsed(models.Model):
         blank=True,
         help_text="Set when item was added with insufficient stock. Null means no stock request needed.",
     )
+    # Custom item fields — used when item is not in inventory
+    custom_description = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="Description for custom items not in inventory.",
+    )
+    custom_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Price per unit for custom items not in inventory.",
+    )
 
     class Meta:
         abstract = True
+
+    @property
+    def is_custom_item(self):
+        return self.item is None and bool(self.custom_description)
 
 
 # ----------------------------------
@@ -750,10 +767,12 @@ class ApplianceItemUsed(BaseItemUsed):
     @property
     def discounted_price(self):
         """Calculate price per unit after discount"""
-        if not self.item:
+        if self.is_custom_item:
+            base_price = Decimal(str(self.custom_price or 0))
+        elif self.item:
+            base_price = Decimal(str(self.item.retail_price))
+        else:
             return Decimal('0.00')
-        
-        base_price = Decimal(str(self.item.retail_price))
         
         # Apply fixed discount first
         price = max(base_price - Decimal(str(self.discount_amount)), Decimal('0'))
@@ -859,9 +878,12 @@ class ServiceItemUsed(BaseItemUsed):
 
     @property
     def discounted_price(self):
-        if not self.item:
+        if self.is_custom_item:
+            base_price = Decimal(str(self.custom_price or 0))
+        elif self.item:
+            base_price = Decimal(str(self.item.retail_price))
+        else:
             return Decimal('0.00')
-        base_price = Decimal(str(self.item.retail_price))
         price = max(base_price - Decimal(str(self.discount_amount)), Decimal('0'))
         if self.discount_percentage > 0:
             discount_decimal = Decimal(str(self.discount_percentage)) / Decimal('100')

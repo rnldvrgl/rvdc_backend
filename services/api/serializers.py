@@ -66,11 +66,9 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
         help_text="Optional: if omitted, system auto-resolves Sub stall stock for the item.",
     )
 
-    item_name = serializers.CharField(source="item.name", read_only=True)
-    item_sku = serializers.CharField(source="item.sku", read_only=True)
-    item_price = serializers.DecimalField(
-        source="item.retail_price", read_only=True, max_digits=10, decimal_places=2
-    )
+    item_name = serializers.SerializerMethodField()
+    item_sku = serializers.SerializerMethodField()
+    item_price = serializers.SerializerMethodField()
 
     # Promo fields
     apply_copper_tube_promo = serializers.BooleanField(
@@ -100,6 +98,8 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
             "id",
             "appliance",
             "item",
+            "custom_description",
+            "custom_price",
             "item_name",
             "item_sku",
             "item_price",
@@ -128,22 +128,43 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
             "stock_request_status",
         ]
 
-    def get_charged_quantity(self, obj):
-        """Quantity that will be charged (total - free)."""
-        if obj.is_free:
-            return 0
-        return obj.quantity - obj.free_quantity
+    def get_item_name(self, obj):
+        if obj.item:
+            return obj.item.name
+        return obj.custom_description or "Custom Item"
 
-    def get_line_total(self, obj):
-        """Total price for this line item after discounts."""
-        return obj.line_total  # Use model property which handles discounts
+    def get_item_sku(self, obj):
+        if obj.item:
+            return obj.item.sku
+        return None
+
+    def get_item_price(self, obj):
+        if obj.item:
+            return obj.item.retail_price
+        return obj.custom_price
 
     def validate(self, data):
         """Validate stock availability for reservation."""
         item = data.get("item")
+        custom_description = data.get("custom_description", "")
+
+        # Custom item — no stock validation needed
+        if not item and custom_description:
+            if not data.get("custom_price"):
+                raise ValidationError("Custom items require a price.")
+            self._validated_stock = None
+            self._insufficient_stock = False
+            self._is_custom_item = True
+            return data
+
+        self._is_custom_item = False
+
         if not item and self.instance:
             item = self.instance.item
             data["item"] = item
+
+        if not item:
+            raise ValidationError("Either select an inventory item or provide a custom description and price.")
 
         qty = data.get("quantity", 1)
 
@@ -212,8 +233,14 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
         """
         Create item usage record and RESERVE stock (don't consume yet).
         If stock is insufficient, creates a StockRequest for admin approval.
+        Custom items skip stock entirely.
         """
         apply_copper_promo = validated_data.pop("apply_copper_tube_promo", False)
+
+        # Custom item — no stock interaction
+        if getattr(self, '_is_custom_item', False):
+            return super().create(validated_data)
+
         stock = self._validated_stock
         qty = validated_data.get("quantity", 1)
         is_free = validated_data.get("is_free", False)
@@ -281,11 +308,14 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         """
         Update item usage and adjust reservation.
-
-        Note: This only handles reservation adjustment.
-        If service is already completed, this should be blocked at the view level.
+        Custom items skip stock adjustments.
         """
         apply_copper_promo = validated_data.pop("apply_copper_tube_promo", False)
+
+        # Custom item — no stock interaction
+        if getattr(self, '_is_custom_item', False) or instance.is_custom_item:
+            return super().update(instance, validated_data)
+
         stock = self._validated_stock
         old_qty = instance.quantity
         new_qty = validated_data.get("quantity", old_qty)
@@ -336,11 +366,9 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
         help_text="Optional: if omitted, system auto-resolves Sub stall stock for the item.",
     )
 
-    item_name = serializers.CharField(source="item.name", read_only=True)
-    item_sku = serializers.CharField(source="item.sku", read_only=True)
-    item_price = serializers.DecimalField(
-        source="item.retail_price", read_only=True, max_digits=10, decimal_places=2
-    )
+    item_name = serializers.SerializerMethodField()
+    item_sku = serializers.SerializerMethodField()
+    item_price = serializers.SerializerMethodField()
 
     apply_copper_tube_promo = serializers.BooleanField(
         write_only=True,
@@ -368,6 +396,8 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
             "id",
             "service",
             "item",
+            "custom_description",
+            "custom_price",
             "item_name",
             "item_sku",
             "item_price",
@@ -396,19 +426,42 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
             "stock_request_status",
         ]
 
-    def get_charged_quantity(self, obj):
-        if obj.is_free:
-            return 0
-        return obj.quantity - obj.free_quantity
+    def get_item_name(self, obj):
+        if obj.item:
+            return obj.item.name
+        return obj.custom_description or "Custom Item"
 
-    def get_line_total(self, obj):
-        return obj.line_total
+    def get_item_sku(self, obj):
+        if obj.item:
+            return obj.item.sku
+        return None
+
+    def get_item_price(self, obj):
+        if obj.item:
+            return obj.item.retail_price
+        return obj.custom_price
 
     def validate(self, data):
         item = data.get("item")
+        custom_description = data.get("custom_description", "")
+
+        # Custom item — no stock validation needed
+        if not item and custom_description:
+            if not data.get("custom_price"):
+                raise ValidationError("Custom items require a price.")
+            self._validated_stock = None
+            self._insufficient_stock = False
+            self._is_custom_item = True
+            return data
+
+        self._is_custom_item = False
+
         if not item and self.instance:
             item = self.instance.item
             data["item"] = item
+
+        if not item:
+            raise ValidationError("Either select an inventory item or provide a custom description and price.")
 
         qty = data.get("quantity", 1)
 
@@ -470,6 +523,11 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         apply_copper_promo = validated_data.pop("apply_copper_tube_promo", False)
+
+        # Custom item — no stock interaction
+        if getattr(self, '_is_custom_item', False):
+            return super().create(validated_data)
+
         stock = self._validated_stock
         qty = validated_data.get("quantity", 1)
 
@@ -531,6 +589,11 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         apply_copper_promo = validated_data.pop("apply_copper_tube_promo", False)
+
+        # Custom item — no stock interaction
+        if getattr(self, '_is_custom_item', False) or instance.is_custom_item:
+            return super().update(instance, validated_data)
+
         stock = self._validated_stock
         old_qty = instance.quantity
         new_qty = validated_data.get("quantity", old_qty)
