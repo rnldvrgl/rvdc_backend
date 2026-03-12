@@ -26,6 +26,7 @@ class SalesItemSerializer(serializers.ModelSerializer):
             "description",
             "quantity",
             "final_price_per_unit",
+            "line_discount_rate",
             "line_total",
         ]
 
@@ -51,6 +52,9 @@ class SalesPaymentSerializer(serializers.ModelSerializer):
 class SalesTransactionSerializer(serializers.ModelSerializer):
     items = SalesItemSerializer(many=True)
     payments = SalesPaymentSerializer(many=True, required=False)
+    subtotal = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
+    )
     computed_total = serializers.DecimalField(
         max_digits=10, decimal_places=2, read_only=True
     )
@@ -70,6 +74,8 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             "client",
             "manual_receipt_number",
             "system_receipt_number",
+            "order_discount_rate",
+            "subtotal",
             "computed_total",
             "total_paid",
             "change_amount",
@@ -85,6 +91,7 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "created_at",
+            "subtotal",
             "computed_total",
             "total_paid",
             "payment_status",
