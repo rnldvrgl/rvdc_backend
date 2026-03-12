@@ -54,10 +54,14 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         end = self.request.query_params.get("end_date")
 
         # Role-based stall filtering
+        # When viewing a specific client's history, show all stalls
+        # so both main and sub stall transactions are visible
+        client_filter = self.request.query_params.get("client")
         if user.role == "admin":
             pass  # admin sees all stalls
         elif user.role in ("manager", "clerk") and getattr(user, "assigned_stall", None):
-            qs = qs.filter(stall=user.assigned_stall)
+            if not client_filter:
+                qs = qs.filter(stall=user.assigned_stall)
         else:
             return qs.none()
 
