@@ -778,6 +778,162 @@ class ServiceCancellationHandler:
             }
 
 
+class ServiceReopenHandler:
+    """Handles reopening a completed service for revision."""
+
+    @staticmethod
+    def reopen_service(service, reason="", user=None):
+        """
+        Reopen a completed service so parts/items can be edited.
+
+        Reverses all side effects of complete_service():
+        1. Returns consumed stock back to inventory
+        2. Voids SalesTransactions created by completion
+        3. Resets warranty dates on appliances
+        4. Resets aircon unit is_sold flag (installations)
+        5. Clears revenue fields
+        6. Sets status back to in_progress
+        7. Re-reserves stock for existing parts
+
+        ServicePayments (actual money collected) are NOT affected.
+
+        Args:
+            service: Service instance to reopen
+            reason: Reason for reopening
+            user: User reopening the service
+
+        Returns:
+            dict with reopen details
+        """
+        from utils.enums import ServiceStatus, ApplianceStatus, ServiceType
+
+        with transaction.atomic():
+            if service.status != ServiceStatus.COMPLETED:
+                raise ValidationError("Only completed services can be reopened.")
+
+            restored_items = []
+
+            # ── Step 1: Return consumed stock ──
+            for appliance in service.appliances.all():
+                for item_used in appliance.items_used.all():
+                    if not item_used.stall_stock:
+                        continue
+
+                    stock = Stock.objects.select_for_update().get(
+                        pk=item_used.stall_stock.pk
+                    )
+                    qty = Decimal(str(item_used.quantity))
+                    stock.quantity += qty
+                    stock.save(update_fields=['quantity', 'updated_at'])
+
+                    restored_items.append({
+                        'item': item_used.item.name,
+                        'quantity': float(qty),
+                    })
+
+            # ── Step 2: Void SalesTransactions created by completion ──
+            voided_txs = []
+            for tx_field in ['related_transaction', 'related_sub_transaction']:
+                tx = getattr(service, tx_field, None)
+                if tx and not tx.voided:
+                    tx.voided = True
+                    tx.voided_at = timezone.now()
+                    tx.save(update_fields=['voided', 'voided_at'])
+                    tx.update_payment_status()
+                    voided_txs.append(tx.id)
+
+            # Unlink transactions from service
+            service.related_transaction = None
+            service.related_sub_transaction = None
+
+            # ── Step 3: Reset warranty dates on appliances ──
+            for appliance in service.appliances.all():
+                needs_update = False
+                if appliance.warranty_start_date:
+                    appliance.warranty_start_date = None
+                    appliance.labor_warranty_end_date = None
+                    appliance.unit_warranty_end_date = None
+                    needs_update = True
+                if needs_update:
+                    appliance.save(update_fields=[
+                        'warranty_start_date',
+                        'labor_warranty_end_date',
+                        'unit_warranty_end_date',
+                    ])
+
+            # ── Step 4: Reset aircon unit is_sold (installations) ──
+            if service.service_type == ServiceType.INSTALLATION:
+                for unit in service.installation_units.all():
+                    update_fields = []
+                    if unit.is_sold:
+                        unit.is_sold = False
+                        update_fields.append('is_sold')
+                    if unit.warranty_start_date:
+                        unit.warranty_start_date = None
+                        update_fields.append('warranty_start_date')
+                    if update_fields:
+                        update_fields.append('updated_at')
+                        unit.save(update_fields=update_fields)
+
+            # ── Step 5: Clear revenue fields ──
+            service.main_stall_revenue = Decimal('0.00')
+            service.sub_stall_revenue = Decimal('0.00')
+            service.total_revenue = Decimal('0.00')
+
+            # ── Step 6: Set status to in_progress ──
+            service.status = ServiceStatus.IN_PROGRESS
+            if reason:
+                service.remarks = f"{service.remarks or ''}\n\nReopened: {reason}".strip()
+
+            service.save(update_fields=[
+                'related_transaction',
+                'related_sub_transaction',
+                'main_stall_revenue',
+                'sub_stall_revenue',
+                'total_revenue',
+                'status',
+                'remarks',
+                'updated_at',
+            ])
+
+            # ── Step 7: Reset appliance statuses to in_progress ──
+            service.appliances.filter(
+                status=ApplianceStatus.COMPLETED
+            ).update(status=ApplianceStatus.IN_REPAIR)
+
+            # ── Step 8: Re-reserve stock for existing parts ──
+            re_reserved = []
+            for appliance in service.appliances.all():
+                for item_used in appliance.items_used.all():
+                    if not item_used.stall_stock:
+                        continue
+                    try:
+                        StockReservationManager.reserve_stock(
+                            item=item_used.item,
+                            quantity=item_used.quantity,
+                            stall_stock=item_used.stall_stock,
+                        )
+                        re_reserved.append({
+                            'item': item_used.item.name,
+                            'quantity': float(item_used.quantity),
+                        })
+                    except ValidationError:
+                        # Stock may have been sold elsewhere — skip reservation
+                        pass
+
+            # ── Step 9: Update payment status ──
+            service.update_payment_status()
+
+            return {
+                'service_id': service.id,
+                'status': 'in_progress',
+                'restored_items': restored_items,
+                'voided_transactions': voided_txs,
+                're_reserved_items': re_reserved,
+                'message': 'Service reopened for revision. Edit parts/items then re-complete.',
+            }
+
+
 # Convenience functions for common operations
 
 def reserve_service_parts(service):
@@ -806,6 +962,11 @@ def complete_service(service, user=None):
 def cancel_service(service, reason="", user=None):
     """Shortcut to cancel a service."""
     return ServiceCancellationHandler.cancel_service(service, reason=reason, user=user)
+
+
+def reopen_service(service, reason="", user=None):
+    """Shortcut to reopen a completed service for revision."""
+    return ServiceReopenHandler.reopen_service(service, reason=reason, user=user)
 
 
 def calculate_revenue(service):

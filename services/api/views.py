@@ -23,6 +23,7 @@ from services.api.serializers import (
     ServiceCompletionSerializer,
     ServicePaymentSerializer,
     ServiceRefundRequestSerializer,
+    ServiceReopenSerializer,
     ServiceSerializer,
     TechnicianAssignmentSerializer,
 )
@@ -189,6 +190,30 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         service = self.get_object()
 
         serializer = ServiceCancellationSerializer(
+            data=request.data,
+            context={"service": service, "request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        result = serializer.save()
+
+        return Response(result, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="reopen")
+    def reopen(self, request, pk=None):
+        """
+        Reopen a completed service for revision.
+
+        Reverses completion side effects (voids transactions, returns stock,
+        resets warranties) while preserving customer payments.
+
+        Request body:
+        {
+            "reason": "Need to add parts"  // Optional
+        }
+        """
+        service = self.get_object()
+
+        serializer = ServiceReopenSerializer(
             data=request.data,
             context={"service": service, "request": request}
         )

@@ -1396,6 +1396,37 @@ class ServiceCancellationSerializer(serializers.Serializer):
         return result
 
 
+class ServiceReopenSerializer(serializers.Serializer):
+    """Serializer for reopening a completed service for revision."""
+
+    reason = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Reason for reopening"
+    )
+
+    def validate(self, data):
+        from utils.enums import ServiceStatus
+
+        service = self.context.get("service")
+        if not service:
+            raise ValidationError("Service instance required in context.")
+
+        if service.status != ServiceStatus.COMPLETED:
+            raise ValidationError("Only completed services can be reopened.")
+
+        return data
+
+    def save(self):
+        from services.business_logic import reopen_service
+
+        service = self.context.get("service")
+        reason = self.validated_data.get("reason", "")
+        user = self.context.get("request").user if self.context.get("request") else None
+
+        return reopen_service(service=service, reason=reason, user=user)
+
+
 class ServiceRefundRequestSerializer(serializers.Serializer):
     """
     Serializer for processing a service refund.
