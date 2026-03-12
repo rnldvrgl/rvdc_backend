@@ -373,3 +373,103 @@ class StockRoomStock(models.Model):
 
     def __str__(self):
         return f"{self.item.name} - {self.quantity} {self.item.unit_of_measure}"
+
+
+class StockRequest(models.Model):
+    """
+    Tracks requests to add stock for items that have insufficient inventory.
+
+    Created automatically when a clerk adds an item/part to a service but
+    stock is insufficient. Admin can approve (auto-adds stock and reserves
+    for the service) or decline the request.
+    """
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("approved", "Approved"),
+        ("declined", "Declined"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    SOURCE_CHOICES = [
+        ("service_appliance", "Service Appliance Item"),
+        ("service", "Service Item"),
+    ]
+
+    item = models.ForeignKey(
+        Item, on_delete=models.CASCADE, related_name="stock_requests"
+    )
+    stall = models.ForeignKey(
+        Stall, on_delete=models.CASCADE, related_name="stock_requests"
+    )
+    requested_quantity = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Amount of stock to add (the deficit between needed and available).",
+    )
+    status = models.CharField(
+        max_length=10, choices=STATUS_CHOICES, default="pending"
+    )
+    source = models.CharField(
+        max_length=20, choices=SOURCE_CHOICES,
+        help_text="Whether this request originated from an appliance item or service-level item.",
+    )
+
+    # Link to service context
+    service = models.ForeignKey(
+        "services.Service",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="stock_requests",
+    )
+
+    # Link to the specific item usage record
+    appliance_item = models.ForeignKey(
+        "services.ApplianceItemUsed",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="stock_requests",
+    )
+    service_item = models.ForeignKey(
+        "services.ServiceItemUsed",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="stock_requests",
+    )
+
+    notes = models.TextField(
+        blank=True, default="",
+        help_text="Clerk notes explaining why stock is needed.",
+    )
+
+    requested_by = models.ForeignKey(
+        "users.CustomUser",
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="stock_requests_made",
+    )
+    approved_by = models.ForeignKey(
+        "users.CustomUser",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="stock_requests_approved",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    decline_reason = models.TextField(blank=True, default="")
+    declined_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return (
+            f"StockRequest #{self.pk} - {self.item.name} "
+            f"x{self.requested_quantity} ({self.status})"
+        )

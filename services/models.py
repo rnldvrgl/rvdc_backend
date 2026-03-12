@@ -34,12 +34,25 @@ class PaymentStatus(models.TextChoices):
 class BaseItemUsed(models.Model):
     """Abstract base for any item used in a service or appliance repair."""
 
+    STOCK_REQUEST_STATUS_CHOICES = [
+        ("pending", "Pending Stock Request"),
+        ("approved", "Stock Request Approved"),
+        ("declined", "Stock Request Declined"),
+    ]
+
     item = models.ForeignKey(Item, on_delete=models.SET_NULL, null=True)
     quantity = models.DecimalField(
         max_digits=10,
         decimal_places=2,
         default=1,
         help_text="Quantity used (supports decimals for kg, ft, etc.).",
+    )
+    stock_request_status = models.CharField(
+        max_length=10,
+        choices=STOCK_REQUEST_STATUS_CHOICES,
+        null=True,
+        blank=True,
+        help_text="Set when item was added with insufficient stock. Null means no stock request needed.",
     )
 
     class Meta:

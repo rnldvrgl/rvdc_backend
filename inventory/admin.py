@@ -4,6 +4,7 @@ from inventory.models import (
     Item,
     Stall,
     Stock,
+    StockRequest,
     StockRoomStock,
 )
 
@@ -95,3 +96,22 @@ class StockAdmin(admin.ModelAdmin):
     search_fields = ("stall__name", "item__name")
     ordering = ("stall__name", "item__name")
     raw_id_fields = ("stall", "item")
+
+
+@admin.register(StockRequest)
+class StockRequestAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "item",
+        "stall",
+        "requested_quantity",
+        "status",
+        "source",
+        "requested_by",
+        "approved_by",
+        "created_at",
+    )
+    list_filter = ("status", "source")
+    search_fields = ("item__name", "notes")
+    ordering = ("-created_at",)
+    raw_id_fields = ("item", "stall", "service", "appliance_item", "service_item", "requested_by", "approved_by")

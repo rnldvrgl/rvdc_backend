@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.db import models, transaction
+from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from inventory.api.filters import (
     ItemFilter,
@@ -13,6 +14,7 @@ from inventory.api.serializers import (
     StockAuditSerializer,
     StockPatchSerializer,
     StockReadSerializer,
+    StockRequestSerializer,
     StockRestockSerializer,
     StockRoomStockSerializer,
     StockWriteSerializer,
@@ -22,6 +24,7 @@ from inventory.models import (
     ProductCategory,
     Stall,
     Stock,
+    StockRequest,
     StockRoomStock,
 )
 from notifications.models import Notification
@@ -630,3 +633,225 @@ class ProductCategoryViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     def get_queryset(self):
         qs = super().get_queryset().filter(is_deleted=False)
         return filter_by_date_range(self.request, qs)
+
+
+class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet for managing stock requests.
+
+    Clerks create stock requests implicitly when adding items with insufficient
+    stock. Admins can list, approve, decline, or batch-approve requests.
+    """
+
+    queryset = StockRequest.objects.select_related(
+        "item", "stall", "service", "requested_by", "approved_by",
+        "appliance_item", "service_item",
+    ).all()
+    serializer_class = StockRequestSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_fields = ["status", "source"]
+    search_fields = ["item__name", "item__sku", "notes"]
+    ordering_fields = ["created_at", "requested_quantity", "status"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.request.user.role != "admin":
+            qs = qs.filter(requested_by=self.request.user)
+        return qs
+
+    @action(detail=False, methods=["get"], url_path="pending-count")
+    def pending_count(self, request):
+        count = self.get_queryset().filter(status="pending").count()
+        return Response({"count": count})
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAdminUser])
+    @transaction.atomic
+    def approve(self, request, pk=None):
+        """Approve a stock request: add stock and reserve for the service item."""
+        from services.business_logic import StockReservationManager
+
+        stock_request = self.get_object()
+
+        if stock_request.status != "pending":
+            return Response(
+                {"detail": f"Cannot approve a request with status '{stock_request.status}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        stock_record, _ = Stock.objects.get_or_create(
+            item=stock_request.item,
+            stall=stock_request.stall,
+            is_deleted=False,
+            defaults={"quantity": 0, "reserved_quantity": 0},
+        )
+        stock_record = Stock.objects.select_for_update().get(pk=stock_record.pk)
+        stock_record.quantity += stock_request.requested_quantity
+        stock_record.save(update_fields=["quantity", "updated_at"])
+
+        item_usage = stock_request.appliance_item or stock_request.service_item
+        if item_usage and item_usage.item:
+            try:
+                StockReservationManager.reserve_stock(
+                    item=item_usage.item,
+                    quantity=item_usage.quantity,
+                    stall_stock=stock_record,
+                )
+                if not item_usage.stall_stock_id:
+                    item_usage.stall_stock = stock_record
+                item_usage.stock_request_status = "approved"
+                item_usage.save(update_fields=["stall_stock", "stock_request_status"])
+            except Exception:
+                if item_usage.stock_request_status == "pending":
+                    item_usage.stock_request_status = "approved"
+                    item_usage.save(update_fields=["stock_request_status"])
+
+        stock_request.status = "approved"
+        stock_request.approved_by = request.user
+        stock_request.approved_at = timezone.now()
+        stock_request.save(update_fields=[
+            "status", "approved_by", "approved_at", "updated_at",
+        ])
+
+        if stock_request.requested_by:
+            Notification.objects.create(
+                user=stock_request.requested_by,
+                type="stock_restocked",
+                title="Stock Request Approved",
+                message=(
+                    f"Your stock request for {stock_request.requested_quantity} "
+                    f"{stock_request.item.unit_of_measure} of '{stock_request.item.name}' "
+                    f"has been approved."
+                ),
+                data={
+                    "stock_request_id": stock_request.id,
+                    "item_name": stock_request.item.name,
+                    "quantity": float(stock_request.requested_quantity),
+                    "service_id": stock_request.service_id,
+                },
+            )
+
+        return Response(StockRequestSerializer(stock_request).data)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAdminUser])
+    @transaction.atomic
+    def decline(self, request, pk=None):
+        """Decline a stock request."""
+        stock_request = self.get_object()
+
+        if stock_request.status != "pending":
+            return Response(
+                {"detail": f"Cannot decline a request with status '{stock_request.status}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        decline_reason = request.data.get("reason", "")
+
+        item_usage = stock_request.appliance_item or stock_request.service_item
+        if item_usage:
+            item_usage.stock_request_status = "declined"
+            item_usage.save(update_fields=["stock_request_status"])
+
+        stock_request.status = "declined"
+        stock_request.decline_reason = decline_reason
+        stock_request.declined_at = timezone.now()
+        stock_request.save(update_fields=[
+            "status", "decline_reason", "declined_at", "updated_at",
+        ])
+
+        if stock_request.requested_by:
+            msg = (
+                f"Your stock request for {stock_request.requested_quantity} "
+                f"{stock_request.item.unit_of_measure} of '{stock_request.item.name}' "
+                f"has been declined."
+            )
+            if decline_reason:
+                msg += f" Reason: {decline_reason}"
+
+            Notification.objects.create(
+                user=stock_request.requested_by,
+                type="stock_out",
+                title="Stock Request Declined",
+                message=msg,
+                data={
+                    "stock_request_id": stock_request.id,
+                    "item_name": stock_request.item.name,
+                    "service_id": stock_request.service_id,
+                },
+            )
+
+        return Response(StockRequestSerializer(stock_request).data)
+
+    @action(detail=False, methods=["post"], permission_classes=[IsAdminUser], url_path="batch-approve")
+    @transaction.atomic
+    def batch_approve(self, request):
+        """Approve multiple stock requests at once."""
+        from services.business_logic import StockReservationManager
+
+        ids = request.data.get("ids", [])
+        if not ids:
+            return Response(
+                {"detail": "No request IDs provided."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        requests_qs = StockRequest.objects.filter(
+            id__in=ids, status="pending"
+        ).select_related("item", "stall", "appliance_item", "service_item", "requested_by")
+
+        approved_count = 0
+        for sr in requests_qs:
+            stock_record, _ = Stock.objects.get_or_create(
+                item=sr.item, stall=sr.stall, is_deleted=False,
+                defaults={"quantity": 0, "reserved_quantity": 0},
+            )
+            stock_record = Stock.objects.select_for_update().get(pk=stock_record.pk)
+            stock_record.quantity += sr.requested_quantity
+            stock_record.save(update_fields=["quantity", "updated_at"])
+
+            item_usage = sr.appliance_item or sr.service_item
+            if item_usage and item_usage.item:
+                try:
+                    StockReservationManager.reserve_stock(
+                        item=item_usage.item,
+                        quantity=item_usage.quantity,
+                        stall_stock=stock_record,
+                    )
+                    if not item_usage.stall_stock_id:
+                        item_usage.stall_stock = stock_record
+                    item_usage.stock_request_status = "approved"
+                    item_usage.save(update_fields=["stall_stock", "stock_request_status"])
+                except Exception:
+                    if item_usage.stock_request_status == "pending":
+                        item_usage.stock_request_status = "approved"
+                        item_usage.save(update_fields=["stock_request_status"])
+
+            sr.status = "approved"
+            sr.approved_by = request.user
+            sr.approved_at = timezone.now()
+            sr.save(update_fields=["status", "approved_by", "approved_at", "updated_at"])
+            approved_count += 1
+
+            if sr.requested_by:
+                Notification.objects.create(
+                    user=sr.requested_by,
+                    type="stock_restocked",
+                    title="Stock Request Approved",
+                    message=(
+                        f"Your stock request for {sr.requested_quantity} "
+                        f"{sr.item.unit_of_measure} of '{sr.item.name}' "
+                        f"has been approved."
+                    ),
+                    data={
+                        "stock_request_id": sr.id,
+                        "item_name": sr.item.name,
+                        "quantity": float(sr.requested_quantity),
+                        "service_id": sr.service_id,
+                    },
+                )
+
+        return Response({"approved_count": approved_count})

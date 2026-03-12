@@ -14,7 +14,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from clients.models import Client
 from django.db import transaction
 from installations.models import AirconUnit
-from inventory.models import Stall, Stock
+from inventory.models import Stall, Stock, StockRequest
 from receivables.models import ChequeCollection
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError
@@ -117,13 +117,15 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
             "apply_copper_tube_promo",
             "is_cancelled",
             "cancelled_at",
+            "stock_request_status",
         ]
         read_only_fields = [
             "free_quantity",
             "promo_name",
             "discounted_price",
             "is_cancelled",
-            "cancelled_at"
+            "cancelled_at",
+            "stock_request_status",
         ]
 
     def get_charged_quantity(self, obj):
@@ -138,22 +140,19 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         """Validate stock availability for reservation."""
-        # For updates, use existing item if not provided
         item = data.get("item")
         if not item and self.instance:
             item = self.instance.item
             data["item"] = item
-        
+
         qty = data.get("quantity", 1)
 
         # Resolve stock
         stock = data.get("stall_stock")
         if stock is None:
-            # For updates, use existing stock if available
             if self.instance and self.instance.stall_stock:
                 stock = self.instance.stall_stock
             else:
-                # Auto-resolve to Sub stall stock
                 sub_stall = get_sub_stall()
                 if not sub_stall:
                     raise ValidationError("Sub stall not configured in system.")
@@ -165,89 +164,117 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
                 ).first()
 
                 if stock is None:
-                    raise ValidationError(f"No stock found for {item.name} in Sub stall.")
+                    # No stock record at all — entire quantity is deficit
+                    self._validated_stock = None
+                    self._insufficient_stock = True
+                    self._stock_deficit = Decimal(str(qty))
+                    self._resolved_stall = sub_stall
+                    return data
 
             data["stall_stock"] = stock
 
-        # Validate stock belongs to correct item
         if stock.item != item:
             raise ValidationError("Selected stock does not match the item.")
 
-        # Check available quantity (for reservation)
-        # For updates: only check if requesting MORE quantity than currently reserved
+        # Reset insufficient stock flag
+        self._insufficient_stock = False
+        self._stock_deficit = Decimal('0')
+
         if self.instance:
-            # This is an update - only validate if quantity is increasing
             old_qty = self.instance.quantity
             new_qty = qty
             additional_qty_needed = Decimal(str(new_qty)) - Decimal(str(old_qty))
-            
+
             if additional_qty_needed > 0:
-                # Need more stock - check availability with tolerance
                 available = stock.quantity - stock.reserved_quantity
                 tolerance_buffer = StockReservationManager._get_tolerance_buffer(item, additional_qty_needed)
                 minimum_required = max(additional_qty_needed - tolerance_buffer, Decimal('0'))
 
                 if available < minimum_required:
-                    tolerance_note = ""
-                    if tolerance_buffer > 0:
-                        tolerance_note = f" (with {item.waste_tolerance_percentage}% waste tolerance)"
-                    raise ValidationError(
-                        f"Insufficient stock for {item.name}{tolerance_note}. "
-                        f"Available: {available}, Additional needed: {additional_qty_needed}"
-                    )
-            # If reducing quantity or same, no stock check needed
+                    # Insufficient stock on update — flag for stock request
+                    self._insufficient_stock = True
+                    self._stock_deficit = max(additional_qty_needed - available, Decimal('0'))
         else:
-            # This is a create - check full quantity with tolerance
             available = stock.quantity - stock.reserved_quantity
             qty_dec = Decimal(str(qty))
             tolerance_buffer = StockReservationManager._get_tolerance_buffer(item, qty_dec)
             minimum_required = max(qty_dec - tolerance_buffer, Decimal('0'))
 
             if available < minimum_required:
-                tolerance_note = ""
-                if tolerance_buffer > 0:
-                    tolerance_note = f" (with {item.waste_tolerance_percentage}% waste tolerance)"
-                raise ValidationError(
-                    f"Insufficient stock for {item.name}{tolerance_note}. "
-                    f"Available: {available}, Requested: {qty}"
-                )
+                # Insufficient stock — flag for stock request instead of error
+                self._insufficient_stock = True
+                self._stock_deficit = max(qty_dec - available, Decimal('0'))
 
-        # Store validated stock for use in create()
         self._validated_stock = stock
-
         return data
 
     def create(self, validated_data):
         """
         Create item usage record and RESERVE stock (don't consume yet).
-        Stock is consumed later when service is completed.
+        If stock is insufficient, creates a StockRequest for admin approval.
         """
-        # Extract write-only fields
         apply_copper_promo = validated_data.pop("apply_copper_tube_promo", False)
         stock = self._validated_stock
         qty = validated_data.get("quantity", 1)
         is_free = validated_data.get("is_free", False)
 
         with transaction.atomic():
-            # Reserve stock (increment reserved_quantity)
-            reserved_stock = StockReservationManager.reserve_stock(
-                item=validated_data["item"],
-                quantity=qty,
-                stall_stock=stock
-            )
+            if getattr(self, '_insufficient_stock', False):
+                # Insufficient stock — create record with pending stock request
+                stall = stock.stall if stock else getattr(self, '_resolved_stall', None)
+                if stock:
+                    validated_data["stall_stock"] = stock
+                validated_data["stock_request_status"] = "pending"
+                aiu = super().create(validated_data)
 
-            # Create ApplianceItemUsed record
-            validated_data["stall_stock"] = reserved_stock
-            aiu = super().create(validated_data)
+                # Create the stock request
+                request_user = self.context.get('request')
+                StockRequest.objects.create(
+                    item=validated_data["item"],
+                    stall=stall,
+                    requested_quantity=self._stock_deficit,
+                    source="service_appliance",
+                    service=aiu.appliance.service,
+                    appliance_item=aiu,
+                    notes=f"Auto-created: insufficient stock when adding to service #{aiu.appliance.service_id}",
+                    requested_by=request_user.user if request_user else None,
+                )
 
-            # Apply promos if requested
+                # Notify admin users
+                from django.contrib.auth import get_user_model
+                from notifications.models import Notification
+                User = get_user_model()
+                admins = User.objects.filter(role='admin', is_active=True)
+                for admin_user in admins:
+                    Notification.objects.create(
+                        user=admin_user,
+                        type="stock_low",
+                        title="Stock Request: Approval Needed",
+                        message=(
+                            f"{request_user.user.get_full_name() if request_user else 'A clerk'} "
+                            f"needs {self._stock_deficit} {validated_data['item'].unit_of_measure} "
+                            f"of '{validated_data['item'].name}' for service #{aiu.appliance.service_id}."
+                        ),
+                        data={
+                            "item_name": validated_data["item"].name,
+                            "quantity": float(self._stock_deficit),
+                            "service_id": aiu.appliance.service_id,
+                        },
+                    )
+            else:
+                # Sufficient stock — normal reservation flow
+                reserved_stock = StockReservationManager.reserve_stock(
+                    item=validated_data["item"],
+                    quantity=qty,
+                    stall_stock=stock
+                )
+                validated_data["stall_stock"] = reserved_stock
+                aiu = super().create(validated_data)
+
             if apply_copper_promo and not is_free:
                 free_qty, charged_qty, applied = PromoManager.apply_copper_tube_free_10ft(aiu)
                 if applied:
                     aiu.save(update_fields=["free_quantity", "promo_name"])
-
-            # Note: We do NOT create SalesTransaction or Expense here.
-            # That happens on service completion via ServiceCompletionHandler.
 
         return aiu
 
@@ -358,13 +385,15 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
             "apply_copper_tube_promo",
             "is_cancelled",
             "cancelled_at",
+            "stock_request_status",
         ]
         read_only_fields = [
             "free_quantity",
             "promo_name",
             "discounted_price",
             "is_cancelled",
-            "cancelled_at"
+            "cancelled_at",
+            "stock_request_status",
         ]
 
     def get_charged_quantity(self, obj):
@@ -399,12 +428,19 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
                 ).first()
 
                 if stock is None:
-                    raise ValidationError(f"No stock found for {item.name} in Sub stall.")
+                    self._validated_stock = None
+                    self._insufficient_stock = True
+                    self._stock_deficit = Decimal(str(qty))
+                    self._resolved_stall = sub_stall
+                    return data
 
             data["stall_stock"] = stock
 
         if stock.item != item:
             raise ValidationError("Selected stock does not match the item.")
+
+        self._insufficient_stock = False
+        self._stock_deficit = Decimal('0')
 
         if self.instance:
             old_qty = self.instance.quantity
@@ -417,13 +453,8 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
                 minimum_required = max(additional_qty_needed - tolerance_buffer, Decimal('0'))
 
                 if available < minimum_required:
-                    tolerance_note = ""
-                    if tolerance_buffer > 0:
-                        tolerance_note = f" (with {item.waste_tolerance_percentage}% waste tolerance)"
-                    raise ValidationError(
-                        f"Insufficient stock for {item.name}{tolerance_note}. "
-                        f"Available: {available}, Additional needed: {additional_qty_needed}"
-                    )
+                    self._insufficient_stock = True
+                    self._stock_deficit = max(additional_qty_needed - available, Decimal('0'))
         else:
             available = stock.quantity - stock.reserved_quantity
             qty_dec = Decimal(str(qty))
@@ -431,13 +462,8 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
             minimum_required = max(qty_dec - tolerance_buffer, Decimal('0'))
 
             if available < minimum_required:
-                tolerance_note = ""
-                if tolerance_buffer > 0:
-                    tolerance_note = f" (with {item.waste_tolerance_percentage}% waste tolerance)"
-                raise ValidationError(
-                    f"Insufficient stock for {item.name}{tolerance_note}. "
-                    f"Available: {available}, Requested: {qty}"
-                )
+                self._insufficient_stock = True
+                self._stock_deficit = max(qty_dec - available, Decimal('0'))
 
         self._validated_stock = stock
         return data
@@ -448,14 +474,53 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
         qty = validated_data.get("quantity", 1)
 
         with transaction.atomic():
-            reserved_stock = StockReservationManager.reserve_stock(
-                item=validated_data["item"],
-                quantity=qty,
-                stall_stock=stock
-            )
+            if getattr(self, '_insufficient_stock', False):
+                stall = stock.stall if stock else getattr(self, '_resolved_stall', None)
+                if stock:
+                    validated_data["stall_stock"] = stock
+                validated_data["stock_request_status"] = "pending"
+                siu = super().create(validated_data)
 
-            validated_data["stall_stock"] = reserved_stock
-            siu = super().create(validated_data)
+                request_user = self.context.get('request')
+                StockRequest.objects.create(
+                    item=validated_data["item"],
+                    stall=stall,
+                    requested_quantity=self._stock_deficit,
+                    source="service",
+                    service=siu.service,
+                    service_item=siu,
+                    notes=f"Auto-created: insufficient stock when adding to service #{siu.service_id}",
+                    requested_by=request_user.user if request_user else None,
+                )
+
+                from django.contrib.auth import get_user_model
+                from notifications.models import Notification
+                User = get_user_model()
+                admins = User.objects.filter(role='admin', is_active=True)
+                for admin_user in admins:
+                    Notification.objects.create(
+                        user=admin_user,
+                        type="stock_low",
+                        title="Stock Request: Approval Needed",
+                        message=(
+                            f"{request_user.user.get_full_name() if request_user else 'A clerk'} "
+                            f"needs {self._stock_deficit} {validated_data['item'].unit_of_measure} "
+                            f"of '{validated_data['item'].name}' for service #{siu.service_id}."
+                        ),
+                        data={
+                            "item_name": validated_data["item"].name,
+                            "quantity": float(self._stock_deficit),
+                            "service_id": siu.service_id,
+                        },
+                    )
+            else:
+                reserved_stock = StockReservationManager.reserve_stock(
+                    item=validated_data["item"],
+                    quantity=qty,
+                    stall_stock=stock
+                )
+                validated_data["stall_stock"] = reserved_stock
+                siu = super().create(validated_data)
 
             if apply_copper_promo and not validated_data.get("is_free", False):
                 free_qty, charged_qty, applied = PromoManager.apply_copper_tube_free_10ft(siu)

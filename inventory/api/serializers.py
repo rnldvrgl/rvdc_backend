@@ -6,6 +6,7 @@ from inventory.models import (
     ProductCategory,
     Stall,
     Stock,
+    StockRequest,
     StockRoomStock,
 )
 from rest_framework import serializers
@@ -217,3 +218,85 @@ class StockAuditSerializer(serializers.Serializer):
         if value < 0:
             raise serializers.ValidationError("Physical count cannot be negative.")
         return value
+
+
+class StockRequestSerializer(serializers.ModelSerializer):
+    """Serializer for stock requests with read-only context fields."""
+
+    item_name = serializers.CharField(source="item.name", read_only=True)
+    item_sku = serializers.CharField(source="item.sku", read_only=True)
+    stall_name = serializers.CharField(source="stall.name", read_only=True)
+    requested_by_name = serializers.SerializerMethodField()
+    approved_by_name = serializers.SerializerMethodField()
+    service_id = serializers.IntegerField(source="service.id", read_only=True, default=None)
+    available_stock = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StockRequest
+        fields = [
+            "id",
+            "item",
+            "item_name",
+            "item_sku",
+            "stall",
+            "stall_name",
+            "requested_quantity",
+            "status",
+            "source",
+            "service",
+            "service_id",
+            "appliance_item",
+            "service_item",
+            "notes",
+            "requested_by",
+            "requested_by_name",
+            "approved_by",
+            "approved_by_name",
+            "approved_at",
+            "decline_reason",
+            "declined_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "item",
+            "item_name",
+            "item_sku",
+            "stall",
+            "stall_name",
+            "requested_quantity",
+            "status",
+            "source",
+            "service",
+            "appliance_item",
+            "service_item",
+            "requested_by",
+            "approved_by",
+            "approved_at",
+            "decline_reason",
+            "declined_at",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_requested_by_name(self, obj):
+        if obj.requested_by:
+            return obj.requested_by.get_full_name() or obj.requested_by.username
+        return None
+
+    def get_approved_by_name(self, obj):
+        if obj.approved_by:
+            return obj.approved_by.get_full_name() or obj.approved_by.username
+        return None
+
+    def get_available_stock(self, obj):
+        try:
+            stock = Stock.objects.filter(
+                item=obj.item, stall=obj.stall, is_deleted=False
+            ).first()
+            if stock:
+                return float(stock.quantity - stock.reserved_quantity)
+            return 0
+        except Exception:
+            return 0

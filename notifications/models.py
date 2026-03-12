@@ -23,6 +23,9 @@ class NotificationType(models.TextChoices):
     STOCK_OUT = "stock_out", _("Out of Stock Alert")
     STOCK_REORDER = "stock_reorder", _("Reorder Point Reached")
     STOCK_RESTOCKED = "stock_restocked", _("Stock Restocked")
+    STOCK_REQUEST_CREATED = "stock_request_created", _("Stock Request Created")
+    STOCK_REQUEST_APPROVED = "stock_request_approved", _("Stock Request Approved")
+    STOCK_REQUEST_DECLINED = "stock_request_declined", _("Stock Request Declined")
 
     # Warranty notifications
     WARRANTY_CLAIM_CREATED = "warranty_claim_created", _("New Warranty Claim")

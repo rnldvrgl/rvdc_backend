@@ -3,6 +3,7 @@ from inventory.api.views import (
     ItemViewSet,
     ProductCategoryViewSet,
     StallViewSet,
+    StockRequestViewSet,
     StockRoomStockViewSet,
     StockViewSet,
 )
@@ -14,6 +15,7 @@ router.register(r"stalls", StallViewSet)
 router.register(r"stocks", StockViewSet)
 router.register(r"stockroom/stocks", StockRoomStockViewSet, basename="stockroomstock")
 router.register(r"categories", ProductCategoryViewSet)
+router.register(r"stock-requests", StockRequestViewSet, basename="stockrequest")
 
 urlpatterns = [
     path("", include(router.urls)),
