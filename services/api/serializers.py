@@ -1808,12 +1808,12 @@ class ServiceCancellationSerializer(serializers.Serializer):
 
     def save(self):
         """Execute service cancellation workflow."""
-        from services.business_logic import ServicePaymentManager
+        from services.business_logic import cancel_service
 
         service = self.context.get("service")
         reason = self.validated_data.get("reason", "")
 
-        result = ServicePaymentManager.cancel_service(
+        result = cancel_service(
             service=service,
             reason=reason
         )

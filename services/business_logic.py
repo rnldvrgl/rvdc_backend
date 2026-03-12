@@ -815,7 +815,8 @@ class ServiceCancellationHandler:
     @staticmethod
     def cancel_service(service, reason="", user=None):
         """
-        Cancel a service and release all reserved stock.
+        Cancel a service: release reserved stock, void transactions,
+        clear revenue, cancel pending stock requests, and mark items cancelled.
 
         Args:
             service: Service instance to cancel
@@ -823,14 +824,18 @@ class ServiceCancellationHandler:
             user: User cancelling the service
 
         Returns:
-            dict with cancellation details
+            dict with cancellation details including refund_due
         """
-        from utils.enums import ServiceStatus
+        from utils.enums import ServiceStatus, ApplianceStatus
+        from inventory.models import StockRequest
 
         with transaction.atomic():
             released_items = []
+            now = timezone.now()
 
-            # Release all reserved stock (appliance items)
+            # ── 1. Release reserved stock & mark items cancelled ──
+
+            # Appliance-level items
             for appliance in service.appliances.all():
                 for item_used in appliance.items_used.all():
                     if item_used.stall_stock:
@@ -839,13 +844,17 @@ class ServiceCancellationHandler:
                             quantity=item_used.quantity,
                             stall_stock=item_used.stall_stock
                         )
-
+                        item_name = item_used.item.name if item_used.item else item_used.custom_description
                         released_items.append({
-                            'item': item_used.item.name,
+                            'item': item_name,
                             'quantity': item_used.quantity,
                         })
 
-            # Release service-level item reservations
+                    item_used.is_cancelled = True
+                    item_used.cancelled_at = now
+                    item_used.save(update_fields=['is_cancelled', 'cancelled_at'])
+
+            # Service-level items
             for item_used in service.service_items.all():
                 if item_used.stall_stock:
                     StockReservationManager.release_reservation(
@@ -853,25 +862,63 @@ class ServiceCancellationHandler:
                         quantity=item_used.quantity,
                         stall_stock=item_used.stall_stock
                     )
-
+                    item_name = item_used.item.name if item_used.item else item_used.custom_description
                     released_items.append({
-                        'item': item_used.item.name,
+                        'item': item_name,
                         'quantity': item_used.quantity,
                     })
 
-            # Update service status
-            service.status = ServiceStatus.CANCELLED
-            service.remarks = f"{service.remarks}\n\nCancellation reason: {reason}".strip()
-            service.save(update_fields=['status', 'remarks', 'updated_at'])
+                item_used.is_cancelled = True
+                item_used.cancelled_at = now
+                item_used.save(update_fields=['is_cancelled', 'cancelled_at'])
 
-            # Cascade status to all appliances — mark them as received (back to initial)
-            from utils.enums import ApplianceStatus
+            # ── 2. Cancel pending stock requests ──
+            pending_cancelled = StockRequest.objects.filter(
+                service=service, status='pending'
+            ).update(status='cancelled')
+
+            # ── 3. Void related sales transactions ──
+            transactions_voided = 0
+            for tx_field in ('related_transaction', 'related_sub_transaction'):
+                tx = getattr(service, tx_field, None)
+                if tx and not tx.voided:
+                    tx.voided = True
+                    tx.voided_at = now
+                    tx.void_reason = f"Service cancelled: {reason}"
+                    tx.save(update_fields=['voided', 'voided_at', 'void_reason'])
+                    tx.update_payment_status()
+                    transactions_voided += 1
+
+            # ── 4. Clear revenue fields ──
+            service.main_stall_revenue = Decimal('0.00')
+            service.sub_stall_revenue = Decimal('0.00')
+            service.total_revenue = Decimal('0.00')
+
+            # ── 5. Update service status ──
+            service.status = ServiceStatus.CANCELLED
+            service.cancellation_reason = reason
+            service.cancellation_date = now
+            if reason:
+                service.remarks = f"{service.remarks or ''}\n\nCancellation reason: {reason}".strip()
+            service.save(update_fields=[
+                'status', 'cancellation_reason', 'cancellation_date',
+                'remarks', 'main_stall_revenue', 'sub_stall_revenue',
+                'total_revenue', 'updated_at',
+            ])
+
+            # ── 6. Reset appliance statuses ──
             service.appliances.all().update(status=ApplianceStatus.RECEIVED)
+
+            # ── 7. Calculate refund due ──
+            refund_due = float(service.total_paid)
 
             return {
                 'service_id': service.id,
                 'status': 'cancelled',
                 'released_items': released_items,
+                'transactions_voided': transactions_voided,
+                'stock_requests_cancelled': pending_cancelled,
+                'refund_due': refund_due,
             }
 
 
@@ -1770,89 +1817,12 @@ class ServicePaymentManager:
     @staticmethod
     def cancel_service(service, reason=""):
         """
-        Cancel an incomplete service and return unused parts to stock.
-        Only use this for services that are NOT completed.
-        
-        Args:
-            service: Service instance to cancel
-            reason: Reason for cancellation
-        
-        Returns:
-            dict with cancellation summary
-        
-        Raises:
-            ValidationError: If service is already completed
+        DEPRECATED: Use ServiceCancellationHandler.cancel_service() instead.
+        This method delegates to the handler for a single, correct implementation.
         """
-        from django.utils import timezone
-        from sales.models import SalesTransaction
-        from services.models import ServiceStatus
-        
-        # Prevent cancelling completed services (use refund instead)
-        if service.status == ServiceStatus.COMPLETED:
-            raise ValidationError(
-                "Cannot cancel a completed service. Use refund_service() instead."
-            )
-        
-        with transaction.atomic():
-            # 1. Mark service as cancelled
-            original_status = service.status
-            service.status = ServiceStatus.CANCELLED
-            service.cancellation_reason = reason
-            service.cancellation_date = timezone.now()
-            service.save(update_fields=["status", "cancellation_reason", "cancellation_date"])
-            
-            # 2. Return parts to stock (parts NOT used yet)
-            parts_returned = 0
-            for appliance in service.appliances.all():
-                for item_used in appliance.items_used.all():
-                    if item_used.stall_stock:
-                        # Return quantity to stock
-                        item_used.stall_stock.quantity += item_used.quantity
-                        # Release reservation if any
-                        if item_used.stall_stock.reserved_quantity >= item_used.quantity:
-                            item_used.stall_stock.reserved_quantity -= item_used.quantity
-                        item_used.stall_stock.save()
-                        parts_returned += 1
-                        
-                        # Mark item_used as cancelled
-                        item_used.is_cancelled = True
-                        item_used.cancelled_at = timezone.now()
-                        item_used.save(update_fields=["is_cancelled", "cancelled_at"])
-            
-            # 3. Void sales transactions
-            transactions_voided = 0
-            if service.related_transaction:
-                service.related_transaction.voided = True
-                service.related_transaction.voided_at = timezone.now()
-                service.related_transaction.void_reason = f"Service cancelled: {reason}"
-                service.related_transaction.save(update_fields=["voided", "voided_at", "void_reason"])
-                transactions_voided += 1
-            
-            # Find and void sub stall transaction
-            sub_stall = get_sub_stall()
-            sub_transaction = SalesTransaction.objects.filter(
-                stall=sub_stall,
-                client=service.client,
-                created_at__gte=service.created_at,
-            ).first()
-            
-            if sub_transaction:
-                sub_transaction.voided = True
-                sub_transaction.voided_at = timezone.now()
-                sub_transaction.void_reason = f"Service cancelled: {reason}"
-                sub_transaction.save(update_fields=["voided", "voided_at", "void_reason"])
-                transactions_voided += 1
-            
-            # 4. Calculate refund amount (if payments were made)
-            refund_amount = service.total_paid
-            
-            return {
-                'service_id': service.id,
-                'original_status': original_status,
-                'parts_returned_to_stock': parts_returned,
-                'transactions_voided': transactions_voided,
-                'refund_due': float(refund_amount),
-            }
+        return ServiceCancellationHandler.cancel_service(
+            service=service, reason=reason
+        )
     
     @staticmethod
     def refund_service(service, refund_amount, reason="", refund_type="full", refund_method="cash", processed_by=None):

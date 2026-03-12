@@ -731,6 +731,12 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
                 stall_stock=instance.stall_stock
             )
 
+        # Cancel any pending stock requests for this item
+        from inventory.models import StockRequest
+        StockRequest.objects.filter(
+            appliance_item=instance, status='pending'
+        ).update(status='cancelled')
+
         # Store service reference before deletion
         service = instance.appliance.service
         
@@ -809,6 +815,12 @@ class ServiceItemUsedViewSet(viewsets.ModelViewSet):
                 quantity=instance.quantity,
                 stall_stock=instance.stall_stock
             )
+
+        # Cancel any pending stock requests for this item
+        from inventory.models import StockRequest
+        StockRequest.objects.filter(
+            service_item=instance, status='pending'
+        ).update(status='cancelled')
 
         service = instance.service
 
