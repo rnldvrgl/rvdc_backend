@@ -192,22 +192,12 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="sub-stall-payable")
     def sub_stall_payable(self, request):
         """
-        Compute total sub-stall sales for a given date.
-        The main stall owes this amount to the sub stall at end-of-day settlement.
-        GET /remittances/sub-stall-payable/?date=YYYY-MM-DD
+        Compute sub-stall payable from services only for today.
+        Shows how much the main stall owes the sub stall for parts used
+        in services — excludes direct sales.
+        GET /remittances/sub-stall-payable/
         """
-        date_str = request.query_params.get("date")
-
-        if date_str:
-            try:
-                target_date = date.fromisoformat(date_str)
-            except ValueError:
-                return Response(
-                    {"detail": "Invalid date format. Use YYYY-MM-DD."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        else:
-            target_date = timezone.localdate()
+        target_date = timezone.localdate()
 
         sub_stall = Stall.objects.filter(stall_type="sub", is_system=True).first()
         if not sub_stall:
@@ -216,23 +206,44 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        def sum_sub_sales(payment_type: str):
+        from services.models import Service
+
+        # Get services that have a sub stall transaction with payments today
+        services_with_parts = (
+            Service.objects.filter(
+                related_sub_transaction__isnull=False,
+                related_sub_transaction__stall=sub_stall,
+                related_sub_transaction__payments__payment_date__date=target_date,
+                related_sub_transaction__voided=False,
+                related_sub_transaction__is_deleted=False,
+            )
+            .select_related("client", "related_sub_transaction")
+            .distinct()
+        )
+
+        # Get sub stall transaction IDs that are service-linked
+        service_sub_tx_ids = services_with_parts.values_list(
+            "related_sub_transaction_id", flat=True
+        )
+
+        def sum_service_sub_sales(payment_type: str):
             from sales.models import SalesTransaction
+
             total = SalesPayment.objects.filter(
-                transaction__stall=sub_stall,
+                transaction_id__in=service_sub_tx_ids,
                 payment_date__date=target_date,
-                transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
-                transaction__voided=False,
-                transaction__is_deleted=False,
+                transaction__payment_status__in=[
+                    PaymentStatus.PAID, PaymentStatus.PARTIAL,
+                ],
                 payment_type=payment_type,
             ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
 
             if payment_type == "cash":
                 total_change = SalesTransaction.objects.filter(
-                    stall=sub_stall,
-                    payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
-                    voided=False,
-                    is_deleted=False,
+                    id__in=service_sub_tx_ids,
+                    payment_status__in=[
+                        PaymentStatus.PAID, PaymentStatus.PARTIAL,
+                    ],
                     payments__payment_date__date=target_date,
                 ).distinct().aggregate(
                     total=Sum("change_amount")
@@ -241,21 +252,40 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
 
             return total
 
-        sales = {pt: sum_sub_sales(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]}
+        sales = {
+            pt: sum_service_sub_sales(pt)
+            for pt in ["cash", "gcash", "credit", "debit", "cheque"]
+        }
         total = sum(sales.values())
-        e_payments = sales["gcash"] + sales["credit"] + sales["debit"] + sales["cheque"]
-
-        # Sub stall expenses
-        total_expenses = (
-            Expense.objects.filter(
-                stall=sub_stall, created_at__date=target_date
-            ).aggregate(total=Sum("paid_amount"))["total"]
-            or Decimal("0")
+        e_payments = (
+            sales["gcash"] + sales["credit"] + sales["debit"] + sales["cheque"]
         )
 
-        # Only cash is payable — e-payments (gcash, credit, debit, cheque)
-        # are received directly by admin and don't need physical settlement.
-        cash_payable = max(Decimal("0"), sales["cash"] - total_expenses)
+        # Only cash is payable — e-payments go directly to admin
+        cash_payable = max(Decimal("0"), sales["cash"])
+
+        # Services breakdown
+        services_list = []
+        for svc in services_with_parts:
+            client_name = ""
+            if svc.client:
+                client_name = svc.client.name if hasattr(svc.client, "name") else str(svc.client)
+            sub_tx = svc.related_sub_transaction
+            tx_total = Decimal("0")
+            if sub_tx:
+                tx_total = (
+                    SalesPayment.objects.filter(
+                        transaction=sub_tx,
+                        payment_date__date=target_date,
+                    ).aggregate(total=Sum("amount"))["total"]
+                    or Decimal("0")
+                )
+            services_list.append({
+                "service_id": svc.id,
+                "client_name": client_name,
+                "sub_stall_revenue": str(svc.sub_stall_revenue),
+                "paid_today": str(tx_total),
+            })
 
         return Response({
             "date": str(target_date),
@@ -268,6 +298,6 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
             "sales_cheque": str(sales["cheque"]),
             "total_sales": str(total),
             "e_payments_total": str(e_payments),
-            "total_expenses": str(total_expenses),
             "cash_payable": str(cash_payable),
+            "services": services_list,
         })
