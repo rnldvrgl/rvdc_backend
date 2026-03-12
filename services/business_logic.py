@@ -404,12 +404,34 @@ class ServiceCompletionHandler:
                             parts_to_sell.append({
                                 'item': item_used.item,
                                 'quantity': charged_qty,
-                                'unit_price': item_used.item.retail_price,
+                                'unit_price': item_used.discounted_price,
                             })
+
+                    # Also include custom items (no stock, but billable)
+                    for item_used in appliance.items_used.filter(item__isnull=True).exclude(custom_description=''):
+                        if not item_used.is_free and item_used.line_total > 0:
+                            charged_qty = item_used.quantity - item_used.free_quantity
+                            if charged_qty > 0:
+                                parts_to_sell.append({
+                                    'item': None,
+                                    'description': item_used.custom_description,
+                                    'quantity': charged_qty,
+                                    'unit_price': item_used.discounted_price,
+                                })
 
                 # Process service-level items (chipping/pre-installation)
                 for item_used in service.service_items.all():
                     if not item_used.stall_stock:
+                        # Still include custom items that have no stock
+                        if item_used.is_custom_item and not item_used.is_free and item_used.line_total > 0:
+                            charged_qty = item_used.quantity - item_used.free_quantity
+                            if charged_qty > 0:
+                                parts_to_sell.append({
+                                    'item': None,
+                                    'description': item_used.custom_description,
+                                    'quantity': charged_qty,
+                                    'unit_price': item_used.discounted_price,
+                                })
                         continue
 
                     StockReservationManager.consume_reservation(
@@ -424,7 +446,7 @@ class ServiceCompletionHandler:
                         parts_to_sell.append({
                             'item': item_used.item,
                             'quantity': charged_qty,
-                            'unit_price': item_used.item.retail_price,
+                            'unit_price': item_used.discounted_price,
                         })
 
                 # Create ONE sub stall transaction for ALL parts (if any)
@@ -467,6 +489,7 @@ class ServiceCompletionHandler:
                             SalesItem.objects.create(
                                 transaction=sub_sales,
                                 item=part['item'],
+                                description=part.get('description', ''),
                                 quantity=part['quantity'],
                                 final_price_per_unit=part['unit_price'],
                             )
@@ -660,12 +683,13 @@ class ServiceCompletionHandler:
                                     continue
 
                                 charged_qty = item_used.quantity - item_used.free_quantity
-                                if charged_qty > 0 and item_used.item:
+                                if charged_qty > 0:
                                     SalesItem.objects.create(
                                         transaction=sub_receipt,
                                         item=item_used.item,
+                                        description=item_used.custom_description if item_used.is_custom_item else '',
                                         quantity=charged_qty,
-                                        final_price_per_unit=item_used.item.retail_price,
+                                        final_price_per_unit=item_used.discounted_price,
                                     )
 
                         # Include service-level items in sub receipt
@@ -674,12 +698,13 @@ class ServiceCompletionHandler:
                                 continue
 
                             charged_qty = item_used.quantity - item_used.free_quantity
-                            if charged_qty > 0 and item_used.item:
+                            if charged_qty > 0:
                                 SalesItem.objects.create(
                                     transaction=sub_receipt,
                                     item=item_used.item,
+                                    description=item_used.custom_description if item_used.is_custom_item else '',
                                     quantity=charged_qty,
-                                    final_price_per_unit=item_used.item.retail_price,
+                                    final_price_per_unit=item_used.discounted_price,
                                 )
 
                         # Link sub receipt to service
@@ -753,13 +778,29 @@ class ServiceCompletionHandler:
                     continue
 
                 charged_qty = item_used.quantity - item_used.free_quantity
-                if charged_qty > 0 and item_used.item:  # Check if item exists
+                if charged_qty > 0:
                     SalesItem.objects.create(
                         transaction=receipt,
                         item=item_used.item,
+                        description=item_used.custom_description if item_used.is_custom_item else '',
                         quantity=charged_qty,
-                        final_price_per_unit=item_used.item.retail_price,
+                        final_price_per_unit=item_used.discounted_price,
                     )
+
+        # Add service-level items
+        for item_used in service.service_items.all():
+            if item_used.is_free:
+                continue
+
+            charged_qty = item_used.quantity - item_used.free_quantity
+            if charged_qty > 0:
+                SalesItem.objects.create(
+                    transaction=receipt,
+                    item=item_used.item,
+                    description=item_used.custom_description if item_used.is_custom_item else '',
+                    quantity=charged_qty,
+                    final_price_per_unit=item_used.discounted_price,
+                )
 
         # Link receipt to service
         service.related_transaction = receipt

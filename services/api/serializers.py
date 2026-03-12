@@ -143,6 +143,12 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
             return obj.item.retail_price
         return obj.custom_price
 
+    def get_charged_quantity(self, obj):
+        return obj.quantity - obj.free_quantity
+
+    def get_line_total(self, obj):
+        return str(obj.line_total)
+
     def validate(self, data):
         """Validate stock availability for reservation."""
         item = data.get("item")
@@ -308,40 +314,73 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         """
         Update item usage and adjust reservation.
-        Custom items skip stock adjustments.
+        Handles:
+          - custom→custom: no stock interaction
+          - inventory→custom: release old stock
+          - custom→inventory: reserve new stock
+          - inventory→inventory: adjust reservation by qty diff
         """
         apply_copper_promo = validated_data.pop("apply_copper_tube_promo", False)
-
-        # Custom item — no stock interaction
-        if getattr(self, '_is_custom_item', False) or instance.is_custom_item:
-            return super().update(instance, validated_data)
-
-        stock = self._validated_stock
-        old_qty = instance.quantity
-        new_qty = validated_data.get("quantity", old_qty)
-        diff = new_qty - old_qty
+        was_custom = instance.is_custom_item
+        is_now_custom = getattr(self, '_is_custom_item', False)
 
         with transaction.atomic():
-            # Adjust reservation
+            if was_custom and is_now_custom:
+                # custom → custom: no stock interaction
+                return super().update(instance, validated_data)
+
+            if not was_custom and is_now_custom:
+                # inventory → custom: release old reservation
+                if instance.stall_stock and instance.item:
+                    StockReservationManager.release_reservation(
+                        item=instance.item,
+                        quantity=instance.quantity,
+                        stall_stock=instance.stall_stock
+                    )
+                validated_data['stall_stock'] = None
+                validated_data['stock_request_status'] = None
+                return super().update(instance, validated_data)
+
+            if was_custom and not is_now_custom:
+                # custom → inventory: reserve new stock
+                stock = self._validated_stock
+                new_qty = validated_data.get("quantity", 1)
+                StockReservationManager.reserve_stock(
+                    item=validated_data["item"],
+                    quantity=new_qty,
+                    stall_stock=stock
+                )
+                validated_data['stall_stock'] = stock
+                validated_data['custom_description'] = ''
+                validated_data['custom_price'] = None
+                instance = super().update(instance, validated_data)
+                if apply_copper_promo and not instance.is_free:
+                    free_qty, charged_qty, applied = PromoManager.apply_copper_tube_free_10ft(instance)
+                    if applied:
+                        instance.save(update_fields=["free_quantity", "promo_name"])
+                return instance
+
+            # inventory → inventory: adjust reservation by qty diff
+            stock = self._validated_stock
+            old_qty = instance.quantity
+            new_qty = validated_data.get("quantity", old_qty)
+            diff = new_qty - old_qty
+
             if diff > 0:
-                # Need to reserve more
                 StockReservationManager.reserve_stock(
                     item=instance.item,
                     quantity=diff,
                     stall_stock=stock
                 )
             elif diff < 0:
-                # Release some reservation
                 StockReservationManager.release_reservation(
                     item=instance.item,
                     quantity=abs(diff),
                     stall_stock=stock
                 )
 
-            # Update the instance
             instance = super().update(instance, validated_data)
 
-            # Re-apply copper promo if requested
             if apply_copper_promo and not instance.is_free:
                 free_qty, charged_qty, applied = PromoManager.apply_copper_tube_free_10ft(instance)
                 if applied:
@@ -440,6 +479,12 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
         if obj.item:
             return obj.item.retail_price
         return obj.custom_price
+
+    def get_charged_quantity(self, obj):
+        return obj.quantity - obj.free_quantity
+
+    def get_line_total(self, obj):
+        return str(obj.line_total)
 
     def validate(self, data):
         item = data.get("item")
@@ -589,17 +634,50 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         apply_copper_promo = validated_data.pop("apply_copper_tube_promo", False)
-
-        # Custom item — no stock interaction
-        if getattr(self, '_is_custom_item', False) or instance.is_custom_item:
-            return super().update(instance, validated_data)
-
-        stock = self._validated_stock
-        old_qty = instance.quantity
-        new_qty = validated_data.get("quantity", old_qty)
-        diff = new_qty - old_qty
+        was_custom = instance.is_custom_item
+        is_now_custom = getattr(self, '_is_custom_item', False)
 
         with transaction.atomic():
+            if was_custom and is_now_custom:
+                return super().update(instance, validated_data)
+
+            if not was_custom and is_now_custom:
+                # inventory → custom: release old reservation
+                if instance.stall_stock and instance.item:
+                    StockReservationManager.release_reservation(
+                        item=instance.item,
+                        quantity=instance.quantity,
+                        stall_stock=instance.stall_stock
+                    )
+                validated_data['stall_stock'] = None
+                validated_data['stock_request_status'] = None
+                return super().update(instance, validated_data)
+
+            if was_custom and not is_now_custom:
+                # custom → inventory: reserve new stock
+                stock = self._validated_stock
+                new_qty = validated_data.get("quantity", 1)
+                StockReservationManager.reserve_stock(
+                    item=validated_data["item"],
+                    quantity=new_qty,
+                    stall_stock=stock
+                )
+                validated_data['stall_stock'] = stock
+                validated_data['custom_description'] = ''
+                validated_data['custom_price'] = None
+                instance = super().update(instance, validated_data)
+                if apply_copper_promo and not instance.is_free:
+                    free_qty, charged_qty, applied = PromoManager.apply_copper_tube_free_10ft(instance)
+                    if applied:
+                        instance.save(update_fields=["free_quantity", "promo_name"])
+                return instance
+
+            # inventory → inventory: adjust reservation by qty diff
+            stock = self._validated_stock
+            old_qty = instance.quantity
+            new_qty = validated_data.get("quantity", old_qty)
+            diff = new_qty - old_qty
+
             if diff > 0:
                 StockReservationManager.reserve_stock(
                     item=instance.item,
@@ -1663,6 +1741,22 @@ class ServiceCompletionSerializer(serializers.Serializer):
 
         if service.status == ServiceStatus.CANCELLED:
             raise ValidationError("Cannot complete a cancelled service.")
+
+        # Block completion if any items have pending stock requests
+        from services.models import ApplianceItemUsed, ServiceItemUsed
+        pending_appliance_items = ApplianceItemUsed.objects.filter(
+            appliance__service=service,
+            stock_request_status="pending",
+        )
+        pending_service_items = ServiceItemUsed.objects.filter(
+            service=service,
+            stock_request_status="pending",
+        )
+        if pending_appliance_items.exists() or pending_service_items.exists():
+            raise ValidationError(
+                "Cannot complete service: there are parts with pending stock requests. "
+                "Please approve or decline all stock requests first."
+            )
 
         return data
 

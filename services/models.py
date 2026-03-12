@@ -290,15 +290,13 @@ class Service(models.Model):
         """Sum labor fees and parts for all appliances + service-level items."""
         appliance_costs = sum(a.labor_fee for a in self.appliances.all())
         parts_costs = sum(
-            iu.item.price * iu.quantity
+            iu.line_total
             for a in self.appliances.all()
             for iu in a.items_used.all()
-            if iu.item and iu.item.price
         )
         service_items_costs = sum(
-            si.item.price * si.quantity
+            si.line_total
             for si in self.service_items.all()
-            if si.item and si.item.price
         )
         return appliance_costs + parts_costs + service_items_costs
 
