@@ -114,20 +114,22 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
         if not stall:
             raise ValidationError("Stall is required for this sales transaction.")
 
-        # Check stock availability before committing anything
-        for item_data in items_data:
-            item = item_data.get("item")
-            if not item:
-                continue
-            qty = item_data["quantity"]
-            stock = Stock.objects.filter(stall=stall, item=item).first()
-            if not stock or stock.quantity < qty:
-                raise ValidationError(
-                    f"Not enough stock of {item.name} in {stall.name}. "
-                    f"Available: {stock.quantity if stock else 0}, Needed: {qty}"
-                )
-
         with transaction.atomic():
+            # Check stock availability with row-level lock
+            for item_data in items_data:
+                item = item_data.get("item")
+                if not item:
+                    continue
+                qty = item_data["quantity"]
+                stock = Stock.objects.select_for_update().filter(
+                    stall=stall, item=item
+                ).first()
+                if not stock or stock.quantity < qty:
+                    raise ValidationError(
+                        f"Not enough stock of {item.name} in {stall.name}. "
+                        f"Available: {stock.quantity if stock else 0}, Needed: {qty}"
+                    )
+
             sale_txn = SalesTransaction.objects.create(**validated_data)
 
             # Deduct stock & create sales items
@@ -136,9 +138,9 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
                 qty = item_data["quantity"]
 
                 if item:
-                    stock = Stock.objects.get(stall=stall, item=item)
+                    stock = Stock.objects.select_for_update().get(stall=stall, item=item)
                     stock.quantity -= qty
-                    stock.save()
+                    stock.save(update_fields=["quantity", "updated_at"])
 
                 SalesItem.objects.create(transaction=sale_txn, **item_data)
 

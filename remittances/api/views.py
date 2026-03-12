@@ -143,7 +143,7 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
         # Get expenses
         total_expenses = (
             Expense.objects.filter(
-                stall=stall, created_at__date=target_date
+                stall=stall, expense_date=target_date
             ).aggregate(total=Sum("paid_amount"))["total"]
             or Decimal("0")
         )

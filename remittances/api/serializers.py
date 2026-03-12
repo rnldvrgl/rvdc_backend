@@ -275,7 +275,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
 
         # 📉 Get total expenses for the target date
         total_expenses = (
-            Expense.objects.filter(stall=stall, created_at__date=target_date).aggregate(
+            Expense.objects.filter(stall=stall, expense_date=target_date).aggregate(
                 total=Sum("paid_amount")
             )["total"]
             or 0

@@ -91,7 +91,7 @@ class Command(BaseCommand):
 
             new_expenses = (
                 Expense.objects.filter(
-                    stall=rem.stall, created_at__date=target_date
+                    stall=rem.stall, expense_date=target_date
                 ).aggregate(total=Sum("paid_amount"))["total"]
                 or Decimal("0")
             )

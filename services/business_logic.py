@@ -829,6 +829,13 @@ class ServiceCancellationHandler:
         from utils.enums import ServiceStatus, ApplianceStatus
         from inventory.models import StockRequest
 
+        if service.status == ServiceStatus.COMPLETED:
+            raise ValidationError(
+                "Cannot cancel a completed service. Use reopen or refund instead."
+            )
+        if service.status == ServiceStatus.CANCELLED:
+            raise ValidationError("Service is already cancelled.")
+
         with transaction.atomic():
             released_items = []
             now = timezone.now()
@@ -970,8 +977,9 @@ class ServiceReopenHandler:
                     stock.quantity += qty
                     stock.save(update_fields=['quantity', 'updated_at'])
 
+                    item_name = item_used.item.name if item_used.item else item_used.custom_description
                     restored_items.append({
-                        'item': item_used.item.name,
+                        'item': item_name,
                         'quantity': float(qty),
                     })
 
@@ -987,8 +995,9 @@ class ServiceReopenHandler:
                 stock.quantity += qty
                 stock.save(update_fields=['quantity', 'updated_at'])
 
+                item_name = item_used.item.name if item_used.item else item_used.custom_description
                 restored_items.append({
-                    'item': item_used.item.name,
+                    'item': item_name,
                     'quantity': float(qty),
                 })
 
@@ -1074,8 +1083,9 @@ class ServiceReopenHandler:
                             quantity=item_used.quantity,
                             stall_stock=item_used.stall_stock,
                         )
+                        item_name = item_used.item.name if item_used.item else item_used.custom_description
                         re_reserved.append({
-                            'item': item_used.item.name,
+                            'item': item_name,
                             'quantity': float(item_used.quantity),
                         })
                     except ValidationError:
@@ -1092,8 +1102,9 @@ class ServiceReopenHandler:
                         quantity=item_used.quantity,
                         stall_stock=item_used.stall_stock,
                     )
+                    item_name = item_used.item.name if item_used.item else item_used.custom_description
                     re_reserved.append({
-                        'item': item_used.item.name,
+                        'item': item_name,
                         'quantity': float(item_used.quantity),
                     })
                 except ValidationError:
@@ -1310,7 +1321,8 @@ class ServicePaymentManager:
             
             # Create sales items for labor fees (main stall)
             for appliance in service.appliances.all():
-                if appliance.labor_fee > 0 and not appliance.labor_is_free:
+                labor_charge = appliance.discounted_labor_fee or Decimal('0.00')
+                if labor_charge > 0 and not appliance.labor_is_free:
                     appliance_name = appliance.appliance_type.name if appliance.appliance_type else "Appliance"
                     brand_info = f" ({appliance.brand})" if appliance.brand else ""
                     SalesItem.objects.create(
@@ -1318,7 +1330,7 @@ class ServicePaymentManager:
                         item=None,
                         description=f"Labor Fee - {appliance_name}{brand_info}",
                         quantity=1,
-                        final_price_per_unit=appliance.labor_fee,
+                        final_price_per_unit=labor_charge,
                     )
             
             # Add aircon unit prices for installation services (Main stall revenue)
@@ -1342,20 +1354,33 @@ class ServicePaymentManager:
                                 final_price_per_unit=unit_price,
                             )
             
-            # Collect all parts from all appliances
+            # Collect all parts from all appliances + service-level items
             parts_to_add = []
             for appliance in service.appliances.all():
                 for item_used in appliance.items_used.all():
-                    # Skip free items
                     if item_used.is_free:
                         continue
-                        
                     charged_qty = item_used.quantity - item_used.free_quantity
-                    if charged_qty > 0 and item_used.item:
+                    if charged_qty > 0:
                         parts_to_add.append({
                             'item': item_used.item,
+                            'description': item_used.item.name if item_used.item else item_used.custom_description,
                             'quantity': charged_qty,
+                            'price': item_used.discounted_price,
                         })
+
+            # Service-level items
+            for item_used in service.service_items.all():
+                if item_used.is_free:
+                    continue
+                charged_qty = item_used.quantity - item_used.free_quantity
+                if charged_qty > 0:
+                    parts_to_add.append({
+                        'item': item_used.item,
+                        'description': item_used.item.name if item_used.item else item_used.custom_description,
+                        'quantity': charged_qty,
+                        'price': item_used.discounted_price,
+                    })
             
             # Create ONE sub stall transaction for ALL parts (if any)
             sub_sales_transaction = None
@@ -1371,9 +1396,9 @@ class ServicePaymentManager:
                     SalesItem.objects.create(
                         transaction=sub_sales_transaction,
                         item=part['item'],
-                        description=part['item'].name,
+                        description=part['description'],
                         quantity=part['quantity'],
-                        final_price_per_unit=part['item'].retail_price,
+                        final_price_per_unit=part['price'],
                     )
 
                 service.related_sub_transaction = sub_sales_transaction
@@ -1481,12 +1506,13 @@ class ServicePaymentManager:
                 # Collect labor items first to decide whether main TX is needed
                 labor_items = []
                 for appliance in service.appliances.all():
-                    if appliance.labor_fee > 0 and not appliance.labor_is_free:
+                    labor_charge = appliance.discounted_labor_fee or Decimal('0.00')
+                    if labor_charge > 0 and not appliance.labor_is_free:
                         appliance_name = appliance.appliance_type.name if appliance.appliance_type else "Appliance"
                         brand_info = f" ({appliance.brand})" if appliance.brand else ""
                         labor_items.append({
                             'description': f"Labor Fee - {appliance_name}{brand_info}",
-                            'fee': appliance.labor_fee,
+                            'fee': labor_charge,
                         })
 
                 # Collect aircon unit items for installation services
@@ -1535,20 +1561,33 @@ class ServicePaymentManager:
                             final_price_per_unit=item['price'],
                         )
 
-                # Collect all parts from all appliances
+                # Collect all parts from all appliances + service-level items
                 parts_to_add = []
                 for appliance in service.appliances.all():
                     for item_used in appliance.items_used.all():
-                        # Skip free items
                         if item_used.is_free:
                             continue
-
                         charged_qty = item_used.quantity - item_used.free_quantity
-                        if charged_qty > 0 and item_used.item:
+                        if charged_qty > 0:
                             parts_to_add.append({
                                 'item': item_used.item,
+                                'description': item_used.item.name if item_used.item else item_used.custom_description,
                                 'quantity': charged_qty,
+                                'price': item_used.discounted_price,
                             })
+
+                # Service-level items
+                for item_used in service.service_items.all():
+                    if item_used.is_free:
+                        continue
+                    charged_qty = item_used.quantity - item_used.free_quantity
+                    if charged_qty > 0:
+                        parts_to_add.append({
+                            'item': item_used.item,
+                            'description': item_used.item.name if item_used.item else item_used.custom_description,
+                            'quantity': charged_qty,
+                            'price': item_used.discounted_price,
+                        })
 
                 # Find or create sub stall transaction for parts
                 if parts_to_add:
@@ -1586,9 +1625,9 @@ class ServicePaymentManager:
                             SalesItem.objects.create(
                                 transaction=sub_sales_tx,
                                 item=part['item'],
-                                description=part['item'].name,
+                                description=part['description'],
                                 quantity=part['quantity'],
-                                final_price_per_unit=part['item'].retail_price,
+                                final_price_per_unit=part['price'],
                             )
 
                 # Link transactions to service
@@ -1688,18 +1727,6 @@ class ServicePaymentManager:
                         voided=False,
                     ).exclude(id=sales_transaction.id).first()
 
-                if not sub_sales_tx:
-                    # Fallback 2: same-day lookup for sub stall TX created on
-                    # the same date as the main TX (handles services completed
-                    # before related_sub_transaction field existed)
-                    main_date = sales_transaction.created_at.date()
-                    sub_sales_tx = SalesTransaction.objects.filter(
-                        stall=sub_stall,
-                        client=service.client,
-                        created_at__date=main_date,
-                        voided=False,
-                    ).exclude(id=sales_transaction.id).first()
-
                 # Persist the link if found via fallback
                 if sub_sales_tx and not service.related_sub_transaction_id:
                     service.related_sub_transaction = sub_sales_tx
@@ -1796,6 +1823,8 @@ class ServicePaymentManager:
     def void_payment(payment, reason=""):
         """
         Void/delete a payment and update service payment status.
+        Also removes the corresponding SalesPayment records from
+        related_transaction and related_sub_transaction.
 
         Args:
             payment: ServicePayment instance
@@ -1804,10 +1833,32 @@ class ServicePaymentManager:
         Returns:
             Service instance (after update)
         """
+        from sales.models import SalesPayment
+
         with transaction.atomic():
             service = payment.service
+            amount = payment.amount
+            payment_type = payment.payment_type
+
+            # Remove matching SalesPayment(s) for this service payment.
+            # Waterfall: check sub transaction first, then main — mirrors create_payment order.
+            remaining = amount
+            for tx in [service.related_sub_transaction, service.related_transaction]:
+                if not tx or remaining <= 0:
+                    continue
+                matching = SalesPayment.objects.filter(
+                    transaction=tx,
+                    payment_type=payment_type,
+                    amount__lte=remaining,
+                ).order_by('-amount')
+                for sp in matching:
+                    if remaining <= 0:
+                        break
+                    remaining -= sp.amount
+                    sp.delete()
+                tx.update_payment_status()
+
             payment.delete()
-            # Payment status is automatically updated by the model's delete signal
             service.update_payment_status()
             service.refresh_from_db()
 

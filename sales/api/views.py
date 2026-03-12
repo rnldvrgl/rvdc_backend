@@ -203,18 +203,32 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         Does NOT overwrite old payments — just adds a new SalesPayment.
         """
         transaction = self.get_object()
+
+        if transaction.voided:
+            return Response(
+                {"detail": "Cannot add payment to a voided transaction."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         serializer = SalesPaymentSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        amount = serializer.validated_data["amount"]
+        balance_due = transaction.computed_total - transaction.total_paid
+        if balance_due <= 0:
+            return Response(
+                {"detail": "Transaction is already fully paid."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         SalesPayment.objects.create(
             transaction=transaction,
             payment_type=serializer.validated_data["payment_type"],
-            amount=serializer.validated_data["amount"],
+            amount=amount,
             payment_date=serializer.validated_data.get("payment_date")
             or timezone.now(),
         )
 
-        # update the status (already done by SalesPayment.save(), but we can be explicit)
         transaction.update_payment_status()
 
         transaction_serializer = self.get_serializer(transaction)
