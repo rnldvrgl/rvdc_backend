@@ -24,6 +24,8 @@ def void_sales_transaction(transaction_id: int, user, reason: str):
     # Restock items
     for sale_item in transaction.items.all():
         item = sale_item.item
+        if not item:
+            continue
         qty = sale_item.quantity
         stock, _ = Stock.objects.get_or_create(
             stall=transaction.stall, item=item, defaults={"quantity": 0}
@@ -60,6 +62,8 @@ def unvoid_sales_transaction(transaction_id: int, user):
     # Check stock availability before deducting
     for sale_item in transaction.items.all():
         item = sale_item.item
+        if not item:
+            continue
         qty = sale_item.quantity
         stock = Stock.objects.filter(stall=transaction.stall, item=item).first()
         if not stock or stock.quantity < qty:
@@ -71,6 +75,8 @@ def unvoid_sales_transaction(transaction_id: int, user):
     # Deduct items again
     for sale_item in transaction.items.all():
         item = sale_item.item
+        if not item:
+            continue
         qty = sale_item.quantity
         stock = Stock.objects.get(stall=transaction.stall, item=item)
         stock.quantity -= qty

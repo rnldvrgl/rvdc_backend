@@ -156,19 +156,21 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
                 sent_ids = []
                 for item_data in items_data:
                     item_id = item_data.get("id")
-                    item = item_data["item"]
+                    item = item_data.get("item")
                     qty = item_data["quantity"]
 
                     if item_id and item_id in existing_items:
                         old_item = existing_items[item_id]
-                        delta_qty = qty - old_item.quantity
-                        net_changes[item] = net_changes.get(item, 0) + delta_qty
                         sent_ids.append(item_id)
+                        if item:
+                            delta_qty = qty - old_item.quantity
+                            net_changes[item] = net_changes.get(item, 0) + delta_qty
                     else:
-                        net_changes[item] = net_changes.get(item, 0) + qty
+                        if item:
+                            net_changes[item] = net_changes.get(item, 0) + qty
 
                 for item_id, old_item in existing_items.items():
-                    if item_id not in sent_ids:
+                    if item_id not in sent_ids and old_item.item:
                         net_changes[old_item.item] = (
                             net_changes.get(old_item.item, 0) - old_item.quantity
                         )
