@@ -3,6 +3,7 @@ from services.api.views import (
     ServiceViewSet,
     ServiceApplianceViewSet,
     ApplianceItemUsedViewSet,
+    ServiceItemUsedViewSet,
     TechnicianAssignmentViewSet,
     ApplianceTypeViewSet,
 )
@@ -13,6 +14,7 @@ router.register(
     r"service-appliances", ServiceApplianceViewSet, basename="service-appliance"
 )
 router.register(r"appliance-items", ApplianceItemUsedViewSet, basename="appliance-item")
+router.register(r"service-items", ServiceItemUsedViewSet, basename="service-item")
 router.register(
     r"technician-assignments",
     TechnicianAssignmentViewSet,

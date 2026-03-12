@@ -257,7 +257,7 @@ class Service(models.Model):
 
     @property
     def total_cost(self):
-        """Sum labor fees and parts for all appliances in this service."""
+        """Sum labor fees and parts for all appliances + service-level items."""
         appliance_costs = sum(a.labor_fee for a in self.appliances.all())
         parts_costs = sum(
             iu.item.price * iu.quantity
@@ -265,7 +265,12 @@ class Service(models.Model):
             for iu in a.items_used.all()
             if iu.item and iu.item.price
         )
-        return appliance_costs + parts_costs
+        service_items_costs = sum(
+            si.item.price * si.quantity
+            for si in self.service_items.all()
+            if si.item and si.item.price
+        )
+        return appliance_costs + parts_costs + service_items_costs
 
     @property
     def total_paid(self):
@@ -754,6 +759,98 @@ class ApplianceItemUsed(BaseItemUsed):
         blank=True,
         related_name="service_items",
     )
+
+
+# ----------------------------------
+# Service-Level Items (not tied to any appliance)
+# ----------------------------------
+class ServiceItemUsed(BaseItemUsed):
+    """
+    Items used at the service level, not tied to any appliance.
+    
+    Used for pre-installation work like chipping (copper pipe, insulation tube,
+    etc.) where the AC unit hasn't been added yet, or general materials that
+    don't belong to a specific appliance.
+    """
+    service = models.ForeignKey(
+        Service, on_delete=models.CASCADE, related_name="service_items"
+    )
+
+    class Meta:
+        verbose_name = "Service Item Used"
+        verbose_name_plural = "Service Items Used"
+
+    stall_stock = models.ForeignKey(
+        Stock,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="service_items_used",
+    )
+    is_free = models.BooleanField(
+        default=False, help_text="Mark this part as free to the customer."
+    )
+    free_quantity = models.PositiveIntegerField(
+        default=0,
+        help_text="Quantity given free as part of promotion",
+    )
+    promo_name = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Name of applied promotion",
+    )
+    discount_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Fixed discount amount for this item"
+    )
+    discount_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        help_text="Percentage discount (0.00 - 100.00)"
+    )
+    discount_reason = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="Reason for item discount"
+    )
+    is_cancelled = models.BooleanField(
+        default=False,
+        help_text="True if service was cancelled and part returned to stock"
+    )
+    cancelled_at = models.DateTimeField(blank=True, null=True)
+
+    expense = models.ForeignKey(
+        "expenses.Expense",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="service_level_items",
+    )
+
+    @property
+    def discounted_price(self):
+        if not self.item:
+            return Decimal('0.00')
+        base_price = Decimal(str(self.item.retail_price))
+        price = max(base_price - Decimal(str(self.discount_amount)), Decimal('0'))
+        if self.discount_percentage > 0:
+            discount_decimal = Decimal(str(self.discount_percentage)) / Decimal('100')
+            price = price * (Decimal('1') - discount_decimal)
+        return max(price.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP), Decimal('0.00'))
+
+    @property
+    def line_total(self):
+        if self.is_free:
+            return Decimal('0.00')
+        charged_qty = self.quantity - Decimal(str(self.free_quantity))
+        result = self.discounted_price * charged_qty
+        return result.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+    def __str__(self):
+        return f"{self.item} x{self.quantity} (service #{self.service_id})"
 
 
 # ----------------------------------

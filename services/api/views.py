@@ -17,6 +17,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from services.api.serializers import (
     ApplianceItemUsedSerializer,
     ApplianceTypeSerializer,
+    ServiceItemUsedSerializer,
     CreateServicePaymentSerializer,
     ServiceApplianceSerializer,
     ServiceCancellationSerializer,
@@ -34,6 +35,7 @@ from services.models import (
     ApplianceType,
     Service,
     ServiceAppliance,
+    ServiceItemUsed,
     TechnicianAssignment,
 )
 from utils.filters.options import (
@@ -739,6 +741,83 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
         RevenueCalculator.calculate_service_revenue(service, save=True)
         ServicePaymentManager.sync_sales_items(service)
         
+        return result
+
+
+# --------------------------
+# Service-Level Items ViewSet
+# --------------------------
+class ServiceItemUsedViewSet(viewsets.ModelViewSet):
+    """
+    Service-level items used operations.
+
+    For parts used at the service level (not tied to any appliance),
+    e.g. chipping work before the AC unit arrives.
+    """
+
+    serializer_class = ServiceItemUsedSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = (
+            ServiceItemUsed.objects.all()
+            .select_related(
+                "service",
+                "item",
+                "stall_stock__stall",
+                "expense",
+            )
+        )
+
+        service_id = self.request.query_params.get('service')
+        if service_id:
+            queryset = queryset.filter(service_id=service_id)
+
+        return queryset
+
+    def perform_create(self, serializer):
+        item_used = serializer.save()
+        from services.business_logic import RevenueCalculator, ServicePaymentManager
+        service = item_used.service
+        RevenueCalculator.calculate_service_revenue(service, save=True)
+        ServicePaymentManager.sync_sales_items(service)
+
+    def perform_update(self, serializer):
+        item_used = serializer.save()
+        from services.business_logic import RevenueCalculator, ServicePaymentManager
+        service = item_used.service
+        RevenueCalculator.calculate_service_revenue(service, save=True)
+        ServicePaymentManager.sync_sales_items(service)
+
+    def destroy(self, request, *args, **kwargs):
+        from services.business_logic import StockReservationManager
+
+        instance = self.get_object()
+
+        # Block deletion on completed services
+        from utils.enums import ServiceStatus
+        if instance.service.status == ServiceStatus.COMPLETED:
+            return Response(
+                {"error": "Cannot delete items from a completed service."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Release stock reservation
+        if instance.stall_stock:
+            StockReservationManager.release_reservation(
+                item=instance.item,
+                quantity=instance.quantity,
+                stall_stock=instance.stall_stock
+            )
+
+        service = instance.service
+
+        result = super().destroy(request, *args, **kwargs)
+
+        from services.business_logic import RevenueCalculator, ServicePaymentManager
+        RevenueCalculator.calculate_service_revenue(service, save=True)
+        ServicePaymentManager.sync_sales_items(service)
+
         return result
 
 

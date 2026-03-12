@@ -299,6 +299,10 @@ class RevenueCalculator:
                 # Use line_total which already accounts for discounts and free quantities
                 sub_revenue += item_used.line_total
 
+        # Include service-level items (not tied to any appliance)
+        for item_used in service.service_items.all():
+            sub_revenue += item_used.line_total
+
         total_revenue = main_revenue + sub_revenue
 
         # Apply service-level discount (percentage or fixed amount) to main stall only
@@ -368,8 +372,9 @@ class ServiceCompletionHandler:
 
             # Check if service has appliances to process
             has_appliances = service.appliances.exists()
+            has_service_items = service.service_items.exists()
 
-            if has_appliances:
+            if has_appliances or has_service_items:
                 main_stall = get_main_stall()
                 sub_stall = get_sub_stall()
 
@@ -401,6 +406,26 @@ class ServiceCompletionHandler:
                                 'quantity': charged_qty,
                                 'unit_price': item_used.item.retail_price,
                             })
+
+                # Process service-level items (chipping/pre-installation)
+                for item_used in service.service_items.all():
+                    if not item_used.stall_stock:
+                        continue
+
+                    StockReservationManager.consume_reservation(
+                        item=item_used.item,
+                        quantity=item_used.quantity,
+                        stall_stock=item_used.stall_stock
+                    )
+
+                    charged_qty = item_used.quantity - item_used.free_quantity
+
+                    if charged_qty > 0 and not item_used.is_free:
+                        parts_to_sell.append({
+                            'item': item_used.item,
+                            'quantity': charged_qty,
+                            'unit_price': item_used.item.retail_price,
+                        })
 
                 # Create ONE sub stall transaction for ALL parts (if any)
                 # But only if one doesn't already exist (from payments)
@@ -498,7 +523,7 @@ class ServiceCompletionHandler:
             main_receipt = None
             sub_receipt = None
             
-            if create_receipt and service.client and has_appliances and not service.related_transaction and not service.is_complementary:
+            if create_receipt and service.client and (has_appliances or has_service_items) and not service.related_transaction and not service.is_complementary:
                 main_stall = get_main_stall()
                 sub_stall = get_sub_stall()
                 
@@ -508,11 +533,14 @@ class ServiceCompletionHandler:
                     for appl in service.appliances.all()
                 )
                 
-                # Check if there's any paid parts
+                # Check if there's any paid parts (appliance-level + service-level)
                 has_paid_parts = any(
                     item_used.line_total > 0 and not item_used.is_free
                     for appl in service.appliances.all()
                     for item_used in appl.items_used.all()
+                ) or any(
+                    item_used.line_total > 0 and not item_used.is_free
+                    for item_used in service.service_items.all()
                 )
                 
                 # Create Main stall transaction for labor if any paid labor exists
@@ -640,6 +668,20 @@ class ServiceCompletionHandler:
                                         final_price_per_unit=item_used.item.retail_price,
                                     )
 
+                        # Include service-level items in sub receipt
+                        for item_used in service.service_items.all():
+                            if item_used.is_free:
+                                continue
+
+                            charged_qty = item_used.quantity - item_used.free_quantity
+                            if charged_qty > 0 and item_used.item:
+                                SalesItem.objects.create(
+                                    transaction=sub_receipt,
+                                    item=item_used.item,
+                                    quantity=charged_qty,
+                                    final_price_per_unit=item_used.item.retail_price,
+                                )
+
                         # Link sub receipt to service
                         service.related_sub_transaction = sub_receipt
                         service.save(update_fields=['related_sub_transaction'])
@@ -654,7 +696,7 @@ class ServiceCompletionHandler:
                 'receipt': (main_receipt or sub_receipt).id if (main_receipt or sub_receipt) else (service.related_transaction.id if service.related_transaction else None),
                 'main_receipt': main_receipt.id if main_receipt else None,
                 'sub_receipt': sub_receipt.id if sub_receipt else None,
-                'message': 'Service completed without items/appliances. Add items and create invoice separately.' if not has_appliances else 'Service completed successfully.',
+                'message': 'Service completed without items/appliances. Add items and create invoice separately.' if not (has_appliances or has_service_items) else 'Service completed successfully.',
             }
 
     @staticmethod
@@ -747,7 +789,7 @@ class ServiceCancellationHandler:
         with transaction.atomic():
             released_items = []
 
-            # Release all reserved stock
+            # Release all reserved stock (appliance items)
             for appliance in service.appliances.all():
                 for item_used in appliance.items_used.all():
                     if item_used.stall_stock:
@@ -761,6 +803,20 @@ class ServiceCancellationHandler:
                             'item': item_used.item.name,
                             'quantity': item_used.quantity,
                         })
+
+            # Release service-level item reservations
+            for item_used in service.service_items.all():
+                if item_used.stall_stock:
+                    StockReservationManager.release_reservation(
+                        item=item_used.item,
+                        quantity=item_used.quantity,
+                        stall_stock=item_used.stall_stock
+                    )
+
+                    released_items.append({
+                        'item': item_used.item.name,
+                        'quantity': item_used.quantity,
+                    })
 
             # Update service status
             service.status = ServiceStatus.CANCELLED
@@ -830,6 +886,23 @@ class ServiceReopenHandler:
                         'item': item_used.item.name,
                         'quantity': float(qty),
                     })
+
+            # Return consumed stock for service-level items
+            for item_used in service.service_items.all():
+                if not item_used.stall_stock:
+                    continue
+
+                stock = Stock.objects.select_for_update().get(
+                    pk=item_used.stall_stock.pk
+                )
+                qty = Decimal(str(item_used.quantity))
+                stock.quantity += qty
+                stock.save(update_fields=['quantity', 'updated_at'])
+
+                restored_items.append({
+                    'item': item_used.item.name,
+                    'quantity': float(qty),
+                })
 
             # ── Step 2: Void SalesTransactions created by completion ──
             voided_txs = []
@@ -920,6 +993,23 @@ class ServiceReopenHandler:
                     except ValidationError:
                         # Stock may have been sold elsewhere — skip reservation
                         pass
+
+            # Re-reserve service-level items
+            for item_used in service.service_items.all():
+                if not item_used.stall_stock:
+                    continue
+                try:
+                    StockReservationManager.reserve_stock(
+                        item=item_used.item,
+                        quantity=item_used.quantity,
+                        stall_stock=item_used.stall_stock,
+                    )
+                    re_reserved.append({
+                        'item': item_used.item.name,
+                        'quantity': float(item_used.quantity),
+                    })
+                except ValidationError:
+                    pass
 
             # ── Step 9: Update payment status ──
             service.update_payment_status()

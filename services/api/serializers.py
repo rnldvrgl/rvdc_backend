@@ -31,6 +31,7 @@ from services.models import (
     PaymentType,
     Service,
     ServiceAppliance,
+    ServiceItemUsed,
     ServicePayment,
     ServiceRefund,
     TechnicianAssignment,
@@ -284,6 +285,208 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
             instance = super().update(instance, validated_data)
 
             # Re-apply copper promo if requested
+            if apply_copper_promo and not instance.is_free:
+                free_qty, charged_qty, applied = PromoManager.apply_copper_tube_free_10ft(instance)
+                if applied:
+                    instance.save(update_fields=["free_quantity", "promo_name"])
+
+        return instance
+
+
+class ServiceItemUsedSerializer(serializers.ModelSerializer):
+    """
+    Serializer for parts used at the service level (not tied to any appliance).
+
+    Used for pre-installation work like chipping where the AC unit hasn't been
+    added yet. Same reservation flow as ApplianceItemUsedSerializer.
+    """
+
+    stall_stock_id = serializers.PrimaryKeyRelatedField(
+        queryset=Stock.objects.all(),
+        source="stall_stock",
+        write_only=True,
+        required=False,
+        help_text="Optional: if omitted, system auto-resolves Sub stall stock for the item.",
+    )
+
+    item_name = serializers.CharField(source="item.name", read_only=True)
+    item_sku = serializers.CharField(source="item.sku", read_only=True)
+    item_price = serializers.DecimalField(
+        source="item.retail_price", read_only=True, max_digits=10, decimal_places=2
+    )
+
+    apply_copper_tube_promo = serializers.BooleanField(
+        write_only=True,
+        required=False,
+        default=False,
+        help_text="Apply free 10ft copper tube promo"
+    )
+
+    quantity = serializers.DecimalField(
+        max_digits=10, decimal_places=2, coerce_to_string=False
+    )
+    free_quantity = serializers.IntegerField(read_only=True)
+    promo_name = serializers.CharField(read_only=True)
+    charged_quantity = serializers.SerializerMethodField()
+    discounted_price = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        read_only=True
+    )
+    line_total = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ServiceItemUsed
+        fields = [
+            "id",
+            "service",
+            "item",
+            "item_name",
+            "item_sku",
+            "item_price",
+            "quantity",
+            "stall_stock_id",
+            "is_free",
+            "free_quantity",
+            "promo_name",
+            "charged_quantity",
+            "discount_amount",
+            "discount_percentage",
+            "discount_reason",
+            "discounted_price",
+            "line_total",
+            "apply_copper_tube_promo",
+            "is_cancelled",
+            "cancelled_at",
+        ]
+        read_only_fields = [
+            "free_quantity",
+            "promo_name",
+            "discounted_price",
+            "is_cancelled",
+            "cancelled_at"
+        ]
+
+    def get_charged_quantity(self, obj):
+        if obj.is_free:
+            return 0
+        return obj.quantity - obj.free_quantity
+
+    def get_line_total(self, obj):
+        return obj.line_total
+
+    def validate(self, data):
+        item = data.get("item")
+        if not item and self.instance:
+            item = self.instance.item
+            data["item"] = item
+
+        qty = data.get("quantity", 1)
+
+        stock = data.get("stall_stock")
+        if stock is None:
+            if self.instance and self.instance.stall_stock:
+                stock = self.instance.stall_stock
+            else:
+                sub_stall = get_sub_stall()
+                if not sub_stall:
+                    raise ValidationError("Sub stall not configured in system.")
+
+                stock = Stock.objects.filter(
+                    item=item,
+                    stall=sub_stall,
+                    is_deleted=False
+                ).first()
+
+                if stock is None:
+                    raise ValidationError(f"No stock found for {item.name} in Sub stall.")
+
+            data["stall_stock"] = stock
+
+        if stock.item != item:
+            raise ValidationError("Selected stock does not match the item.")
+
+        if self.instance:
+            old_qty = self.instance.quantity
+            new_qty = qty
+            additional_qty_needed = Decimal(str(new_qty)) - Decimal(str(old_qty))
+
+            if additional_qty_needed > 0:
+                available = stock.quantity - stock.reserved_quantity
+                tolerance_buffer = StockReservationManager._get_tolerance_buffer(item, additional_qty_needed)
+                minimum_required = max(additional_qty_needed - tolerance_buffer, Decimal('0'))
+
+                if available < minimum_required:
+                    tolerance_note = ""
+                    if tolerance_buffer > 0:
+                        tolerance_note = f" (with {item.waste_tolerance_percentage}% waste tolerance)"
+                    raise ValidationError(
+                        f"Insufficient stock for {item.name}{tolerance_note}. "
+                        f"Available: {available}, Additional needed: {additional_qty_needed}"
+                    )
+        else:
+            available = stock.quantity - stock.reserved_quantity
+            qty_dec = Decimal(str(qty))
+            tolerance_buffer = StockReservationManager._get_tolerance_buffer(item, qty_dec)
+            minimum_required = max(qty_dec - tolerance_buffer, Decimal('0'))
+
+            if available < minimum_required:
+                tolerance_note = ""
+                if tolerance_buffer > 0:
+                    tolerance_note = f" (with {item.waste_tolerance_percentage}% waste tolerance)"
+                raise ValidationError(
+                    f"Insufficient stock for {item.name}{tolerance_note}. "
+                    f"Available: {available}, Requested: {qty}"
+                )
+
+        self._validated_stock = stock
+        return data
+
+    def create(self, validated_data):
+        apply_copper_promo = validated_data.pop("apply_copper_tube_promo", False)
+        stock = self._validated_stock
+        qty = validated_data.get("quantity", 1)
+
+        with transaction.atomic():
+            reserved_stock = StockReservationManager.reserve_stock(
+                item=validated_data["item"],
+                quantity=qty,
+                stall_stock=stock
+            )
+
+            validated_data["stall_stock"] = reserved_stock
+            siu = super().create(validated_data)
+
+            if apply_copper_promo and not validated_data.get("is_free", False):
+                free_qty, charged_qty, applied = PromoManager.apply_copper_tube_free_10ft(siu)
+                if applied:
+                    siu.save(update_fields=["free_quantity", "promo_name"])
+
+        return siu
+
+    def update(self, instance, validated_data):
+        apply_copper_promo = validated_data.pop("apply_copper_tube_promo", False)
+        stock = self._validated_stock
+        old_qty = instance.quantity
+        new_qty = validated_data.get("quantity", old_qty)
+        diff = new_qty - old_qty
+
+        with transaction.atomic():
+            if diff > 0:
+                StockReservationManager.reserve_stock(
+                    item=instance.item,
+                    quantity=diff,
+                    stall_stock=stock
+                )
+            elif diff < 0:
+                StockReservationManager.release_reservation(
+                    item=instance.item,
+                    quantity=abs(diff),
+                    stall_stock=stock
+                )
+
+            instance = super().update(instance, validated_data)
+
             if apply_copper_promo and not instance.is_free:
                 free_qty, charged_qty, applied = PromoManager.apply_copper_tube_free_10ft(instance)
                 if applied:
