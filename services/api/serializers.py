@@ -779,6 +779,11 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True
     )
+    items_checked_by_name = serializers.CharField(
+        source="items_checked_by.get_full_name",
+        read_only=True,
+        allow_null=True
+    )
     discounted_labor_fee = serializers.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -823,6 +828,11 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "items_used",
             "technician_assignments",
             "total_parts_cost",
+            "parts_needed_notes",
+            "items_checked",
+            "items_checked_by",
+            "items_checked_by_name",
+            "items_checked_at",
         ]
         read_only_fields = [
             "labor_original_amount",
@@ -832,6 +842,9 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "unit_warranty_end_date",
             "is_labor_warranty_active",
             "is_unit_warranty_active",
+            "items_checked",
+            "items_checked_by",
+            "items_checked_at",
         ]
 
     def get_total_parts_cost(self, obj):
@@ -1099,6 +1112,12 @@ class ServiceSerializer(serializers.ModelSerializer):
     payments = serializers.SerializerMethodField()
     refunds = serializers.SerializerMethodField()
     installation_units = serializers.SerializerMethodField()
+    has_pending_items = serializers.BooleanField(read_only=True)
+    service_items_checked_by_name = serializers.CharField(
+        source="service_items_checked_by.get_full_name",
+        read_only=True,
+        allow_null=True,
+    )
 
     # Write-only fields for datetime inputs from frontend
     appointment_datetime = serializers.DateTimeField(write_only=True, required=False, allow_null=True)
@@ -1197,6 +1216,13 @@ class ServiceSerializer(serializers.ModelSerializer):
             "payments",
             "refunds",
             "next_schedule",
+            "has_pending_items",
+            # Service-level items review
+            "service_parts_needed_notes",
+            "service_items_checked",
+            "service_items_checked_by",
+            "service_items_checked_by_name",
+            "service_items_checked_at",
         ]
         read_only_fields = [
             "main_stall_revenue",
@@ -1212,6 +1238,10 @@ class ServiceSerializer(serializers.ModelSerializer):
             "cancellation_date",
             "total_refunded",
             "last_refund_date",
+            "has_pending_items",
+            "service_items_checked",
+            "service_items_checked_by",
+            "service_items_checked_at",
         ]
 
     def get_fields(self):
@@ -1756,6 +1786,17 @@ class ServiceCompletionSerializer(serializers.Serializer):
             raise ValidationError(
                 "Cannot complete service: there are parts with pending stock requests. "
                 "Please approve or decline all stock requests first."
+            )
+
+        # Block completion if any appliance with parts_needed_notes has unchecked items
+        unchecked = service.appliances.filter(
+            items_checked=False
+        ).exclude(parts_needed_notes="")
+        if unchecked.exists():
+            names = ", ".join(str(a) for a in unchecked[:3])
+            raise ValidationError(
+                f"Cannot complete service: items have not been confirmed for: {names}. "
+                "All appliance items must be reviewed and confirmed before completing."
             )
 
         return data

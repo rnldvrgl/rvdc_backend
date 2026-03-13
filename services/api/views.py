@@ -106,7 +106,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         qs = (
             Service.objects.all()
             .filter(is_deleted=False)
-            .select_related("client", "stall", "related_transaction")
+            .select_related("client", "stall", "related_transaction", "service_items_checked_by")
             .prefetch_related(
                 "appliances__items_used__item",
                 "appliances__items_used__stall_stock__stall",
@@ -124,10 +124,12 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         return filter_by_date_range(self.request, qs)
 
     def perform_update(self, serializer):
-        """Cascade appliance status when service status changes to in_progress."""
+        """Cascade appliance status and auto-reset service items_checked if notes changed."""
         old_status = serializer.instance.status
+        old_notes = serializer.instance.service_parts_needed_notes or ""
         service = serializer.save()
         new_status = service.status
+        new_notes = service.service_parts_needed_notes or ""
 
         if old_status != new_status and new_status == "in_progress":
             from utils.enums import ApplianceStatus
@@ -135,6 +137,17 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             service.appliances.filter(
                 status__in=[ApplianceStatus.RECEIVED, ApplianceStatus.DIAGNOSED]
             ).update(status=ApplianceStatus.IN_REPAIR)
+
+        # Auto-reset service_items_checked if service_parts_needed_notes changed
+        if old_notes != new_notes and service.service_items_checked:
+            service.service_items_checked = False
+            service.service_items_checked_by = None
+            service.service_items_checked_at = None
+            service.save(
+                update_fields=["service_items_checked", "service_items_checked_by", "service_items_checked_at"],
+                skip_validation=True,
+            )
+
     @action(detail=True, methods=["post"], url_path="complete", permission_classes=[IsAdminOrManager])
     def complete(self, request, pk=None):
         """
@@ -598,6 +611,99 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=["get"], url_path="pending-items-stats")
+    def pending_items_stats(self, request):
+        """
+        Get stats on services with pending item reviews (unchecked appliances).
+        Used for the clerk dashboard widget and service overview.
+        """
+        from django.db.models import Count, F
+
+        # Active services (not completed/cancelled) with unchecked appliances
+        active_services = Service.objects.filter(
+            is_deleted=False,
+            status__in=["pending", "in_progress", "on_hold"],
+        ).prefetch_related("appliances", "client")
+
+        pending_services = []
+        for service in active_services:
+            unchecked = service.appliances.filter(items_checked=False)
+            has_service_pending = (
+                bool(service.service_parts_needed_notes)
+                and not service.service_items_checked
+            )
+            if unchecked.exists() or has_service_pending:
+                pending_services.append({
+                    "service_id": service.id,
+                    "client_name": service.client.full_name if service.client else "Unknown",
+                    "service_type": service.service_type,
+                    "status": service.status,
+                    "created_at": service.created_at,
+                    "total_appliances": service.appliances.count(),
+                    "unchecked_appliances": unchecked.count(),
+                    "has_service_level_pending": has_service_pending,
+                    "appliances": [
+                        {
+                            "id": a.id,
+                            "name": str(a),
+                            "parts_needed_notes": a.parts_needed_notes,
+                            "items_count": a.items_used.count(),
+                        }
+                        for a in unchecked
+                    ],
+                })
+
+        return Response({
+            "total_pending_services": len(pending_services),
+            "total_unchecked_appliances": sum(s["unchecked_appliances"] for s in pending_services),
+            "services": pending_services,
+        })
+
+    @action(detail=True, methods=["post"], url_path="toggle-service-items-checked")
+    def toggle_service_items_checked(self, request, pk=None):
+        """Toggle service-level items_checked status. Only clerk and admin can confirm."""
+        from django.utils import timezone
+
+        if request.user.role not in ("clerk", "admin"):
+            return Response(
+                {"detail": "Only clerks and admins can confirm items."},
+                status=403,
+            )
+
+        service = self.get_object()
+        new_value = not service.service_items_checked
+
+        if new_value:
+            # Block confirming when parts are needed but no service items have been added
+            if service.service_parts_needed_notes and service.service_items.count() == 0:
+                return Response(
+                    {"detail": "Cannot confirm items — parts are listed as needed but no items have been added yet."},
+                    status=400,
+                )
+            service.service_items_checked = True
+            service.service_items_checked_by = request.user
+            service.service_items_checked_at = timezone.now()
+        else:
+            service.service_items_checked = False
+            service.service_items_checked_by = None
+            service.service_items_checked_at = None
+
+        service.save(
+            update_fields=[
+                "service_items_checked",
+                "service_items_checked_by",
+                "service_items_checked_at",
+            ],
+            skip_validation=True,
+        )
+
+        return Response({
+            "id": service.id,
+            "service_items_checked": service.service_items_checked,
+            "service_items_checked_by": service.service_items_checked_by_id,
+            "service_items_checked_at": service.service_items_checked_at,
+        })
+
 
 # --------------------------
 # Service Appliance ViewSet
@@ -626,22 +732,35 @@ class ServiceApplianceViewSet(viewsets.ModelViewSet):
         )
 
     def perform_create(self, serializer):
-        """Create appliance and recalculate service revenue."""
+        """Create appliance, recalculate revenue, and notify clerks."""
         appliance = serializer.save()
         # Recalculate revenue after creating appliance
         from services.business_logic import RevenueCalculator, ServicePaymentManager
         RevenueCalculator.calculate_service_revenue(appliance.service, save=True)
         # Sync sales items if transaction exists
         ServicePaymentManager.sync_sales_items(appliance.service)
+        # Notify clerks about new appliance needing items review
+        self._notify_clerks_items_pending(appliance)
 
     def perform_update(self, serializer):
-        """Update appliance and recalculate service revenue."""
+        """Update appliance and recalculate service revenue. Auto-reset items_checked if parts_needed_notes changed."""
+        old_notes = serializer.instance.parts_needed_notes or ""
         appliance = serializer.save()
+        new_notes = appliance.parts_needed_notes or ""
         # Recalculate revenue after updating appliance
         from services.business_logic import RevenueCalculator, ServicePaymentManager
         RevenueCalculator.calculate_service_revenue(appliance.service, save=True)
         # Sync sales items if transaction exists
         ServicePaymentManager.sync_sales_items(appliance.service)
+        # Auto-reset items_checked if parts_needed_notes changed and was already confirmed
+        if old_notes != new_notes and appliance.items_checked:
+            appliance.items_checked = False
+            appliance.items_checked_by = None
+            appliance.items_checked_at = None
+            appliance.save(update_fields=["items_checked", "items_checked_by", "items_checked_at"])
+            # Re-notify clerks
+            if new_notes:
+                self._notify_clerks_items_pending(appliance)
 
     def perform_destroy(self, instance):
         """Delete appliance and recalculate service revenue."""
@@ -652,6 +771,76 @@ class ServiceApplianceViewSet(viewsets.ModelViewSet):
         RevenueCalculator.calculate_service_revenue(service, save=True)
         # Sync sales items if transaction exists
         ServicePaymentManager.sync_sales_items(service)
+
+    @action(detail=True, methods=["post"], url_path="toggle-items-checked")
+    def toggle_items_checked(self, request, pk=None):
+        """Toggle items_checked status for an appliance. Only clerk and admin can confirm."""
+        from django.utils import timezone
+
+        if request.user.role not in ("clerk", "admin"):
+            return Response(
+                {"detail": "Only clerks and admins can confirm items."},
+                status=403,
+            )
+
+        appliance = self.get_object()
+        new_value = not appliance.items_checked
+
+        if new_value:
+            # Block confirming when parts are needed but no items have been added
+            if appliance.parts_needed_notes and appliance.items_used.count() == 0:
+                return Response(
+                    {"detail": "Cannot confirm items — parts are listed as needed but no items have been added yet."},
+                    status=400,
+                )
+            appliance.items_checked = True
+            appliance.items_checked_by = request.user
+            appliance.items_checked_at = timezone.now()
+        else:
+            appliance.items_checked = False
+            appliance.items_checked_by = None
+            appliance.items_checked_at = None
+
+        appliance.save(update_fields=[
+            "items_checked", "items_checked_by", "items_checked_at"
+        ])
+
+        return Response({
+            "id": appliance.id,
+            "items_checked": appliance.items_checked,
+            "items_checked_by": appliance.items_checked_by_id,
+            "items_checked_at": appliance.items_checked_at,
+        })
+
+    def _notify_clerks_items_pending(self, appliance):
+        """Send notification to clerks about appliance needing item review."""
+        try:
+            from accounts.models import CustomUser
+            from notifications.models import Notification, NotificationType
+
+            service = appliance.service
+            clerks = CustomUser.objects.filter(role="clerk", is_active=True)
+            notes_preview = ""
+            if appliance.parts_needed_notes:
+                notes_preview = f" — Notes: {appliance.parts_needed_notes[:80]}"
+
+            for clerk in clerks:
+                Notification.objects.create(
+                    user=clerk,
+                    type=NotificationType.ITEMS_PENDING_REVIEW,
+                    title=f"Items pending: Service #{service.id}",
+                    message=(
+                        f"New appliance '{appliance}' added to Service #{service.id} "
+                        f"({service.client.full_name if service.client else 'Unknown'}).{notes_preview} "
+                        f"Please review and add parts used."
+                    ),
+                    data={
+                        "service_id": service.id,
+                        "appliance_id": appliance.id,
+                    },
+                )
+        except Exception:
+            pass  # Don't fail appliance creation if notification fails
 
 
 # --------------------------
@@ -692,7 +881,7 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
-        """Create item usage and recalculate service revenue."""
+        """Create item usage, recalculate revenue, and reset items_checked."""
         item_used = serializer.save()
         # Recalculate revenue after adding parts
         from services.business_logic import RevenueCalculator, ServicePaymentManager
@@ -700,9 +889,11 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
         RevenueCalculator.calculate_service_revenue(service, save=True)
         # Sync sales items if transaction exists
         ServicePaymentManager.sync_sales_items(service)
+        # Auto-reset items_checked on the appliance
+        self._reset_items_checked(item_used.appliance)
 
     def perform_update(self, serializer):
-        """Update item usage and recalculate service revenue."""
+        """Update item usage, recalculate revenue, and reset items_checked."""
         item_used = serializer.save()
         # Recalculate revenue after updating parts
         from services.business_logic import RevenueCalculator, ServicePaymentManager
@@ -710,6 +901,8 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
         RevenueCalculator.calculate_service_revenue(service, save=True)
         # Sync sales items if transaction exists
         ServicePaymentManager.sync_sales_items(service)
+        # Auto-reset items_checked on the appliance
+        self._reset_items_checked(item_used.appliance)
 
     def destroy(self, request, *args, **kwargs):
         """
@@ -743,8 +936,9 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
             appliance_item=instance, status='pending'
         ).update(status='cancelled')
 
-        # Store service reference before deletion
+        # Store service and appliance reference before deletion
         service = instance.appliance.service
+        appliance = instance.appliance
         
         result = super().destroy(request, *args, **kwargs)
         
@@ -752,8 +946,39 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
         from services.business_logic import RevenueCalculator, ServicePaymentManager
         RevenueCalculator.calculate_service_revenue(service, save=True)
         ServicePaymentManager.sync_sales_items(service)
+        # Auto-reset items_checked on the appliance
+        self._reset_items_checked(appliance)
         
         return result
+
+    def _reset_items_checked(self, appliance):
+        """Reset items_checked if it was confirmed, and re-notify clerks."""
+        if appliance.items_checked:
+            appliance.items_checked = False
+            appliance.items_checked_by = None
+            appliance.items_checked_at = None
+            appliance.save(update_fields=["items_checked", "items_checked_by", "items_checked_at"])
+            # Re-notify clerks if parts_needed_notes is present
+            if appliance.parts_needed_notes:
+                try:
+                    from accounts.models import CustomUser
+                    from notifications.models import Notification, NotificationType
+
+                    service = appliance.service
+                    clerks = CustomUser.objects.filter(role="clerk", is_active=True)
+                    for clerk in clerks:
+                        Notification.objects.create(
+                            user=clerk,
+                            type=NotificationType.ITEMS_PENDING_REVIEW,
+                            title="Items need re-review",
+                            message=(
+                                f"Parts were changed on {appliance} in service #{service.id} "
+                                f"({service.client}). Please re-confirm items."
+                            ),
+                            data={"service_id": service.id, "appliance_id": appliance.id},
+                        )
+                except Exception:
+                    pass
 
 
 # --------------------------
@@ -793,6 +1018,7 @@ class ServiceItemUsedViewSet(viewsets.ModelViewSet):
         service = item_used.service
         RevenueCalculator.calculate_service_revenue(service, save=True)
         ServicePaymentManager.sync_sales_items(service)
+        self._reset_service_items_checked(service)
 
     def perform_update(self, serializer):
         item_used = serializer.save()
@@ -800,6 +1026,7 @@ class ServiceItemUsedViewSet(viewsets.ModelViewSet):
         service = item_used.service
         RevenueCalculator.calculate_service_revenue(service, save=True)
         ServicePaymentManager.sync_sales_items(service)
+        self._reset_service_items_checked(service)
 
     def destroy(self, request, *args, **kwargs):
         from services.business_logic import StockReservationManager
@@ -835,8 +1062,43 @@ class ServiceItemUsedViewSet(viewsets.ModelViewSet):
         from services.business_logic import RevenueCalculator, ServicePaymentManager
         RevenueCalculator.calculate_service_revenue(service, save=True)
         ServicePaymentManager.sync_sales_items(service)
+        self._reset_service_items_checked(service)
 
         return result
+
+    def _reset_service_items_checked(self, service):
+        """Reset service_items_checked if it was confirmed, and re-notify clerks."""
+        if service.service_items_checked:
+            service.service_items_checked = False
+            service.service_items_checked_by = None
+            service.service_items_checked_at = None
+            service.save(
+                update_fields=[
+                    "service_items_checked",
+                    "service_items_checked_by",
+                    "service_items_checked_at",
+                ],
+                skip_validation=True,
+            )
+            if service.service_parts_needed_notes:
+                try:
+                    from accounts.models import CustomUser
+                    from notifications.models import Notification, NotificationType
+
+                    clerks = CustomUser.objects.filter(role="clerk", is_active=True)
+                    for clerk in clerks:
+                        Notification.objects.create(
+                            user=clerk,
+                            type=NotificationType.ITEMS_PENDING_REVIEW,
+                            title="Service items need re-review",
+                            message=(
+                                f"Service-level parts were changed on service #{service.id} "
+                                f"({service.client}). Please re-confirm items."
+                            ),
+                            data={"service_id": service.id},
+                        )
+                except Exception:
+                    pass
 
 
 # --------------------------

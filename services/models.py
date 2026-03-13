@@ -237,6 +237,29 @@ class Service(models.Model):
         help_text="Reason for complementary service (e.g., 'Warranty', 'Goodwill', 'Promotional')"
     )
 
+    # Service-level items review tracking (mirrors appliance-level items_checked)
+    service_parts_needed_notes = models.TextField(
+        blank=True,
+        help_text="Manager/technician notes on what service-level parts are needed (for clerk reference)"
+    )
+    service_items_checked = models.BooleanField(
+        default=False,
+        help_text="Whether service-level items/parts have been reviewed and confirmed by clerk"
+    )
+    service_items_checked_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="service_items_checked_services",
+        help_text="User who confirmed the service-level items"
+    )
+    service_items_checked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When service-level items were confirmed"
+    )
+
     class Meta:
         ordering = ["-created_at"]
         indexes = [
@@ -320,6 +343,20 @@ class Service(models.Model):
     def has_refunds(self):
         """Check if service has any refunds"""
         return (self.total_refunded or 0) > 0
+
+    @property
+    def has_pending_items(self):
+        """Check if any appliance or service-level parts with notes has unchecked items."""
+        appliance_pending = self.appliances.filter(
+            items_checked=False
+        ).exclude(
+            parts_needed_notes=""
+        ).exists()
+        service_pending = (
+            bool(self.service_parts_needed_notes)
+            and not self.service_items_checked
+        )
+        return appliance_pending or service_pending
 
     def update_payment_status(self):
         """Update payment status based on net paid (paid minus refunded) vs total revenue."""
@@ -542,7 +579,7 @@ class ServiceAppliance(models.Model):
     issue_reported = models.TextField(blank=True, null=True)
     diagnosis_notes = models.TextField(blank=True, null=True)
     status = models.CharField(
-        max_length=20, choices=ApplianceStatus.choices, default=ApplianceStatus.RECEIVED
+        max_length=20, choices=ApplianceStatus.choices, default=ApplianceStatus.PENDING
     )
     
     # Technician assignment
@@ -622,6 +659,29 @@ class ServiceAppliance(models.Model):
         null=True,
         blank=True,
         help_text="Date when unit warranty expires"
+    )
+    
+    # Items review tracking
+    parts_needed_notes = models.TextField(
+        blank=True,
+        help_text="Manager/technician notes on what parts are needed (for clerk reference)"
+    )
+    items_checked = models.BooleanField(
+        default=False,
+        help_text="Whether items/parts have been reviewed and confirmed by clerk"
+    )
+    items_checked_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="items_checked_appliances",
+        help_text="User who confirmed the items"
+    )
+    items_checked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When items were confirmed"
     )
     
     @property

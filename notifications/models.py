@@ -17,6 +17,7 @@ class NotificationType(models.TextChoices):
     SERVICE_COMPLETED = "service_completed", _("Service Completed")
     SERVICE_CANCELLED = "service_cancelled", _("Service Cancelled")
     SERVICE_ASSIGNED = "service_assigned", _("Service Assigned to You")
+    ITEMS_PENDING_REVIEW = "items_pending_review", _("Items Pending Review")
 
     # Inventory notifications
     STOCK_LOW = "stock_low", _("Low Stock Alert")

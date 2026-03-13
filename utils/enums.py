@@ -44,15 +44,9 @@ class ServiceStatus(models.TextChoices):
 
 
 class ApplianceStatus(models.TextChoices):
-    RECEIVED = "received", _("Received")
-    DIAGNOSED = "diagnosed", _("Diagnosed")
-    IN_REPAIR = "in_repair", _("In Repair")
+    PENDING = "pending", _("Pending")
     COMPLETED = "completed", _("Completed")
-    READY_FOR_PICKUP = "ready_for_pickup", _("Ready for Pickup")
-    DELIVERED = "delivered", _("Delivered")
-    # Installation-specific statuses
-    RESERVED = "reserved", _("Reserved")
-    INSTALLED = "installed", _("Installed")
+    CANCELLED = "cancelled", _("Cancelled")
 
 
 class ServiceMode(models.TextChoices):
