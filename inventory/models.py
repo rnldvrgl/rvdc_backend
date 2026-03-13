@@ -2,7 +2,7 @@ import uuid
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.core.validators import MinValueValidator
+from django.core.validators import MinValueValidator, MaxValueValidator
 from django.db import models
 
 
@@ -77,6 +77,7 @@ class Item(models.Model):
         max_digits=5,
         decimal_places=2,
         default=0,
+        validators=[MinValueValidator(Decimal("0")), MaxValueValidator(Decimal("100"))],
         help_text="Acceptable waste/loss % when dispensing (e.g. 5.00 = 5% tolerance for freon, copper tubes).",
     )
     is_deleted = models.BooleanField(default=False)

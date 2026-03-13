@@ -127,9 +127,7 @@ class ExpenseItemSerializer(serializers.ModelSerializer):
 # ================================
 class ExpenseSerializer(serializers.ModelSerializer):
     """Comprehensive serializer for expenses"""
-    stall_name = serializers.CharField(source='stall.name', read_only=True)
     stall_data = serializers.SerializerMethodField()
-    category_name = serializers.CharField(source='category.name', read_only=True, allow_null=True)
     category_data = ExpenseCategoryListSerializer(source='category', read_only=True)
     created_by_detail = UserMinimalSerializer(source='created_by', read_only=True)
     items = ExpenseItemSerializer(many=True, read_only=True)
@@ -146,10 +144,8 @@ class ExpenseSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'stall',
-            'stall_name',
             'stall_data',
             'category',
-            'category_name',
             'category_data',
             'expense_date',
             'reference_number',

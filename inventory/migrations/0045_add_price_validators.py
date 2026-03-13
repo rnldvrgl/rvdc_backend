@@ -56,4 +56,18 @@ class Migration(migrations.Migration):
                 validators=[django.core.validators.MinValueValidator(decimal.Decimal('0'))],
             ),
         ),
+        migrations.AlterField(
+            model_name='item',
+            name='waste_tolerance_percentage',
+            field=models.DecimalField(
+                decimal_places=2,
+                default=0,
+                help_text='Acceptable waste/loss % when dispensing (e.g. 5.00 = 5% tolerance for freon, copper tubes).',
+                max_digits=5,
+                validators=[
+                    django.core.validators.MinValueValidator(decimal.Decimal('0')),
+                    django.core.validators.MaxValueValidator(decimal.Decimal('100')),
+                ],
+            ),
+        ),
     ]

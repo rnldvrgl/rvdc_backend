@@ -73,6 +73,15 @@ class ItemSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "An item with this name & category already exists."
             )
+
+        # Cross-field: cost_price should not exceed retail_price
+        cost = data.get("cost_price") or getattr(self.instance, "cost_price", None) or 0
+        retail = data.get("retail_price") or getattr(self.instance, "retail_price", None) or 0
+        if cost and retail and cost > retail:
+            raise serializers.ValidationError(
+                {"cost_price": "Cost price cannot exceed retail price."}
+            )
+
         return data
 
     def create(self, validated_data):

@@ -135,7 +135,8 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 employee=request.user,
                 severity_level='SUSPENSION',
                 suspension_start_date__lte=today,
-                suspension_end_date__gte=today
+                suspension_end_date__gte=today,
+                is_deleted=False,
             ).first()
 
             if suspension:
@@ -195,7 +196,8 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                     employee=employee,
                     severity_level='SUSPENSION',
                     suspension_start_date__lte=today,
-                    suspension_end_date__gte=today
+                    suspension_end_date__gte=today,
+                    is_deleted=False,
                 ).first()
 
                 if suspension:

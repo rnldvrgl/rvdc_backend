@@ -54,6 +54,13 @@ class AdditionalEarning(models.Model):
             models.Index(fields=["earning_date"]),
             models.Index(fields=["approved"]),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["employee", "earning_date", "category"],
+                condition=models.Q(is_deleted=False),
+                name="unique_earning_per_employee_date_category",
+            ),
+        ]
         ordering = ["-earning_date"]
 
     def __str__(self):

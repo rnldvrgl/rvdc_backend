@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -119,8 +120,14 @@ class Expense(models.Model):
     description = models.TextField(blank=True)
 
     # Financial details
-    total_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total_price = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    paid_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
 
     # Status tracking
     payment_status = models.CharField(
