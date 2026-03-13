@@ -49,9 +49,8 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
 
     # Optional: allow backdating remittances (admin fills in past dates)
     remittance_date = serializers.DateField(
-        required=False, write_only=True, allow_null=True,
-        help_text="If provided, creates remittance for this date instead of today. "
-                  "Sales & expenses will be pulled from this date."
+        required=True, write_only=True,
+        help_text="Business date for this remittance. Frontend always sends this (today for clerk/manager, admin picks a date)."
     )
     # Optional: immediately acknowledge a backdated remittance
     mark_as_acknowledged = serializers.BooleanField(
@@ -124,6 +123,10 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             "admin_password",
         ]
         read_only_fields = ["manually_adjusted"]
+        # Disable auto-generated UniqueTogetherValidator for (stall, remittance_date)
+        # because remittance_date is optional (defaults to today in create()).
+        # Uniqueness is enforced manually in create().
+        validators = []
 
     def get_stall_data(self, obj):
         return {"id": obj.stall.id, "name": obj.stall.name} if obj.stall else None
@@ -192,7 +195,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
                     {"stall": "You can only create remittances for your assigned stall."}
                 )
             # Non-admin cannot backdate or auto-acknowledge
-            if attrs.get("remittance_date"):
+            if attrs.get("remittance_date") and attrs["remittance_date"] != timezone.localdate():
                 raise serializers.ValidationError(
                     {"remittance_date": "Only administrators can backdate remittances."}
                 )
@@ -249,8 +252,8 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
 
         manually_adjusted = bool(overrides) or override_expenses is not None
 
-        # Use provided date or default to today
-        target_date = remittance_date or timezone.localdate()
+        # Use the provided date (always sent by frontend)
+        target_date = remittance_date
 
         # 🚫 Prevent multiple remittances per stall per day
         if RemittanceRecord.objects.filter(
