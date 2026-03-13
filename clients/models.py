@@ -27,3 +27,8 @@ class Client(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["full_name"]),
+            models.Index(fields=["is_deleted"]),
+            models.Index(fields=["is_deleted", "-created_at"]),
+        ]

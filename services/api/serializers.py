@@ -278,8 +278,8 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
                 from notifications.models import Notification
                 User = get_user_model()
                 admins = User.objects.filter(role='admin', is_active=True)
-                for admin_user in admins:
-                    Notification.objects.create(
+                Notification.objects.bulk_create([
+                    Notification(
                         user=admin_user,
                         type="stock_request_created",
                         title="Stock Request: Approval Needed",
@@ -294,6 +294,8 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
                             "service_id": aiu.appliance.service_id,
                         },
                     )
+                    for admin_user in admins
+                ])
             else:
                 # Sufficient stock — normal reservation flow
                 reserved_stock = StockReservationManager.reserve_stock(
@@ -600,8 +602,8 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
                 from notifications.models import Notification
                 User = get_user_model()
                 admins = User.objects.filter(role='admin', is_active=True)
-                for admin_user in admins:
-                    Notification.objects.create(
+                Notification.objects.bulk_create([
+                    Notification(
                         user=admin_user,
                         type="stock_request_created",
                         title="Stock Request: Approval Needed",
@@ -616,6 +618,8 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
                             "service_id": siu.service_id,
                         },
                     )
+                    for admin_user in admins
+                ])
             else:
                 reserved_stock = StockReservationManager.reserve_stock(
                     item=validated_data["item"],

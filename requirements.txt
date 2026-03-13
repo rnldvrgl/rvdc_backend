@@ -1,7 +1,4 @@
 asgiref==3.8.1
-Brotli==1.1.0
-click==8.2.1
-colorama==0.4.6
 dj-database-url==2.3.0
 Django==5.2.3
 django-cors-headers==4.7.0
@@ -12,7 +9,6 @@ drf-extra-fields==3.7.0
 drf-nested-routers==0.94.2
 filetype==1.2.0
 gunicorn==23.0.0
-h11==0.16.0
 packaging==25.0
 pillow==11.2.1
 psycopg2-binary==2.9.10
@@ -25,8 +21,6 @@ six==1.17.0
 sqlparse==0.5.3
 typing_extensions==4.14.1
 tzdata==2025.2
-uvicorn==0.35.0
 wheel==0.43.0
-whitenoise==6.9.0
 
 

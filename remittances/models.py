@@ -42,6 +42,11 @@ class RemittanceRecord(models.Model):
     class Meta:
         unique_together = ("stall", "remittance_date")
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["remittance_date"]),
+            models.Index(fields=["is_remitted"]),
+            models.Index(fields=["stall", "-created_at"]),
+        ]
 
     def __str__(self):
         return f"{self.stall.name} - {self.created_at}"

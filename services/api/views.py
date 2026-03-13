@@ -828,12 +828,9 @@ class ServiceApplianceViewSet(viewsets.ModelViewSet):
 
             service = appliance.service
             clerks = CustomUser.objects.filter(role="clerk", is_active=True)
-            notes_preview = ""
-            if appliance.parts_needed_notes:
-                notes_preview = f" — Notes: {appliance.parts_needed_notes[:80]}"
-
-            for clerk in clerks:
-                Notification.objects.create(
+            notes_preview = f" — Notes: {appliance.parts_needed_notes[:80]}" if appliance.parts_needed_notes else ""
+            Notification.objects.bulk_create([
+                Notification(
                     user=clerk,
                     type=NotificationType.ITEMS_PENDING_REVIEW,
                     title=f"Items pending: Service #{service.id}",
@@ -847,6 +844,8 @@ class ServiceApplianceViewSet(viewsets.ModelViewSet):
                         "appliance_id": appliance.id,
                     },
                 )
+                for clerk in clerks
+            ])
         except Exception:
             pass  # Don't fail appliance creation if notification fails
 
@@ -974,8 +973,8 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
 
                     service = appliance.service
                     clerks = CustomUser.objects.filter(role="clerk", is_active=True)
-                    for clerk in clerks:
-                        Notification.objects.create(
+                    Notification.objects.bulk_create([
+                        Notification(
                             user=clerk,
                             type=NotificationType.ITEMS_PENDING_REVIEW,
                             title="Items need re-review",
@@ -985,6 +984,8 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
                             ),
                             data={"service_id": service.id, "appliance_id": appliance.id},
                         )
+                        for clerk in clerks
+                    ])
                 except Exception:
                     pass
 
@@ -1094,8 +1095,8 @@ class ServiceItemUsedViewSet(viewsets.ModelViewSet):
                     from notifications.models import Notification, NotificationType
 
                     clerks = CustomUser.objects.filter(role="clerk", is_active=True)
-                    for clerk in clerks:
-                        Notification.objects.create(
+                    Notification.objects.bulk_create([
+                        Notification(
                             user=clerk,
                             type=NotificationType.ITEMS_PENDING_REVIEW,
                             title="Service items need re-review",
@@ -1105,6 +1106,8 @@ class ServiceItemUsedViewSet(viewsets.ModelViewSet):
                             ),
                             data={"service_id": service.id},
                         )
+                        for clerk in clerks
+                    ])
                 except Exception:
                     pass
 
