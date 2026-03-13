@@ -43,6 +43,15 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
 
         return qs
 
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.is_remitted:
+            return Response(
+                {"detail": "Cannot edit a remittance that has already been marked as remitted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().update(request, *args, **kwargs)
+
     @action(detail=False, methods=["get"], url_path="filters")
     def get_filters(self, request):
         filters_config = {

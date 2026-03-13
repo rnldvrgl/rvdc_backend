@@ -2,6 +2,7 @@ import uuid
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
 
 
@@ -59,15 +60,18 @@ class Item(models.Model):
     unit_of_measure = models.CharField(
         max_length=10, choices=UNIT_CHOICES, default="pcs"
     )
-    retail_price = models.DecimalField(max_digits=10, decimal_places=2)
+    retail_price = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(Decimal("0"))])
     wholesale_price = models.DecimalField(
-        max_digits=10, decimal_places=2, default=0, null=True, blank=True
+        max_digits=10, decimal_places=2, default=0, null=True, blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
     )
     technician_price = models.DecimalField(
-        max_digits=10, decimal_places=2, default=0, null=True, blank=True
+        max_digits=10, decimal_places=2, default=0, null=True, blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
     )
     cost_price = models.DecimalField(
-        max_digits=10, decimal_places=2, default=0, null=True, blank=True
+        max_digits=10, decimal_places=2, default=0, null=True, blank=True,
+        validators=[MinValueValidator(Decimal("0"))],
     )
     waste_tolerance_percentage = models.DecimalField(
         max_digits=5,

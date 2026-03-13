@@ -163,13 +163,11 @@ class ExpenseModelTest(TestCase):
         expense.paid_amount = Decimal('500.00')
         expense.save()
         self.assertEqual(expense.payment_status, Expense.PaymentStatus.PARTIAL)
-        self.assertFalse(expense.is_paid)
 
         # Full payment
         expense.paid_amount = Decimal('1000.00')
         expense.save()
         self.assertEqual(expense.payment_status, Expense.PaymentStatus.PAID)
-        self.assertTrue(expense.is_paid)
         self.assertIsNotNone(expense.paid_at)
 
     def test_is_overdue_property(self):

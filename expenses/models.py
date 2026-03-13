@@ -154,7 +154,6 @@ class Expense(models.Model):
         null=True,
         related_name="created_expenses"
     )
-    is_paid = models.BooleanField(default=False)
 
     # Soft delete
     is_deleted = models.BooleanField(default=False)
@@ -192,15 +191,12 @@ class Expense(models.Model):
         # Auto-update payment status based on paid amount
         if self.paid_amount == 0:
             self.payment_status = self.PaymentStatus.UNPAID
-            self.is_paid = False
         elif self.paid_amount >= self.total_price:
             self.payment_status = self.PaymentStatus.PAID
-            self.is_paid = True
             if not self.paid_at:
                 self.paid_at = timezone.now()
         else:
             self.payment_status = self.PaymentStatus.PARTIAL
-            self.is_paid = False
 
         super().save(*args, **kwargs)
 
