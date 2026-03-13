@@ -14,6 +14,11 @@ class AirconBrand(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Aircon Brand"
+        verbose_name_plural = "Aircon Brands"
+
     def __str__(self):
         return self.name
 
@@ -64,6 +69,11 @@ class AirconModel(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["brand__name", "name"]
+        verbose_name = "Aircon Model"
+        verbose_name_plural = "Aircon Models"
 
     def __str__(self):
         return f"{self.brand.name} {self.name} ({self.get_aircon_type_display()})"
