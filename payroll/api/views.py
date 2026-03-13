@@ -565,7 +565,10 @@ class WeeklyPayrollListCreateView(generics.ListCreateAPIView):
     ]
     ordering_fields = "__all__"
 
-
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [permissions.IsAdminUser()]
+        return super().get_permissions()
 
     def get_queryset(self):
         qs = super().get_queryset()

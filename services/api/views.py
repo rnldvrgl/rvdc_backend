@@ -46,6 +46,7 @@ from utils.filters.options import (
     get_user_options,
 )
 from utils.filters.role_filters import get_role_based_filter_response
+from utils.permissions import IsAdminOrManager
 from utils.query import filter_by_date_range, get_role_filtered_queryset
 
 
@@ -86,6 +87,11 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         filters.SearchFilter,
         filters.OrderingFilter,
     ]
+
+    def get_permissions(self):
+        if self.action == "create":
+            return [IsAdminOrManager()]
+        return super().get_permissions()
     filterset_class = ServiceFilter
     search_fields = [
         "client__full_name",
@@ -129,7 +135,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             service.appliances.filter(
                 status__in=[ApplianceStatus.RECEIVED, ApplianceStatus.DIAGNOSED]
             ).update(status=ApplianceStatus.IN_REPAIR)
-    @action(detail=True, methods=["post"], url_path="complete")
+    @action(detail=True, methods=["post"], url_path="complete", permission_classes=[IsAdminOrManager])
     def complete(self, request, pk=None):
         """
         Complete a service, consume reserved stock, and create transactions.
@@ -169,7 +175,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         return Response(result, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=["post"], url_path="cancel")
+    @action(detail=True, methods=["post"], url_path="cancel", permission_classes=[IsAdminOrManager])
     def cancel(self, request, pk=None):
         """
         Cancel a service and release all reserved stock.
@@ -200,7 +206,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         return Response(result, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=["post"], url_path="reopen")
+    @action(detail=True, methods=["post"], url_path="reopen", permission_classes=[IsAdminOrManager])
     def reopen(self, request, pk=None):
         """
         Reopen a completed service for revision.

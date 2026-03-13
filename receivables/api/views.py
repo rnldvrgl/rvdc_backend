@@ -9,6 +9,7 @@ from receivables.api.serializers import ChequeCollectionSerializer
 from receivables.api.filters import ChequeCollectionFilter
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
+from utils.permissions import IsAdminOrManager
 from utils.query import filter_by_date_range
 
 
@@ -17,7 +18,7 @@ class ChequeCollectionViewSet(viewsets.ModelViewSet):
         "client", "collected_by", "sales_transaction"
     )
     serializer_class = ChequeCollectionSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAdminOrManager]
 
     filter_backends = [
         DjangoFilterBackend,
