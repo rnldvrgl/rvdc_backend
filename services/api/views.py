@@ -627,7 +627,10 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         pending_services = []
         for service in active_services:
-            unchecked = service.appliances.filter(items_checked=False)
+            # Only count appliances where manager has noted parts are needed
+            unchecked = service.appliances.filter(
+                items_checked=False,
+            ).exclude(parts_needed_notes="")
             has_service_pending = (
                 bool(service.service_parts_needed_notes)
                 and not service.service_items_checked
@@ -653,9 +656,14 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                     ],
                 })
 
+        total_unchecked = sum(s["unchecked_appliances"] for s in pending_services)
+        total_service_level = sum(1 for s in pending_services if s["has_service_level_pending"])
+
         return Response({
             "total_pending_services": len(pending_services),
-            "total_unchecked_appliances": sum(s["unchecked_appliances"] for s in pending_services),
+            "total_unchecked_appliances": total_unchecked,
+            "total_service_level_pending": total_service_level,
+            "total_pending_items": total_unchecked + total_service_level,
             "services": pending_services,
         })
 
