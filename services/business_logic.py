@@ -1014,13 +1014,15 @@ class ServiceReopenHandler:
                 })
 
             # ── Step 2: Void SalesTransactions created by completion ──
+            void_reason = f"Service reopened: {reason}" if reason else "Service reopened for revision"
             voided_txs = []
             for tx_field in ['related_transaction', 'related_sub_transaction']:
                 tx = getattr(service, tx_field, None)
                 if tx and not tx.voided:
                     tx.voided = True
                     tx.voided_at = timezone.now()
-                    tx.save(update_fields=['voided', 'voided_at'])
+                    tx.void_reason = void_reason
+                    tx.save(update_fields=['voided', 'voided_at', 'void_reason'])
                     tx.update_payment_status()
                     voided_txs.append(tx.id)
 
