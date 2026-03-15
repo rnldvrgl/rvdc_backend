@@ -47,7 +47,9 @@ class AdminUserDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_destroy(self, instance):
         instance.is_deleted = True
-        instance.save()
+        instance.is_active = False
+        instance.deleted_at = timezone.now()
+        instance.save(update_fields=["is_deleted", "is_active", "deleted_at"])
 
     def get_serializer_context(self):
         return {"request": self.request}
@@ -104,8 +106,9 @@ class UseraDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_destroy(self, instance):
         instance.is_deleted = True
+        instance.is_active = False
         instance.deleted_at = timezone.now()
-        instance.save(update_fields=["is_deleted", "deleted_at"])
+        instance.save(update_fields=["is_deleted", "is_active", "deleted_at"])
 
     def get_serializer_context(self):
         return {"request": self.request}
@@ -147,27 +150,11 @@ class EmployeeRestoreView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         instance.is_deleted = False
+        instance.is_active = True
         instance.deleted_at = None
-        instance.save(update_fields=["is_deleted", "deleted_at"])
+        instance.save(update_fields=["is_deleted", "is_active", "deleted_at"])
         serializer = EmployeesSerializer(instance, context={"request": request})
         return Response(serializer.data)
-
-
-class EmployeeHardDeleteView(APIView):
-    """Permanently delete an archived employee."""
-    permission_classes = [permissions.IsAuthenticated]
-
-    def delete(self, request, pk):
-        from django.shortcuts import get_object_or_404
-        instance = get_object_or_404(CustomUser.all_objects.all(), pk=pk)
-        if not instance.is_deleted:
-            return Response(
-                {"detail": "Record must be archived before it can be permanently deleted."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        # Call Django's base delete to bypass the soft-delete override
-        instance.delete(force=True)
-        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class MyProfileView(generics.RetrieveUpdateDestroyAPIView):

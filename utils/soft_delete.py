@@ -38,7 +38,12 @@ class SoftDeleteViewSetMixin:
     responsible for filtering ``is_deleted=False`` in its own queryset
     (many already do).  The archive / restore / hard-delete actions
     build their own querysets so they can reach soft-deleted rows.
+
+    Set ``allow_hard_delete = True`` on subclasses that are safe to
+    permanently delete (no foreign-key references from other tables).
     """
+
+    allow_hard_delete = False
 
     # ------------------------------------------------------------------
     # helpers
@@ -101,6 +106,11 @@ class SoftDeleteViewSetMixin:
     @action(detail=True, methods=["delete"], url_path="hard-delete")
     def hard_delete(self, request, pk=None):
         """Permanently delete an archived record from the database."""
+        if not self.allow_hard_delete:
+            return Response(
+                {"detail": "Permanent deletion is not allowed for this resource."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         instance = self._get_archived_instance(pk)
         if not instance.is_deleted:
             return Response(

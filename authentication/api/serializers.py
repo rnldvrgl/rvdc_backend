@@ -17,7 +17,22 @@ class LoginSerializer(serializers.Serializer):
         )
 
         if not user:
+            # Also check if the user exists but is inactive (Django's authenticate
+            # returns None for inactive users by default)
+            from users.models import CustomUser
+            try:
+                existing = CustomUser.all_objects.get(username=data.get("username"))
+                if existing.is_deleted or not existing.is_active:
+                    raise serializers.ValidationError("Account is no longer active.")
+            except CustomUser.DoesNotExist:
+                pass
             raise serializers.ValidationError("Invalid credentials.")
+
+        if user.is_deleted:
+            raise serializers.ValidationError("Account is no longer active.")
+
+        if not user.is_active:
+            raise serializers.ValidationError("Account is no longer active.")
 
         tokens = get_tokens_for_user(user)
 

@@ -262,10 +262,10 @@ class WeeklyPayrollGenerateView(APIView):
 
         # Get employee
         try:
-            employee = User.objects.get(id=employee_id, is_deleted=False)
+            employee = User.objects.get(id=employee_id, is_deleted=False, is_active=True)
         except User.DoesNotExist:
             return Response(
-                {'employee_id': ['Employee not found.']},
+                {'employee_id': ['Employee not found or account is inactive.']},
                 status=status.HTTP_404_NOT_FOUND
             )
 
@@ -417,10 +417,10 @@ class WeeklyPayrollPreviewView(APIView):
 
         # Get employee
         try:
-            employee = User.objects.get(id=employee_id, is_deleted=False)
+            employee = User.objects.get(id=employee_id, is_deleted=False, is_active=True)
         except User.DoesNotExist:
             return Response(
-                {'employee_id': ['Employee not found.']},
+                {'employee_id': ['Employee not found or account is inactive.']},
                 status=status.HTTP_404_NOT_FOUND
             )
 
@@ -729,22 +729,6 @@ class WeeklyPayrollRestoreView(APIView):
         instance.save(update_fields=["is_deleted", "deleted_at"])
         serializer = WeeklyPayrollSerializer(instance)
         return Response(serializer.data)
-
-
-class WeeklyPayrollHardDeleteView(APIView):
-    """Permanently delete an archived weekly payroll record."""
-    permission_classes = [permissions.IsAuthenticated]
-
-    def delete(self, request, pk):
-        from django.shortcuts import get_object_or_404
-        instance = get_object_or_404(WeeklyPayroll.objects.all(), pk=pk)
-        if not instance.is_deleted:
-            return Response(
-                {"detail": "Record must be archived before it can be permanently deleted."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        instance.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class WeeklyPayrollDownloadPDFView(APIView):
@@ -1254,6 +1238,7 @@ class HolidayViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     ViewSet for managing holidays (admin only).
     Supports CRUD operations and provides filter options.
     """
+    allow_hard_delete = True
     queryset = Holiday.objects.filter(is_deleted=False).order_by("-date")
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = HolidaySerializer

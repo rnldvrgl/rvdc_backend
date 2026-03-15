@@ -100,6 +100,9 @@ class AirconModelViewSet(viewsets.ModelViewSet):
 class AirconUnitViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     Aircon unit inventory management.
+    """
+    allow_hard_delete = True
+    """
     
     This viewset manages the inventory of aircon units available for installation.
     Units are added to inventory and later linked to sales/installations through

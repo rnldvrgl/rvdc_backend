@@ -79,7 +79,7 @@ class ClientChoicesAPIView(BaseChoicesAPIView):
 
 
 class EmployeesChoicesAPIView(BaseChoicesAPIView):
-    queryset = CustomUser.objects.exclude(role="admin").filter(is_deleted=False)
+    queryset = CustomUser.objects.exclude(role="admin").filter(is_deleted=False, is_active=True)
     serializer_class = EmployeesSerializer
 
     def get_queryset(self):
@@ -97,12 +97,12 @@ class EmployeesChoicesAPIView(BaseChoicesAPIView):
 
 
 class TechniciansChoicesAPIView(BaseChoicesAPIView):
-    queryset = CustomUser.objects.filter(role="technician", is_deleted=False)
+    queryset = CustomUser.objects.filter(role="technician", is_deleted=False, is_active=True)
     serializer_class = UserSerializer
 
 
 class UsersChoicesAPIView(BaseChoicesAPIView):
-    queryset = CustomUser.objects.filter(is_deleted=False)
+    queryset = CustomUser.objects.filter(is_deleted=False, is_active=True)
     serializer_class = UserSerializer
 
 

@@ -1192,6 +1192,7 @@ class CalendarEventViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     - PUT/PATCH /api/analytics/calendar-events/<id>/ - Update event
     - DELETE /api/analytics/calendar-events/<id>/ - Soft delete event
     """
+    allow_hard_delete = True
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = CalendarEventSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]

@@ -23,11 +23,6 @@ urlpatterns = [
         views.EmployeeRestoreView.as_view(),
         name="employee-restore",
     ),
-    path(
-        "employees/<int:pk>/hard-delete/",
-        views.EmployeeHardDeleteView.as_view(),
-        name="employee-hard-delete",
-    ),
     path("settings/", views.SystemSettingsView.as_view(), name="system-settings"),
     path("", include(router.urls)),
 ]

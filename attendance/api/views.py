@@ -1265,6 +1265,7 @@ class HalfDayScheduleViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     - PUT/PATCH /api/attendance/half-day-schedules/{id}/ - Update (admin/manager only)
     - DELETE /api/attendance/half-day-schedules/{id}/ - Soft delete (admin/manager only)
     """
+    allow_hard_delete = True
     serializer_class = HalfDayScheduleSerializer
     permission_classes = [IsAuthenticated]
     

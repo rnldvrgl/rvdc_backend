@@ -105,8 +105,9 @@ class CustomUser(AbstractUser):
             super().delete(*args, **kwargs)
         else:
             self.is_deleted = True
+            self.is_active = False
             self.deleted_at = timezone.now()
-            self.save(update_fields=["is_deleted", "deleted_at"])
+            self.save(update_fields=["is_deleted", "is_active", "deleted_at"])
 
 
 class SystemSettings(models.Model):

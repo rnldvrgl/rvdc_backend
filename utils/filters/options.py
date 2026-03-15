@@ -55,7 +55,7 @@ def get_user_options(
     include_roles: Optional[list] = None,
     exclude_roles: Optional[list] = None,
 ) -> List[Dict[str, str]]:
-    qs = CustomUser.objects.filter(is_deleted=False)
+    qs = CustomUser.objects.filter(is_deleted=False, is_active=True)
 
     if include_roles:
         qs = qs.filter(role__in=include_roles)

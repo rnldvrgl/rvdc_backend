@@ -73,7 +73,7 @@ class MinimalUserSerializer(serializers.ModelSerializer):
 class AdditionalEarningSerializer(serializers.ModelSerializer):
     employee_detail = MinimalUserSerializer(source="employee", read_only=True)
     employee = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.all(), required=True
+        queryset=User.objects.filter(is_deleted=False, is_active=True), required=True
     )
 
     class Meta:
@@ -186,7 +186,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
     additional_earnings_details = serializers.SerializerMethodField(read_only=True)
     deductions = DeductionsField(required=False)
     employee = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.all(), required=True
+        queryset=User.objects.filter(is_deleted=False, is_active=True), required=True
     )
     status_display = serializers.CharField(source="get_status_display", read_only=True)
 

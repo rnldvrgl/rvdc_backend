@@ -709,7 +709,11 @@ class TechnicianAssignmentPayloadSerializer(serializers.ModelSerializer):
     """Serializer for creating/updating technician assignments (write operations)."""
 
     technician = serializers.PrimaryKeyRelatedField(
-        queryset=CustomUser.objects.filter(role__in=['technician', 'admin', 'manager']),
+        queryset=CustomUser.objects.filter(
+            role__in=['technician', 'admin', 'manager'],
+            is_deleted=False,
+            is_active=True,
+        ),
         required=True
     )
     appliance = serializers.PrimaryKeyRelatedField(

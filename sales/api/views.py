@@ -181,20 +181,7 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
 
-    @action(detail=True, methods=["delete"], url_path="hard-delete-voided")
-    def hard_delete_voided(self, request, pk=None):
-        """Permanently delete a voided transaction."""
-        try:
-            instance = SalesTransaction.objects.get(pk=pk)
-        except SalesTransaction.DoesNotExist:
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not instance.voided:
-            return Response(
-                {"detail": "Transaction must be voided before it can be permanently deleted."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        instance.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
     @action(detail=True, methods=["post"])
     def add_payment(self, request, pk=None):

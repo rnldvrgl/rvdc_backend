@@ -39,11 +39,7 @@ urlpatterns = [
         views.WeeklyPayrollRestoreView.as_view(),
         name="weeklypayroll-restore",
     ),
-    path(
-        "weekly-payrolls/<int:pk>/hard-delete/",
-        views.WeeklyPayrollHardDeleteView.as_view(),
-        name="weeklypayroll-hard-delete",
-    ),
+
     # Weekly payroll summaries
     path(
         "weekly-payrolls/",
