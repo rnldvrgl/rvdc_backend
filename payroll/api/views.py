@@ -805,6 +805,16 @@ class WeeklyPayrollUpdateStatusView(APIView):
             # Apply pending cash advance movements
             _apply_pending_cash_advance_movements(payroll)
 
+            # Notify employee that payroll is available
+            from notifications.models import Notification, NotificationType
+            Notification.objects.create(
+                user=payroll.employee,
+                type=NotificationType.PAYROLL_AVAILABLE,
+                title="Payroll Available",
+                message=f"Your payroll for the week of {payroll.week_start} has been approved.",
+                data={"payroll_id": payroll.id, "week_start": str(payroll.week_start)},
+            )
+
         serializer = WeeklyPayrollSerializer(payroll)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -1183,12 +1193,21 @@ class WeeklyPayrollBulkUpdateStatusView(APIView):
         # If approving payrolls, finalize deductions for those that were draft
         if new_status == 'approved' and draft_payroll_ids:
             approved_payrolls = WeeklyPayroll.objects.filter(id__in=draft_payroll_ids)
+            from notifications.models import Notification, NotificationType
             for payroll in approved_payrolls:
                 payroll.finalize_deductions()
                 # Add cash ban contribution
                 _add_cash_ban_contribution(payroll)
                 # Apply pending cash advance movements
                 _apply_pending_cash_advance_movements(payroll)
+                # Notify employee that payroll is available
+                Notification.objects.create(
+                    user=payroll.employee,
+                    type=NotificationType.PAYROLL_AVAILABLE,
+                    title="Payroll Available",
+                    message=f"Your payroll for the week of {payroll.week_start} has been approved.",
+                    data={"payroll_id": payroll.id, "week_start": str(payroll.week_start)},
+                )
 
         return Response({
             'updated_count': updated_count,

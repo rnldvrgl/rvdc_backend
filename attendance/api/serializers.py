@@ -434,7 +434,7 @@ class WorkRequestSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = [
-            'id', 'employee_name', 'status', 'status_display',
+            'id', 'employee', 'employee_name', 'status', 'status_display',
             'reviewed_by', 'reviewed_by_name', 'reviewed_at',
             'decline_reason', 'created_at', 'updated_at',
         ]

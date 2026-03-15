@@ -39,6 +39,17 @@ class NotificationType(models.TextChoices):
     SALE_CREATED = "sale_created", _("New Sale Created")
     SALE_VOIDED = "sale_voided", _("Sale Voided")
 
+    # Attendance / HR notifications
+    ATTENDANCE_APPROVED = "attendance_approved", _("Attendance Approved")
+    ATTENDANCE_REJECTED = "attendance_rejected", _("Attendance Rejected")
+    LEAVE_REQUEST_APPROVED = "leave_request_approved", _("Leave Request Approved")
+    LEAVE_REQUEST_REJECTED = "leave_request_rejected", _("Leave Request Rejected")
+    OVERTIME_APPROVED = "overtime_approved", _("Overtime Request Approved")
+    OVERTIME_REJECTED = "overtime_rejected", _("Overtime Request Rejected")
+    WORK_REQUEST_APPROVED = "work_request_approved", _("Work Request Approved")
+    WORK_REQUEST_DECLINED = "work_request_declined", _("Work Request Declined")
+    PAYROLL_AVAILABLE = "payroll_available", _("Payroll Available")
+
     # System notifications
     SYSTEM_ALERT = "system_alert", _("System Alert")
     REPORT_READY = "report_ready", _("Report Ready")

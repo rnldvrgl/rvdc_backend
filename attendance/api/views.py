@@ -303,9 +303,22 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         )
 
         approved_count = 0
+        approved_attendances = []
         for attendance in attendances:
             attendance.approve(request.user)
             approved_count += 1
+            approved_attendances.append(attendance)
+
+        # Notify employees
+        from notifications.models import Notification, NotificationType
+        for att in approved_attendances:
+            Notification.objects.create(
+                user=att.employee,
+                type=NotificationType.ATTENDANCE_APPROVED,
+                title="Attendance Approved",
+                message=f"Your attendance for {att.date} has been approved.",
+                data={"attendance_id": att.id, "date": str(att.date)},
+            )
 
         return Response(
             {
@@ -337,9 +350,23 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         )
 
         rejected_count = 0
+        rejected_attendances = []
         for attendance in attendances:
             attendance.reject(request.user, reason=reason)
             rejected_count += 1
+            rejected_attendances.append(attendance)
+
+        # Notify employees
+        from notifications.models import Notification, NotificationType
+        for att in rejected_attendances:
+            Notification.objects.create(
+                user=att.employee,
+                type=NotificationType.ATTENDANCE_REJECTED,
+                title="Attendance Rejected",
+                message=f"Your attendance for {att.date} has been rejected."
+                        + (f" Reason: {reason}" if reason else ""),
+                data={"attendance_id": att.id, "date": str(att.date)},
+            )
 
         return Response(
             {
@@ -784,10 +811,12 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         approved_count = 0
         errors = []
 
+        approved_requests = []
         for leave_request in leave_requests:
             try:
                 leave_request.approve(request.user)
                 approved_count += 1
+                approved_requests.append(leave_request)
             except ValidationError as e:
                 errors.append({
                     'leave_request_id': leave_request.id,
@@ -798,6 +827,19 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                     'leave_request_id': leave_request.id,
                     'error': str(e)
                 })
+
+        # Notify employees
+        from notifications.models import Notification, NotificationType
+        for lr in approved_requests:
+            Notification.objects.create(
+                user=lr.employee,
+                type=NotificationType.LEAVE_REQUEST_APPROVED,
+                title="Leave Request Approved",
+                message=f"Your {lr.get_leave_type_display()} leave request for {lr.start_date or lr.date}"
+                        + (f" to {lr.end_date}" if lr.end_date and lr.end_date != (lr.start_date or lr.date) else "")
+                        + " has been approved.",
+                data={"leave_request_id": lr.id, "date": str(lr.start_date or lr.date)},
+            )
 
         if errors:
             return Response(
@@ -842,11 +884,13 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
         rejected_count = 0
         errors = []
+        rejected_requests = []
 
         for leave_request in leave_requests:
             try:
                 leave_request.reject(request.user, reason=reason)
                 rejected_count += 1
+                rejected_requests.append(leave_request)
             except ValidationError as e:
                 errors.append({
                     'leave_request_id': leave_request.id,
@@ -857,6 +901,20 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                     'leave_request_id': leave_request.id,
                     'error': str(e)
                 })
+
+        # Notify employees
+        from notifications.models import Notification, NotificationType
+        for lr in rejected_requests:
+            Notification.objects.create(
+                user=lr.employee,
+                type=NotificationType.LEAVE_REQUEST_REJECTED,
+                title="Leave Request Rejected",
+                message=f"Your {lr.get_leave_type_display()} leave request for {lr.start_date or lr.date}"
+                        + (f" to {lr.end_date}" if lr.end_date and lr.end_date != (lr.start_date or lr.date) else "")
+                        + " has been rejected."
+                        + (f" Reason: {reason}" if reason else ""),
+                data={"leave_request_id": lr.id, "date": str(lr.start_date or lr.date)},
+            )
 
         if errors:
             return Response(
@@ -1258,6 +1316,26 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # Notify employee
+        from notifications.models import Notification, NotificationType
+        is_approved = serializer.validated_data.get('approved', False)
+        if is_approved:
+            Notification.objects.create(
+                user=overtime_request.employee,
+                type=NotificationType.OVERTIME_APPROVED,
+                title="Overtime Request Approved",
+                message=f"Your overtime request for {overtime_request.date} has been approved.",
+                data={"overtime_request_id": overtime_request.id, "date": str(overtime_request.date)},
+            )
+        else:
+            Notification.objects.create(
+                user=overtime_request.employee,
+                type=NotificationType.OVERTIME_REJECTED,
+                title="Overtime Request Rejected",
+                message=f"Your overtime request for {overtime_request.date} has been rejected.",
+                data={"overtime_request_id": overtime_request.id, "date": str(overtime_request.date)},
+            )
+
         return Response(serializer.data)
 
 
@@ -1444,10 +1522,10 @@ class WorkRequestViewSet(viewsets.ModelViewSet):
         work_request.save()
 
         # Notify employee
-        from notifications.models import Notification
+        from notifications.models import Notification, NotificationType
         Notification.objects.create(
             user=work_request.employee,
-            type="system",
+            type=NotificationType.WORK_REQUEST_DECLINED,
             title="Work Request Declined",
             message=f"Your request to work on {work_request.date} has been declined."
                     + (f" Reason: {decline_reason}" if decline_reason else ""),
@@ -1485,7 +1563,7 @@ class WorkRequestViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        from notifications.models import Notification
+        from notifications.models import Notification, NotificationType
 
         pending = WorkRequest.objects.filter(id__in=ids, status='pending').select_related('employee')
         declined_count = 0
@@ -1498,7 +1576,7 @@ class WorkRequestViewSet(viewsets.ModelViewSet):
 
             Notification.objects.create(
                 user=wr.employee,
-                type="system",
+                type=NotificationType.WORK_REQUEST_DECLINED,
                 title="Work Request Declined",
                 message=f"Your request to work on {wr.date} has been declined."
                         + (f" Reason: {reason}" if reason else ""),
@@ -1535,19 +1613,20 @@ class WorkRequestViewSet(viewsets.ModelViewSet):
         work_request.reviewed_at = timezone.now()
         work_request.save()
 
-        # Delete the SHOP_CLOSED attendance record so employee can clock in/out
+        # Delete the SHOP_CLOSED/ABSENT attendance record so employee can clock in/out
         DailyAttendance.objects.filter(
             employee=work_request.employee,
             date=work_request.date,
-            attendance_type='SHOP_CLOSED',
+            attendance_type__in=['SHOP_CLOSED', 'ABSENT'],
+            clock_in__isnull=True,
         ).delete()
 
         # Notify employee
-        from notifications.models import Notification
+        from notifications.models import Notification, NotificationType
         if work_request.employee.is_active:
             Notification.objects.create(
                 user=work_request.employee,
-                type="system",
+                type=NotificationType.WORK_REQUEST_APPROVED,
                 title="Work Request Approved",
                 message=f"Your request to work on {work_request.date} has been approved. You can now clock in/out.",
                 data={"work_request_id": work_request.id, "date": str(work_request.date)},

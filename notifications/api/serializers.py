@@ -8,6 +8,7 @@ class NotificationSerializer(serializers.ModelSerializer):
     """Serializer for Notification model."""
 
     relative_time = serializers.SerializerMethodField()
+    formatted_date = serializers.SerializerMethodField()
     type_display = serializers.CharField(source="get_type_display", read_only=True)
 
     class Meta:
@@ -22,11 +23,17 @@ class NotificationSerializer(serializers.ModelSerializer):
             "is_read",
             "created_at",
             "relative_time",
+            "formatted_date",
         ]
         read_only_fields = [
             "id",
             "created_at",
         ]
+
+    def get_formatted_date(self, obj):
+        """Get formatted date string (e.g. 'Jan 15, 2025 at 10:30 AM')."""
+        local_time = timezone.localtime(obj.created_at)
+        return local_time.strftime("%b %d, %Y at %I:%M %p")
 
     def get_relative_time(self, obj):
         """Get human-readable relative time."""

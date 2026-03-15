@@ -112,7 +112,7 @@ CONTAINER_NAME="CONTAINER_NAME_PLACEHOLDER"
 export TZ=Asia/Manila
 
 echo "=== Delete Old Notifications - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
-docker exec "$CONTAINER_NAME" python manage.py delete_old_notifications --days 7 >> "$LOG_FILE" 2>&1
+docker exec "$CONTAINER_NAME" python manage.py delete_old_notifications --all --days 7 >> "$LOG_FILE" 2>&1
 
 if [ $? -eq 0 ]; then
     echo "✅ Success - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
