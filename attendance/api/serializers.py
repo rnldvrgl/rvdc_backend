@@ -11,6 +11,7 @@ from attendance.models import (
     LeaveRequest,
     Offense,
     OvertimeRequest,
+    WorkRequest,
 )
 
 
@@ -408,3 +409,32 @@ class HalfDayScheduleSerializer(serializers.ModelSerializer):
         """Set created_by to current user."""
         validated_data['created_by'] = self.context['request'].user
         return super().create(validated_data)
+
+
+class WorkRequestSerializer(serializers.ModelSerializer):
+    employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
+    reviewed_by_name = serializers.CharField(source='reviewed_by.get_full_name', read_only=True, default=None)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = WorkRequest
+        fields = [
+            'id',
+            'employee',
+            'employee_name',
+            'date',
+            'reason',
+            'status',
+            'status_display',
+            'reviewed_by',
+            'reviewed_by_name',
+            'reviewed_at',
+            'decline_reason',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'employee_name', 'status', 'status_display',
+            'reviewed_by', 'reviewed_by_name', 'reviewed_at',
+            'decline_reason', 'created_at', 'updated_at',
+        ]

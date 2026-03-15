@@ -754,6 +754,11 @@ class DailyAttendance(models.Model):
             return
 
         # Check if this date is a shop-closed schedule (admin-designated)
+        # Note: This method is only called when clock_in and clock_out exist,
+        # meaning the employee actually worked. If they worked on a shop-closed
+        # day, they should still get their hours computed normally — skip the
+        # zero-out logic since auto-mark and mark_absent already handle
+        # employees who did NOT clock in.
         is_shop_closed_day = HalfDaySchedule.objects.filter(
             date=local_date,
             is_deleted=False,
@@ -761,10 +766,11 @@ class DailyAttendance(models.Model):
         ).exists()
 
         if is_shop_closed_day:
+            # Employee worked on a shop-closed day — compute hours normally
+            # but tag the attendance type so reports can distinguish it
             self.attendance_type = "SHOP_CLOSED"
-            self.break_hours = Decimal("0.00")
-            self.paid_hours = Decimal("0.00")
-            self.total_hours = Decimal("0.00")
+            self.break_hours = total_break
+            self.paid_hours = work_hours_after_break
             self.consecutive_absences = 0
             self.is_awol = False
             self.status = "APPROVED"
@@ -1505,3 +1511,61 @@ class HalfDaySchedule(models.Model):
     def __str__(self):
         type_label = 'Shop Closed' if self.schedule_type == 'shop_closed' else 'Half Day'
         return f"{type_label} - {self.date} ({self.reason})"
+
+
+class WorkRequest(models.Model):
+    """
+    Request from an employee to work on a shop-closed day.
+
+    When approved, the existing SHOP_CLOSED attendance record is deleted
+    so the employee can clock in/out normally.
+    """
+
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('approved', 'Approved'),
+        ('declined', 'Declined'),
+    ]
+
+    employee = models.ForeignKey(
+        'users.CustomUser',
+        on_delete=models.CASCADE,
+        related_name='work_requests',
+    )
+    date = models.DateField()
+    reason = models.TextField(blank=True, default='')
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending',
+    )
+    reviewed_by = models.ForeignKey(
+        'users.CustomUser',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='reviewed_work_requests',
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    decline_reason = models.TextField(blank=True, default='')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['employee', 'date'],
+                condition=models.Q(status='pending'),
+                name='unique_pending_work_request_per_employee_date',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['employee', 'date']),
+            models.Index(fields=['status']),
+            models.Index(fields=['date']),
+        ]
+
+    def __str__(self):
+        return f"WorkRequest {self.employee_id} | {self.date} | {self.status}"

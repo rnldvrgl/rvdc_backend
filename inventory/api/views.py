@@ -281,7 +281,7 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         manager_user = (
             get_user_model()
-            .objects.filter(assigned_stall=stock.stall, role__in=["manager", "clerk"])
+            .objects.filter(assigned_stall=stock.stall, role__in=["manager", "clerk"], is_active=True)
             .first()
         )
 
@@ -332,7 +332,7 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         # Notify manager
         manager_user = (
             get_user_model()
-            .objects.filter(assigned_stall=stock.stall, role__in=["manager", "clerk"])
+            .objects.filter(assigned_stall=stock.stall, role__in=["manager", "clerk"], is_active=True)
             .first()
         )
 
@@ -720,7 +720,7 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                 "status", "approved_by", "approved_at", "updated_at",
             ])
 
-            if stock_request.requested_by:
+            if stock_request.requested_by and stock_request.requested_by.is_active:
                 Notification.objects.create(
                     user=stock_request.requested_by,
                     type="stock_request_approved",
@@ -766,7 +766,7 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
             "status", "decline_reason", "declined_at", "updated_at",
         ])
 
-        if stock_request.requested_by:
+        if stock_request.requested_by and stock_request.requested_by.is_active:
             msg = (
                 f"Your stock request for {stock_request.requested_quantity} "
                 f"{stock_request.item.unit_of_measure} of '{stock_request.item.name}' "
@@ -839,7 +839,7 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
             sr.save(update_fields=["status", "approved_by", "approved_at", "updated_at"])
             approved_count += 1
 
-            if sr.requested_by:
+            if sr.requested_by and sr.requested_by.is_active:
                 Notification.objects.create(
                     user=sr.requested_by,
                     type="stock_request_approved",

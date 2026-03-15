@@ -25,6 +25,7 @@ from attendance.api.serializers import (
     RejectAttendanceSerializer,
     RejectLeaveSerializer,
     ValidateLeaveBalanceSerializer,
+    WorkRequestSerializer,
 )
 from attendance.models import (
     DailyAttendance,
@@ -33,6 +34,7 @@ from attendance.models import (
     LeaveRequest,
     Offense,
     OvertimeRequest,
+    WorkRequest,
 )
 from utils.soft_delete import SoftDeleteViewSetMixin
 
@@ -151,7 +153,8 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             response_data = {
                 'attendance': None,
                 'is_suspended': is_suspended,
-                'suspension_info': suspension_info
+                'suspension_info': suspension_info,
+                'work_request': self._get_today_work_request(request.user),
             }
             return Response(response_data, status=status.HTTP_200_OK)
 
@@ -159,9 +162,20 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         response_data = {
             'attendance': serializer.data,
             'is_suspended': is_suspended,
-            'suspension_info': suspension_info
+            'suspension_info': suspension_info,
+            'work_request': self._get_today_work_request(request.user),
         }
         return Response(response_data, status=status.HTTP_200_OK)
+
+    def _get_today_work_request(self, user):
+        """Get the user's latest work request for today."""
+        wr = WorkRequest.objects.filter(
+            employee=user,
+            date=timezone.localdate(),
+        ).order_by('-created_at').first()
+        if wr:
+            return WorkRequestSerializer(wr).data
+        return None
 
     @action(detail=False, methods=['post'])
     def clock_in(self, request):
@@ -1342,3 +1356,199 @@ class HalfDayScheduleViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             attendance.status = 'APPROVED'
             attendance.notes = f'Shop Closed - {schedule.reason}' if schedule.reason else 'Shop Closed'
             attendance.save()
+
+
+class WorkRequestViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing work requests on shop-closed days.
+
+    Employees can request to work on shop-closed days.
+    Admin can approve/decline requests (single or batch).
+    When approved, the SHOP_CLOSED attendance record is deleted so the
+    employee can clock in/out normally.
+    """
+    serializer_class = WorkRequestSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = WorkRequest.objects.select_related(
+            'employee', 'reviewed_by',
+        )
+        user = self.request.user
+
+        # Non-admin users can only see their own requests
+        if user.role not in ('admin', 'manager'):
+            queryset = queryset.filter(employee=user)
+
+        # Filters
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+
+        date_filter = self.request.query_params.get('date')
+        if date_filter:
+            queryset = queryset.filter(date=date_filter)
+
+        employee_filter = self.request.query_params.get('employee')
+        if employee_filter:
+            queryset = queryset.filter(employee_id=employee_filter)
+
+        return queryset
+
+    def perform_create(self, serializer):
+        """Employee creates a request for themselves."""
+        work_request = serializer.save(employee=self.request.user)
+
+        # Notify admins
+        from notifications.models import Notification
+        from users.models import CustomUser
+        admins = CustomUser.objects.filter(role='admin', is_active=True, is_deleted=False)
+        for admin_user in admins:
+            Notification.objects.create(
+                user=admin_user,
+                type="system",
+                title="New Work Request",
+                message=f"{self.request.user.get_full_name()} has requested to work on {work_request.date}.",
+                data={"work_request_id": work_request.id, "date": str(work_request.date)},
+            )
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminOnly])
+    def approve(self, request, pk=None):
+        """Approve a work request and delete the SHOP_CLOSED attendance."""
+        work_request = self.get_object()
+        if work_request.status != 'pending':
+            return Response(
+                {'detail': f'Cannot approve a request with status \'{work_request.status}\'.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        self._approve_request(work_request, request.user)
+        return Response(WorkRequestSerializer(work_request).data)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminOnly])
+    def decline(self, request, pk=None):
+        """Decline a work request."""
+        work_request = self.get_object()
+        if work_request.status != 'pending':
+            return Response(
+                {'detail': f'Cannot decline a request with status \'{work_request.status}\'.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        decline_reason = request.data.get('reason', '')
+
+        work_request.status = 'declined'
+        work_request.decline_reason = decline_reason
+        work_request.reviewed_by = request.user
+        work_request.reviewed_at = timezone.now()
+        work_request.save()
+
+        # Notify employee
+        from notifications.models import Notification
+        Notification.objects.create(
+            user=work_request.employee,
+            type="system",
+            title="Work Request Declined",
+            message=f"Your request to work on {work_request.date} has been declined."
+                    + (f" Reason: {decline_reason}" if decline_reason else ""),
+            data={"work_request_id": work_request.id, "date": str(work_request.date)},
+        )
+
+        return Response(WorkRequestSerializer(work_request).data)
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAdminOnly], url_path='batch-approve')
+    def batch_approve(self, request):
+        """Approve multiple work requests at once."""
+        ids = request.data.get('ids', [])
+        if not ids:
+            return Response(
+                {'detail': 'No request IDs provided.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        pending = WorkRequest.objects.filter(id__in=ids, status='pending').select_related('employee')
+        approved_count = 0
+        for wr in pending:
+            self._approve_request(wr, request.user)
+            approved_count += 1
+
+        return Response({'approved_count': approved_count})
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAdminOnly], url_path='batch-decline')
+    def batch_decline(self, request):
+        """Decline multiple work requests at once."""
+        ids = request.data.get('ids', [])
+        reason = request.data.get('reason', '')
+        if not ids:
+            return Response(
+                {'detail': 'No request IDs provided.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from notifications.models import Notification
+
+        pending = WorkRequest.objects.filter(id__in=ids, status='pending').select_related('employee')
+        declined_count = 0
+        for wr in pending:
+            wr.status = 'declined'
+            wr.decline_reason = reason
+            wr.reviewed_by = request.user
+            wr.reviewed_at = timezone.now()
+            wr.save()
+
+            Notification.objects.create(
+                user=wr.employee,
+                type="system",
+                title="Work Request Declined",
+                message=f"Your request to work on {wr.date} has been declined."
+                        + (f" Reason: {reason}" if reason else ""),
+                data={"work_request_id": wr.id, "date": str(wr.date)},
+            )
+            declined_count += 1
+
+        return Response({'declined_count': declined_count})
+
+    @action(detail=False, methods=['get'], url_path='my-request')
+    def my_request(self, request):
+        """Get the current user's work request for a specific date."""
+        date_param = request.query_params.get('date')
+        if not date_param:
+            return Response(
+                {'detail': 'Date parameter is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        work_request = WorkRequest.objects.filter(
+            employee=request.user,
+            date=date_param,
+        ).order_by('-created_at').first()
+
+        if not work_request:
+            return Response(None, status=status.HTTP_200_OK)
+
+        return Response(WorkRequestSerializer(work_request).data)
+
+    def _approve_request(self, work_request, admin_user):
+        """Approve a single work request and clear the SHOP_CLOSED attendance."""
+        work_request.status = 'approved'
+        work_request.reviewed_by = admin_user
+        work_request.reviewed_at = timezone.now()
+        work_request.save()
+
+        # Delete the SHOP_CLOSED attendance record so employee can clock in/out
+        DailyAttendance.objects.filter(
+            employee=work_request.employee,
+            date=work_request.date,
+            attendance_type='SHOP_CLOSED',
+        ).delete()
+
+        # Notify employee
+        from notifications.models import Notification
+        if work_request.employee.is_active:
+            Notification.objects.create(
+                user=work_request.employee,
+                type="system",
+                title="Work Request Approved",
+                message=f"Your request to work on {work_request.date} has been approved. You can now clock in/out.",
+                data={"work_request_id": work_request.id, "date": str(work_request.date)},
+            )
