@@ -11,8 +11,8 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        # Column already exists in DB (was made nullable in 0021)
-        # Only update Django's state to recognize the field
+        # Add the column to the DB if it doesn't exist (fresh setup),
+        # and always register it in Django's state.
         migrations.SeparateDatabaseAndState(
             state_operations=[
                 migrations.AddField(
@@ -21,12 +21,27 @@ class Migration(migrations.Migration):
                     field=models.PositiveIntegerField(
                         blank=True,
                         help_text='Labor warranty duration in months (overrides model default if set)',
-                        null=True
+                        null=True,
                     ),
                 ),
             ],
             database_operations=[
-                # No database operations needed - column already exists
+                migrations.RunSQL(
+                    sql="""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = 'installations_airconunit'
+                            AND column_name = 'labor_warranty_months'
+                        ) THEN
+                            ALTER TABLE installations_airconunit
+                                ADD COLUMN labor_warranty_months integer NULL;
+                        END IF;
+                    END $$;
+                    """,
+                    reverse_sql="ALTER TABLE installations_airconunit DROP COLUMN IF EXISTS labor_warranty_months;",
+                ),
             ],
         ),
     ]

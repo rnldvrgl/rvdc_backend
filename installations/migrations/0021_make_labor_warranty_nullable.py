@@ -12,7 +12,19 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.RunSQL(
-            sql="ALTER TABLE installations_airconunit ALTER COLUMN labor_warranty_months DROP NOT NULL;",
-            reverse_sql="ALTER TABLE installations_airconunit ALTER COLUMN labor_warranty_months SET NOT NULL;",
+            sql="""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'installations_airconunit'
+                    AND column_name = 'labor_warranty_months'
+                ) THEN
+                    ALTER TABLE installations_airconunit
+                        ALTER COLUMN labor_warranty_months DROP NOT NULL;
+                END IF;
+            END $$;
+            """,
+            reverse_sql=migrations.RunSQL.noop,
         ),
     ]
