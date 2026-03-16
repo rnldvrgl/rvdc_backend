@@ -9,14 +9,15 @@ from django.db import models
 
 def normalize_name(name):
     """
-    Normalize item/category names to Title Case and collapse extra whitespace.
-    e.g. "  capacitor   10UF  " -> "Capacitor 10Uf"
+    Normalize item/category names to UPPERCASE and collapse extra whitespace.
+    Safe for product codes, model numbers, and unit abbreviations.
+    e.g. "  capacitor   20uf  PSCBB65  " -> "CAPACITOR 20UF PSCBB65"
     """
     if not name:
         return name
     # Strip leading/trailing whitespace, collapse internal whitespace
     name = re.sub(r"\s+", " ", name.strip())
-    return name.title()
+    return name.upper()
 
 
 # =========== MANAGERS ===========

@@ -3,7 +3,7 @@ Management command to find and report possible duplicate inventory items.
 
 Usage:
     python manage.py find_duplicate_items           # Report only
-    python manage.py find_duplicate_items --normalize  # Normalize all names to Title Case
+    python manage.py find_duplicate_items --normalize  # Normalize all names to UPPERCASE
 """
 
 import re
@@ -15,13 +15,13 @@ from inventory.models import Item, ProductCategory, normalize_name
 
 
 class Command(BaseCommand):
-    help = "Find possible duplicate inventory items and optionally normalize names to Title Case."
+    help = "Find possible duplicate inventory items and optionally normalize names to UPPERCASE."
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--normalize",
             action="store_true",
-            help="Normalize all item & category names to Title Case (apply changes).",
+            help="Normalize all item & category names to UPPERCASE (apply changes).",
         )
 
     def handle(self, *args, **options):
