@@ -32,6 +32,7 @@ class QuotationItemSerializer(serializers.ModelSerializer):
             "description",
             "quantity",
             "unit_price",
+            "promo_price",
             "total_price",
         ]
         read_only_fields = ["id", "total_price"]
@@ -68,6 +69,7 @@ class QuotationListSerializer(serializers.ModelSerializer):
             "quote_date",
             "valid_until",
             "project_description",
+            "quotation_type",
             "subtotal",
             "discount_amount",
             "total",
@@ -109,6 +111,7 @@ class QuotationSerializer(serializers.ModelSerializer):
             "quote_date",
             "valid_until",
             "project_description",
+            "quotation_type",
             "subtotal",
             "discount_amount",
             "total",

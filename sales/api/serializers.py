@@ -124,6 +124,9 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
                 stock = Stock.objects.select_for_update().filter(
                     stall=stall, item=item
                 ).first()
+                # Skip validation for untracked stock
+                if stock and not stock.track_stock:
+                    continue
                 if not stock or stock.quantity < qty:
                     raise ValidationError(
                         f"Not enough stock of {item.name} in {stall.name}. "
@@ -139,8 +142,10 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
 
                 if item:
                     stock = Stock.objects.select_for_update().get(stall=stall, item=item)
-                    stock.quantity -= qty
-                    stock.save(update_fields=["quantity", "updated_at"])
+                    # Only deduct for tracked stock
+                    if stock.track_stock:
+                        stock.quantity -= qty
+                        stock.save(update_fields=["quantity", "updated_at"])
 
                 SalesItem.objects.create(transaction=sale_txn, **item_data)
 
@@ -188,6 +193,9 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
                 for item, change in net_changes.items():
                     if change > 0:
                         stock = Stock.objects.filter(stall=stall, item=item).first()
+                        # Skip validation for untracked stock
+                        if stock and not stock.track_stock:
+                            continue
                         if not stock or stock.quantity < change:
                             raise ValidationError(
                                 f"Not enough stock of {item.name} in {stall.name}. "
@@ -200,8 +208,10 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
                         stock, _ = Stock.objects.get_or_create(
                             stall=stall, item=item, defaults={"quantity": 0}
                         )
-                        stock.quantity -= change
-                        stock.save()
+                        # Only adjust tracked stock
+                        if stock.track_stock:
+                            stock.quantity -= change
+                            stock.save()
 
             # Apply basic field updates
             for attr, value in validated_data.items():

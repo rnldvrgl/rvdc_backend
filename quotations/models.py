@@ -39,6 +39,16 @@ class Quotation(models.Model):
         ACCEPTED = "accepted", "Accepted"
         DECLINED = "declined", "Declined"
 
+    class QuotationType(models.TextChoices):
+        STANDARD = "standard", "Standard"
+        PRICE_LIST = "price_list", "Price List"
+
+    quotation_type = models.CharField(
+        max_length=20,
+        choices=QuotationType.choices,
+        default=QuotationType.STANDARD,
+    )
+
     client = models.ForeignKey(
         "clients.Client",
         on_delete=models.SET_NULL,
@@ -136,6 +146,10 @@ class QuotationItem(models.Model):
     description = models.CharField(max_length=500)
     quantity = models.PositiveIntegerField(default=1)
     unit_price = models.DecimalField(max_digits=10, decimal_places=2)
+    promo_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Promotional / discounted price (used in price_list quotations)",
+    )
     total_price = models.DecimalField(
         max_digits=12, decimal_places=2, default=Decimal("0.00")
     )

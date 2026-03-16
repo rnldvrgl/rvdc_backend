@@ -203,6 +203,16 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
         if stock.item != item:
             raise ValidationError("Selected stock does not match the item.")
 
+        # Untracked stock — skip all stock validation
+        if not stock.track_stock:
+            self._validated_stock = stock
+            self._insufficient_stock = False
+            self._stock_deficit = Decimal('0')
+            self._untracked = True
+            return data
+
+        self._untracked = False
+
         # Reset insufficient stock flag
         self._insufficient_stock = False
         self._stock_deficit = Decimal('0')
@@ -240,11 +250,17 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
         Create item usage record and RESERVE stock (don't consume yet).
         If stock is insufficient, creates a StockRequest for admin approval.
         Custom items skip stock entirely.
+        Untracked items skip stock reservation.
         """
         apply_copper_promo = validated_data.pop("apply_copper_tube_promo", False)
 
         # Custom item — no stock interaction
         if getattr(self, '_is_custom_item', False):
+            return super().create(validated_data)
+
+        # Untracked stock — record link but skip reservation
+        if getattr(self, '_untracked', False):
+            validated_data["stall_stock"] = self._validated_stock
             return super().create(validated_data)
 
         stock = self._validated_stock
@@ -579,6 +595,16 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
         if stock.item != item:
             raise ValidationError("Selected stock does not match the item.")
 
+        # Untracked stock — skip all stock validation
+        if not stock.track_stock:
+            self._validated_stock = stock
+            self._insufficient_stock = False
+            self._stock_deficit = Decimal('0')
+            self._untracked = True
+            return data
+
+        self._untracked = False
+
         self._insufficient_stock = False
         self._stock_deficit = Decimal('0')
 
@@ -613,6 +639,11 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
 
         # Custom item — no stock interaction
         if getattr(self, '_is_custom_item', False):
+            return super().create(validated_data)
+
+        # Untracked stock — record link but skip reservation
+        if getattr(self, '_untracked', False):
+            validated_data["stall_stock"] = self._validated_stock
             return super().create(validated_data)
 
         stock = self._validated_stock
