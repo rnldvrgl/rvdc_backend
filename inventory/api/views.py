@@ -1,5 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.db import models, transaction
+from django.db.models import Q
+from django.db.models.functions import Lower, Replace
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from inventory.api.filters import (
@@ -113,6 +115,107 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             filters_config,
             ordering_config,
         )
+
+    @action(detail=False, methods=["get"], url_path="check-duplicates")
+    def check_duplicates(self, request):
+        """
+        Check for potential duplicate items matching a given name.
+
+        Query params:
+            name  – the item name to check (required)
+            category_id – optional category filter
+            exclude_id  – optional item id to exclude (for edits)
+
+        Returns a list of possible matches ranked by similarity:
+            1. Exact (case-insensitive) match
+            2. Normalized match (ignoring whitespace & case)
+            3. Substring / contains match
+            4. Token (word) overlap match — catches jumbled names
+               e.g. "capacitor 10uf" vs "10uf capacitor"
+        """
+        import re
+
+        raw_name = request.query_params.get("name", "").strip()
+        category_id = request.query_params.get("category_id")
+        exclude_id = request.query_params.get("exclude_id")
+
+        if not raw_name or len(raw_name) < 2:
+            return Response([])
+
+        # Normalize: lowercase, collapse whitespace
+        normalized = re.sub(r"\s+", " ", raw_name.strip().lower())
+        tokens = set(normalized.split())
+
+        qs = Item.objects.filter(is_deleted=False)
+        if exclude_id:
+            qs = qs.exclude(pk=exclude_id)
+
+        # Annotate a normalized version of the stored name for comparison
+        qs = qs.annotate(
+            lower_name=Lower("name"),
+        )
+
+        # 1. Exact case-insensitive match
+        exact = qs.filter(name__iexact=raw_name)
+        if category_id:
+            exact_cat = exact.filter(category_id=category_id)
+        else:
+            exact_cat = exact.none()
+
+        # 2. Contains match (substring)
+        contains = qs.filter(name__icontains=raw_name).exclude(
+            pk__in=exact.values_list("pk", flat=True)
+        )
+
+        # 3. Token overlap — fetch candidates that contain ANY of the tokens
+        token_q = Q()
+        for token in tokens:
+            if len(token) >= 2:  # skip very short tokens
+                token_q |= Q(name__icontains=token)
+
+        token_candidates = (
+            qs.filter(token_q)
+            .exclude(pk__in=exact.values_list("pk", flat=True))
+            .exclude(pk__in=contains.values_list("pk", flat=True))
+        )
+
+        # Score token candidates by overlap ratio
+        scored = []
+        for item in token_candidates:
+            item_tokens = set(item.name.lower().split())
+            overlap = len(tokens & item_tokens)
+            total = max(len(tokens | item_tokens), 1)
+            ratio = overlap / total
+            if ratio >= 0.4:  # at least 40% word overlap
+                scored.append((item, ratio))
+        scored.sort(key=lambda x: -x[1])
+
+        # Build results
+        results = []
+        seen = set()
+
+        def add(item, match_type):
+            if item.pk not in seen:
+                seen.add(item.pk)
+                results.append({
+                    "id": item.pk,
+                    "name": item.name,
+                    "sku": item.sku,
+                    "category": item.category.name if item.category else None,
+                    "category_id": item.category_id,
+                    "match_type": match_type,
+                })
+
+        for item in exact_cat[:5]:
+            add(item, "exact_same_category")
+        for item in exact.exclude(pk__in=exact_cat.values_list("pk", flat=True))[:5]:
+            add(item, "exact")
+        for item in contains[:5]:
+            add(item, "contains")
+        for item, _ in scored[:5]:
+            add(item, "similar")
+
+        return Response(results)
 
 
 class StallViewSet(viewsets.ModelViewSet):

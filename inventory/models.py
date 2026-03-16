@@ -1,9 +1,22 @@
+import re
 import uuid
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.db import models
+
+
+def normalize_name(name):
+    """
+    Normalize item/category names to Title Case and collapse extra whitespace.
+    e.g. "  capacitor   10UF  " -> "Capacitor 10Uf"
+    """
+    if not name:
+        return name
+    # Strip leading/trailing whitespace, collapse internal whitespace
+    name = re.sub(r"\s+", " ", name.strip())
+    return name.title()
 
 
 # =========== MANAGERS ===========
@@ -45,6 +58,10 @@ class ProductCategory(models.Model):
                 name="unique_active_productcategory_name",
             )
         ]
+
+    def save(self, *args, **kwargs):
+        self.name = normalize_name(self.name)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name
@@ -95,6 +112,9 @@ class Item(models.Model):
         track_history = kwargs.pop("track_history", True)
         is_new = self.pk is None
         old_prices = None
+
+        # Normalize name to Title Case
+        self.name = normalize_name(self.name)
 
         if not self.sku:
             prefix = (
