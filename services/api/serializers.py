@@ -253,49 +253,89 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
 
         with transaction.atomic():
             if getattr(self, '_insufficient_stock', False):
-                # Insufficient stock — create record with pending stock request
-                stall = stock.stall if stock else getattr(self, '_resolved_stall', None)
-                if stock:
-                    validated_data["stall_stock"] = stock
-                validated_data["stock_request_status"] = "pending"
-                aiu = super().create(validated_data)
-
-                # Create the stock request
-                request_user = self.context.get('request')
-                StockRequest.objects.create(
-                    item=validated_data["item"],
-                    stall=stall,
-                    requested_quantity=self._stock_deficit,
-                    source="service_appliance",
-                    service=aiu.appliance.service,
-                    appliance_item=aiu,
-                    notes=f"Auto-created: insufficient stock when adding to service #{aiu.appliance.service_id}",
-                    requested_by=request_user.user if request_user else None,
-                )
-
-                # Notify admin users
                 from django.contrib.auth import get_user_model
-                from notifications.models import Notification
-                User = get_user_model()
-                admins = User.objects.filter(role='admin', is_active=True)
-                Notification.objects.bulk_create([
-                    Notification(
-                        user=admin_user,
-                        type="stock_request_created",
-                        title="Stock Request: Approval Needed",
-                        message=(
-                            f"{request_user.user.get_full_name() if request_user else 'A clerk'} "
-                            f"needs {self._stock_deficit} {validated_data['item'].unit_of_measure} "
-                            f"of '{validated_data['item'].name}' for service #{aiu.appliance.service_id}."
-                        ),
-                        data={
-                            "item_name": validated_data["item"].name,
-                            "quantity": float(self._stock_deficit),
-                            "service_id": aiu.appliance.service_id,
-                        },
+                from notifications.models import Notification, NotificationType
+                request_user = self.context.get('request')
+                requester = request_user.user if request_user else None
+                is_admin = getattr(requester, 'role', None) == 'admin'
+                stall = stock.stall if stock else getattr(self, '_resolved_stall', None)
+
+                if is_admin:
+                    # Admin: auto-add the deficit directly to stock and reserve
+                    stock.quantity += self._stock_deficit
+                    stock.save(update_fields=['quantity', 'updated_at'])
+                    reserved_stock = StockReservationManager.reserve_stock(
+                        item=validated_data["item"],
+                        quantity=qty,
+                        stall_stock=stock
                     )
-                    for admin_user in admins
-                ])
+                    validated_data["stall_stock"] = reserved_stock
+                    aiu = super().create(validated_data)
+
+                    # Notify all admins that stock was auto-added
+                    User = get_user_model()
+                    admins = User.objects.filter(role='admin', is_active=True)
+                    full_name = requester.get_full_name() if requester else 'Admin'
+                    Notification.objects.bulk_create([
+                        Notification(
+                            user=admin_user,
+                            type=NotificationType.STOCK_ADDED_BY_ADMIN,
+                            title="Stock Auto-Added",
+                            message=(
+                                f"{full_name} added {self._stock_deficit} "
+                                f"{validated_data['item'].unit_of_measure} of "
+                                f"'{validated_data['item'].name}' to stock for "
+                                f"service #{aiu.appliance.service_id}."
+                            ),
+                            data={
+                                "item_name": validated_data["item"].name,
+                                "quantity": float(self._stock_deficit),
+                                "service_id": aiu.appliance.service_id,
+                                "added_by": full_name,
+                            },
+                        )
+                        for admin_user in admins
+                    ])
+                else:
+                    # Non-admin: create stock request awaiting admin approval
+                    if stock:
+                        validated_data["stall_stock"] = stock
+                    validated_data["stock_request_status"] = "pending"
+                    aiu = super().create(validated_data)
+
+                    StockRequest.objects.create(
+                        item=validated_data["item"],
+                        stall=stall,
+                        requested_quantity=self._stock_deficit,
+                        source="service_appliance",
+                        service=aiu.appliance.service,
+                        appliance_item=aiu,
+                        notes=f"Auto-created: insufficient stock when adding to service #{aiu.appliance.service_id}",
+                        requested_by=requester,
+                    )
+
+                    User = get_user_model()
+                    admins = User.objects.filter(role='admin', is_active=True)
+                    clerk_name = requester.get_full_name() if requester else 'A clerk'
+                    Notification.objects.bulk_create([
+                        Notification(
+                            user=admin_user,
+                            type=NotificationType.STOCK_REQUEST_CREATED,
+                            title="Stock Request: Approval Needed",
+                            message=(
+                                f"{clerk_name} needs {self._stock_deficit} "
+                                f"{validated_data['item'].unit_of_measure} of "
+                                f"'{validated_data['item'].name}' for service "
+                                f"#{aiu.appliance.service_id}."
+                            ),
+                            data={
+                                "item_name": validated_data["item"].name,
+                                "quantity": float(self._stock_deficit),
+                                "service_id": aiu.appliance.service_id,
+                            },
+                        )
+                        for admin_user in admins
+                    ])
             else:
                 # Sufficient stock — normal reservation flow
                 reserved_stock = StockReservationManager.reserve_stock(
@@ -580,46 +620,89 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
 
         with transaction.atomic():
             if getattr(self, '_insufficient_stock', False):
-                stall = stock.stall if stock else getattr(self, '_resolved_stall', None)
-                if stock:
-                    validated_data["stall_stock"] = stock
-                validated_data["stock_request_status"] = "pending"
-                siu = super().create(validated_data)
-
-                request_user = self.context.get('request')
-                StockRequest.objects.create(
-                    item=validated_data["item"],
-                    stall=stall,
-                    requested_quantity=self._stock_deficit,
-                    source="service",
-                    service=siu.service,
-                    service_item=siu,
-                    notes=f"Auto-created: insufficient stock when adding to service #{siu.service_id}",
-                    requested_by=request_user.user if request_user else None,
-                )
-
                 from django.contrib.auth import get_user_model
-                from notifications.models import Notification
-                User = get_user_model()
-                admins = User.objects.filter(role='admin', is_active=True)
-                Notification.objects.bulk_create([
-                    Notification(
-                        user=admin_user,
-                        type="stock_request_created",
-                        title="Stock Request: Approval Needed",
-                        message=(
-                            f"{request_user.user.get_full_name() if request_user else 'A clerk'} "
-                            f"needs {self._stock_deficit} {validated_data['item'].unit_of_measure} "
-                            f"of '{validated_data['item'].name}' for service #{siu.service_id}."
-                        ),
-                        data={
-                            "item_name": validated_data["item"].name,
-                            "quantity": float(self._stock_deficit),
-                            "service_id": siu.service_id,
-                        },
+                from notifications.models import Notification, NotificationType
+                request_user = self.context.get('request')
+                requester = request_user.user if request_user else None
+                is_admin = getattr(requester, 'role', None) == 'admin'
+                stall = stock.stall if stock else getattr(self, '_resolved_stall', None)
+
+                if is_admin:
+                    # Admin: auto-add the deficit directly to stock and reserve
+                    stock.quantity += self._stock_deficit
+                    stock.save(update_fields=['quantity', 'updated_at'])
+                    reserved_stock = StockReservationManager.reserve_stock(
+                        item=validated_data["item"],
+                        quantity=qty,
+                        stall_stock=stock
                     )
-                    for admin_user in admins
-                ])
+                    validated_data["stall_stock"] = reserved_stock
+                    siu = super().create(validated_data)
+
+                    # Notify all admins that stock was auto-added
+                    User = get_user_model()
+                    admins = User.objects.filter(role='admin', is_active=True)
+                    full_name = requester.get_full_name() if requester else 'Admin'
+                    Notification.objects.bulk_create([
+                        Notification(
+                            user=admin_user,
+                            type=NotificationType.STOCK_ADDED_BY_ADMIN,
+                            title="Stock Auto-Added",
+                            message=(
+                                f"{full_name} added {self._stock_deficit} "
+                                f"{validated_data['item'].unit_of_measure} of "
+                                f"'{validated_data['item'].name}' to stock for "
+                                f"service #{siu.service_id}."
+                            ),
+                            data={
+                                "item_name": validated_data["item"].name,
+                                "quantity": float(self._stock_deficit),
+                                "service_id": siu.service_id,
+                                "added_by": full_name,
+                            },
+                        )
+                        for admin_user in admins
+                    ])
+                else:
+                    # Non-admin: create stock request awaiting admin approval
+                    if stock:
+                        validated_data["stall_stock"] = stock
+                    validated_data["stock_request_status"] = "pending"
+                    siu = super().create(validated_data)
+
+                    StockRequest.objects.create(
+                        item=validated_data["item"],
+                        stall=stall,
+                        requested_quantity=self._stock_deficit,
+                        source="service",
+                        service=siu.service,
+                        service_item=siu,
+                        notes=f"Auto-created: insufficient stock when adding to service #{siu.service_id}",
+                        requested_by=requester,
+                    )
+
+                    User = get_user_model()
+                    admins = User.objects.filter(role='admin', is_active=True)
+                    clerk_name = requester.get_full_name() if requester else 'A clerk'
+                    Notification.objects.bulk_create([
+                        Notification(
+                            user=admin_user,
+                            type=NotificationType.STOCK_REQUEST_CREATED,
+                            title="Stock Request: Approval Needed",
+                            message=(
+                                f"{clerk_name} needs {self._stock_deficit} "
+                                f"{validated_data['item'].unit_of_measure} of "
+                                f"'{validated_data['item'].name}' for service "
+                                f"#{siu.service_id}."
+                            ),
+                            data={
+                                "item_name": validated_data["item"].name,
+                                "quantity": float(self._stock_deficit),
+                                "service_id": siu.service_id,
+                            },
+                        )
+                        for admin_user in admins
+                    ])
             else:
                 reserved_stock = StockReservationManager.reserve_stock(
                     item=validated_data["item"],

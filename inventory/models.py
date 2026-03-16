@@ -499,3 +499,36 @@ class StockRequest(models.Model):
             f"StockRequest #{self.pk} - {self.item.name} "
             f"x{self.requested_quantity} ({self.status})"
         )
+
+
+class CustomItemTemplate(models.Model):
+    """
+    Admin-managed templates for frequently used custom items.
+    Makes it easy to add common custom items without retyping name/price each time.
+    """
+
+    name = models.CharField(max_length=255, help_text="Template item name")
+    default_price = models.DecimalField(
+        max_digits=10, decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.00"))],
+        help_text="Default price per unit",
+    )
+    description = models.TextField(blank=True, default="", help_text="Optional notes or description")
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        "users.CustomUser",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="custom_item_templates",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Custom Item Template"
+        verbose_name_plural = "Custom Item Templates"
+
+    def __str__(self):
+        return f"{self.name} — ₱{self.default_price}"

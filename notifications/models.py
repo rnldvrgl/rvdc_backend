@@ -27,6 +27,7 @@ class NotificationType(models.TextChoices):
     STOCK_REQUEST_CREATED = "stock_request_created", _("Stock Request Created")
     STOCK_REQUEST_APPROVED = "stock_request_approved", _("Stock Request Approved")
     STOCK_REQUEST_DECLINED = "stock_request_declined", _("Stock Request Declined")
+    STOCK_ADDED_BY_ADMIN = "stock_added_by_admin", _("Stock Added by Admin")
 
     # Warranty notifications
     WARRANTY_CLAIM_CREATED = "warranty_claim_created", _("New Warranty Claim")

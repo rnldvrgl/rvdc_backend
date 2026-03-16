@@ -10,6 +10,7 @@ from inventory.api.filters import (
     StockRoomFilter,
 )
 from inventory.api.serializers import (
+    CustomItemTemplateSerializer,
     ItemSerializer,
     ProductCategorySerializer,
     StallSerializer,
@@ -22,6 +23,7 @@ from inventory.api.serializers import (
     StockWriteSerializer,
 )
 from inventory.models import (
+    CustomItemTemplate,
     Item,
     ProductCategory,
     Stall,
@@ -961,3 +963,31 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                 )
 
         return Response({"approved_count": approved_count})
+
+
+class CustomItemTemplateViewSet(viewsets.ModelViewSet):
+    """
+    CRUD for custom item templates. Admin-only create/update/delete.
+    All authenticated users can list/retrieve active templates.
+    """
+
+    serializer_class = CustomItemTemplateSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["name", "description"]
+    ordering_fields = ["name", "default_price", "created_at"]
+
+    def get_queryset(self):
+        qs = CustomItemTemplate.objects.select_related("created_by")
+        # Non-admins only see active templates
+        if getattr(self.request.user, "role", None) != "admin":
+            qs = qs.filter(is_active=True)
+        is_active = self.request.query_params.get("is_active")
+        if is_active is not None:
+            qs = qs.filter(is_active=str(is_active).lower() in ("1", "true", "yes"))
+        return qs
+
+    def get_permissions(self):
+        if self.action in ("create", "update", "partial_update", "destroy"):
+            return [IsAdminUser()]
+        return [IsAuthenticated()]

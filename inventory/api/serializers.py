@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from inventory.models import (
+    CustomItemTemplate,
     Item,
     ItemPriceHistory,
     ProductCategory,
@@ -310,3 +311,33 @@ class StockRequestSerializer(serializers.ModelSerializer):
             return 0
         except Exception:
             return 0
+
+
+class CustomItemTemplateSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CustomItemTemplate
+        fields = [
+            "id",
+            "name",
+            "default_price",
+            "description",
+            "is_active",
+            "created_by",
+            "created_by_name",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_by", "created_by_name", "created_at", "updated_at"]
+
+    def get_created_by_name(self, obj):
+        if obj.created_by:
+            return obj.created_by.get_full_name() or obj.created_by.username
+        return None
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        if request and hasattr(request, "user"):
+            validated_data["created_by"] = request.user
+        return super().create(validated_data)

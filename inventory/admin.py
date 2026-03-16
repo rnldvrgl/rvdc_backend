@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from inventory.models import (
+    CustomItemTemplate,
     Item,
     Stall,
     Stock,
@@ -115,3 +116,12 @@ class StockRequestAdmin(admin.ModelAdmin):
     search_fields = ("item__name", "notes")
     ordering = ("-created_at",)
     raw_id_fields = ("item", "stall", "service", "appliance_item", "service_item", "requested_by", "approved_by")
+
+
+@admin.register(CustomItemTemplate)
+class CustomItemTemplateAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "default_price", "is_active", "created_by", "created_at")
+    list_filter = ("is_active",)
+    search_fields = ("name", "description")
+    ordering = ("name",)
+    raw_id_fields = ("created_by",)
