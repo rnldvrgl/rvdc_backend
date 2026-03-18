@@ -14,9 +14,11 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
 from inventory.models import Item, Stall
+from remittances.models import RemittanceRecord
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -413,20 +415,40 @@ class ExpenseManagerTest(TestCase):
         self.assertEqual(updated.description, "Updated description")
         self.assertEqual(updated.vendor, "New Vendor")
 
-    def test_cannot_update_paid_expense(self):
-        """Test that paid expenses cannot be updated"""
-        from django.core.exceptions import ValidationError
-
+    def test_update_paid_expense_before_remittance_is_allowed(self):
+        """Paid expenses can still be updated until their remittance is marked remitted."""
         expense = ExpenseManager.create_expense(
             stall=self.stall,
             category=self.category,
             expense_date=timezone.now().date(),
             total_price=Decimal('1000.00'),
-            created_by=self.user
+            created_by=self.user,
         )
-
         expense.paid_amount = Decimal('1000.00')
         expense.save()
+
+        updated = ExpenseManager.update_expense(expense, description="New description")
+        self.assertEqual(updated.description, "New description")
+
+    def test_cannot_update_expense_after_remittance_is_remitted(self):
+        """Expenses tied to an already remitted record cannot be updated."""
+        expense_date = timezone.now().date()
+        expense = ExpenseManager.create_expense(
+            stall=self.stall,
+            category=self.category,
+            expense_date=expense_date,
+            total_price=Decimal('1000.00'),
+            created_by=self.user,
+        )
+
+        RemittanceRecord.objects.create(
+            stall=self.stall,
+            remitted_by=self.user,
+            remittance_date=expense_date,
+            is_remitted=True,
+            remitted_amount=Decimal('0.00'),
+            declared_amount=Decimal('0.00'),
+        )
 
         with self.assertRaises(ValidationError):
             ExpenseManager.update_expense(expense, description="New description")
@@ -445,6 +467,46 @@ class ExpenseManagerTest(TestCase):
 
         self.assertTrue(expense.is_deleted)
         self.assertIsNotNone(expense.deleted_at)
+
+    def test_delete_paid_expense_before_remittance_is_allowed(self):
+        """Paid expenses can still be deleted until their remittance is marked remitted."""
+        expense = ExpenseManager.create_expense(
+            stall=self.stall,
+            category=self.category,
+            expense_date=timezone.now().date(),
+            total_price=Decimal('1000.00'),
+            created_by=self.user,
+        )
+        expense.paid_amount = Decimal('1000.00')
+        expense.save()
+
+        ExpenseManager.delete_expense(expense)
+
+        expense.refresh_from_db()
+        self.assertTrue(expense.is_deleted)
+
+    def test_cannot_delete_expense_after_remittance_is_remitted(self):
+        """Expenses tied to an already remitted record cannot be deleted."""
+        expense_date = timezone.now().date()
+        expense = ExpenseManager.create_expense(
+            stall=self.stall,
+            category=self.category,
+            expense_date=expense_date,
+            total_price=Decimal('1000.00'),
+            created_by=self.user,
+        )
+
+        RemittanceRecord.objects.create(
+            stall=self.stall,
+            remitted_by=self.user,
+            remittance_date=expense_date,
+            is_remitted=True,
+            remitted_amount=Decimal('0.00'),
+            declared_amount=Decimal('0.00'),
+        )
+
+        with self.assertRaises(ValidationError):
+            ExpenseManager.delete_expense(expense)
 
     def test_get_expense_summary(self):
         """Test expense summary generation"""
@@ -995,6 +1057,34 @@ class ExpenseAPITest(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['payment_status'], 'paid')
+
+    def test_delete_expense_returns_json_error_for_remitted_record(self):
+        """Delete should return a DRF validation error instead of an HTML 500 page."""
+        expense_date = timezone.now().date()
+        expense = Expense.objects.create(
+            stall=self.stall,
+            category=self.category,
+            expense_date=expense_date,
+            total_price=Decimal('1000.00'),
+            created_by=self.user,
+        )
+
+        RemittanceRecord.objects.create(
+            stall=self.stall,
+            remitted_by=self.user,
+            remittance_date=expense_date,
+            is_remitted=True,
+            remitted_amount=Decimal('0.00'),
+            declared_amount=Decimal('0.00'),
+        )
+
+        response = self.client.delete(f'/api/expenses/{expense.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data,
+            ['Cannot delete an expense that belongs to an already remitted record'],
+        )
 
     def test_get_unpaid_expenses(self):
         """Test getting unpaid expenses"""
