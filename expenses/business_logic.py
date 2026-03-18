@@ -22,6 +22,7 @@ from expenses.models import (
     ExpenseCategory,
     ExpenseItem,
 )
+from remittances.models import RemittanceRecord
 
 
 # ================================
@@ -121,9 +122,15 @@ class ExpenseManager:
         Returns:
             Updated Expense instance
         """
-        # Prevent updates to paid expenses
-        if expense.payment_status == Expense.PaymentStatus.PAID:
-            raise ValidationError("Cannot update a fully paid expense")
+        # Prevent updates when remittance is already remitted
+        if expense.stall and RemittanceRecord.objects.filter(
+            stall=expense.stall,
+            remittance_date=expense.expense_date,
+            is_remitted=True,
+        ).exists():
+            raise ValidationError(
+                "Cannot update an expense that belongs to an already remitted record"
+            )
 
         # Update allowed fields
         allowed_fields = [
@@ -147,8 +154,14 @@ class ExpenseManager:
         Args:
             expense: Expense instance to delete
         """
-        if expense.payment_status == Expense.PaymentStatus.PAID:
-            raise ValidationError("Cannot delete a paid expense")
+        if expense.stall and RemittanceRecord.objects.filter(
+            stall=expense.stall,
+            remittance_date=expense.expense_date,
+            is_remitted=True,
+        ).exists():
+            raise ValidationError(
+                "Cannot delete an expense that belongs to an already remitted record"
+            )
 
         expense.soft_delete()
 

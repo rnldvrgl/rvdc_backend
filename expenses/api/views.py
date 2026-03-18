@@ -10,6 +10,7 @@ Provides endpoints for:
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from expenses.api.filters import ExpenseFilter
@@ -29,6 +30,7 @@ from expenses.business_logic import (
 from expenses.models import Expense, ExpenseCategory
 from rest_framework import filters, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from utils.filters.options import get_stall_options
@@ -164,9 +166,27 @@ class ExpenseViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         """Create expense with user tracking"""
         serializer.save(created_by=self.request.user)
 
+    def perform_update(self, serializer):
+        """Block updates when remittance is already remitted"""
+        instance = serializer.instance
+        if instance.stall:
+            from remittances.models import RemittanceRecord
+            if RemittanceRecord.objects.filter(
+                stall=instance.stall,
+                remittance_date=instance.expense_date,
+                is_remitted=True,
+            ).exists():
+                raise DRFValidationError(
+                    "Cannot update an expense that belongs to an already remitted record"
+                )
+        serializer.save()
+
     def perform_destroy(self, instance):
         """Soft delete expense"""
-        ExpenseManager.delete_expense(instance)
+        try:
+            ExpenseManager.delete_expense(instance)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
 
     @action(detail=False, methods=['get'], url_path='filters')
     def get_filters(self, request):
@@ -244,11 +264,8 @@ class ExpenseViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             response_serializer = ExpenseSerializer(expense)
             return Response(response_serializer.data)
 
-        except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
 
     @action(detail=False, methods=['get'])
     def unpaid(self, request):
@@ -360,11 +377,8 @@ class ExpenseViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             serializer = ExpenseSerializer(expense)
             return Response(serializer.data)
 
-        except Exception as e:
-            return Response(
-                {'error': str(e)},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
 
 
 # ================================
