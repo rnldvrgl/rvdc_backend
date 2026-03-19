@@ -835,6 +835,20 @@ class TechnicianAssignmentPayloadSerializer(serializers.ModelSerializer):
         allow_null=True
     )
 
+    def get_fields(self):
+        fields = super().get_fields()
+        # On create: restrict to active technicians only.
+        # On update (root has an instance): allow inactive so existing assignments can be saved.
+        root = self.root
+        is_update = root.instance is not None if root is not None else False
+        if not is_update:
+            fields['technician'].queryset = CustomUser.objects.filter(
+                role__in=['technician', 'admin', 'manager'],
+                is_deleted=False,
+                is_active=True,
+            )
+        return fields
+
     class Meta:
         model = TechnicianAssignment
         fields = [
