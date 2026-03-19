@@ -823,10 +823,7 @@ class TechnicianAssignmentPayloadSerializer(serializers.ModelSerializer):
     """Serializer for creating/updating technician assignments (write operations)."""
 
     technician = serializers.PrimaryKeyRelatedField(
-        queryset=CustomUser.objects.filter(
-            role__in=['technician', 'admin', 'manager'],
-            is_deleted=False,
-        ),
+        queryset=CustomUser.all_objects.filter(is_deleted=False),
         required=True
     )
     appliance = serializers.PrimaryKeyRelatedField(
@@ -836,7 +833,12 @@ class TechnicianAssignmentPayloadSerializer(serializers.ModelSerializer):
     )
 
     def validate_technician(self, technician):
-        # On create (no root instance): only active technicians may be assigned.
+        # Ensure the user has an appropriate role regardless of create/update.
+        if technician.role not in ('technician', 'admin', 'manager'):
+            raise serializers.ValidationError(
+                f"{technician.get_full_name()} does not have a valid role for assignment."
+            )
+        # On create (root has no instance): only active technicians may be newly assigned.
         # On update: allow inactive so existing assignments with deactivated staff can be preserved.
         root = self.root
         is_update = (root is not self) and (root.instance is not None)
