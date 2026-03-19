@@ -1078,7 +1078,7 @@ class ServiceReopenHandler:
                 'status',
                 'remarks',
                 'updated_at',
-            ])
+            ], skip_validation=True)
 
             # ── Step 7: Reset appliance statuses to in_progress ──
             service.appliances.filter(

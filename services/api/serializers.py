@@ -826,7 +826,6 @@ class TechnicianAssignmentPayloadSerializer(serializers.ModelSerializer):
         queryset=CustomUser.objects.filter(
             role__in=['technician', 'admin', 'manager'],
             is_deleted=False,
-            is_active=True,
         ),
         required=True
     )
@@ -1919,6 +1918,13 @@ class ServiceCompletionSerializer(serializers.Serializer):
             raise ValidationError(
                 f"Cannot complete service: items have not been confirmed for: {names}. "
                 "All appliance items must be reviewed and confirmed before completing."
+            )
+
+        # Block completion if service-level parts are noted but not yet confirmed
+        if service.service_parts_needed_notes and not service.service_items_checked:
+            raise ValidationError(
+                "Cannot complete service: service-level items have not been confirmed. "
+                "Please review and confirm the service items before completing."
             )
 
         return data
