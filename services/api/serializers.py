@@ -823,7 +823,7 @@ class TechnicianAssignmentPayloadSerializer(serializers.ModelSerializer):
     """Serializer for creating/updating technician assignments (write operations)."""
 
     technician = serializers.PrimaryKeyRelatedField(
-        queryset=CustomUser.all_objects.filter(is_deleted=False),
+        queryset=CustomUser.all_objects.all(),
         required=True
     )
     appliance = serializers.PrimaryKeyRelatedField(
@@ -842,7 +842,7 @@ class TechnicianAssignmentPayloadSerializer(serializers.ModelSerializer):
         # On update: allow inactive so existing assignments with deactivated staff can be preserved.
         root = self.root
         is_update = (root is not self) and (root.instance is not None)
-        if not is_update and not technician.is_active:
+        if not is_update and (not technician.is_active or technician.is_deleted):
             raise serializers.ValidationError(
                 f"{technician.get_full_name()} is inactive and cannot be assigned."
             )
