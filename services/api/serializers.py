@@ -830,24 +830,21 @@ class TechnicianAssignmentPayloadSerializer(serializers.ModelSerializer):
         required=True
     )
     appliance = serializers.PrimaryKeyRelatedField(
-        queryset=AirconUnit.objects.all(),
+        queryset=ServiceAppliance.objects.all(),
         required=False,
         allow_null=True
     )
 
-    def get_fields(self):
-        fields = super().get_fields()
-        # On create: restrict to active technicians only.
-        # On update (root has an instance): allow inactive so existing assignments can be saved.
+    def validate_technician(self, technician):
+        # On create (no root instance): only active technicians may be assigned.
+        # On update: allow inactive so existing assignments with deactivated staff can be preserved.
         root = self.root
-        is_update = root.instance is not None if root is not None else False
-        if not is_update:
-            fields['technician'].queryset = CustomUser.objects.filter(
-                role__in=['technician', 'admin', 'manager'],
-                is_deleted=False,
-                is_active=True,
+        is_update = (root is not self) and (root.instance is not None)
+        if not is_update and not technician.is_active:
+            raise serializers.ValidationError(
+                f"{technician.get_full_name()} is inactive and cannot be assigned."
             )
-        return fields
+        return technician
 
     class Meta:
         model = TechnicianAssignment
