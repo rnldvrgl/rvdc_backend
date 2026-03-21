@@ -161,6 +161,7 @@ class ExpenseSerializer(serializers.ModelSerializer):
             'created_by',
             'created_by_detail',
             'source',
+            'is_reimbursement',
             'items',
             'is_overdue',
             'is_deleted',
@@ -243,6 +244,7 @@ class ExpenseListSerializer(serializers.ModelSerializer):
             'payment_method',
             'created_by_name',
             'source',
+            'is_reimbursement',
             'is_deleted',
             'created_at',
         ]

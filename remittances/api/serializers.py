@@ -276,13 +276,24 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         for pt, val in overrides.items():
             total_sales[pt] = val
 
-        # 📉 Get total expenses for the target date
-        total_expenses = (
-            Expense.objects.filter(stall=stall, expense_date=target_date).aggregate(
+        # 📉 Get total expenses for the target date (normal expenses minus reimbursements)
+        normal_expenses = (
+            Expense.objects.filter(
+                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=False
+            ).aggregate(
                 total=Sum("paid_amount")
             )["total"]
             or 0
         )
+        reimbursements = (
+            Expense.objects.filter(
+                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=True
+            ).aggregate(
+                total=Sum("paid_amount")
+            )["total"]
+            or 0
+        )
+        total_expenses = normal_expenses - reimbursements
         if override_expenses is not None:
             total_expenses = override_expenses
 

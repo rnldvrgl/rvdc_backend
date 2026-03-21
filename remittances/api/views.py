@@ -149,13 +149,20 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
 
         sales = {pt: sum_sales(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]}
 
-        # Get expenses
-        total_expenses = (
+        # Get expenses (normal expenses minus reimbursements)
+        normal_expenses = (
             Expense.objects.filter(
-                stall=stall, expense_date=target_date
+                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=False
             ).aggregate(total=Sum("paid_amount"))["total"]
             or Decimal("0")
         )
+        reimbursements = (
+            Expense.objects.filter(
+                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=True
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+        total_expenses = normal_expenses - reimbursements
 
         # COD from previous day (relative to the target date, not today)
         cod_info = RemittanceRecord.get_cod_for_date(stall, target_date)
@@ -243,12 +250,19 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
 
         sales = {pt: sum_sales(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]}
 
-        total_expenses = (
+        normal_expenses = (
             Expense.objects.filter(
-                stall=stall, expense_date=target_date
+                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=False
             ).aggregate(total=Sum("paid_amount"))["total"]
             or Decimal("0")
         )
+        reimbursements = (
+            Expense.objects.filter(
+                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=True
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+        total_expenses = normal_expenses - reimbursements
 
         remittance.total_sales_cash = sales["cash"]
         remittance.total_sales_gcash = sales["gcash"]

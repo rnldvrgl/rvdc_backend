@@ -154,6 +154,12 @@ class Expense(models.Model):
         default="manual",
     )
 
+    # Reimbursement flag (for cross-day delivery returns, refunds, etc.)
+    is_reimbursement = models.BooleanField(
+        default=False,
+        help_text="If true, this is a reimbursement/credit that adds cash back to the stall instead of deducting it.",
+    )
+
     # User tracking
     created_by = models.ForeignKey(
         "users.CustomUser",
