@@ -489,8 +489,9 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             )
 
         try:
-            quantity = float(quantity)
-        except (TypeError, ValueError):
+            from decimal import Decimal, InvalidOperation
+            quantity = Decimal(str(quantity))
+        except (TypeError, ValueError, InvalidOperation):
             return Response(
                 {"detail": "Quantity must be a number."},
                 status=status.HTTP_400_BAD_REQUEST,

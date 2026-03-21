@@ -183,6 +183,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
     employee_name = serializers.SerializerMethodField(read_only=True)
     week_end = serializers.DateField(required=False, allow_null=True)
     total_hours = serializers.SerializerMethodField(read_only=True)
+    holiday_day_hours = serializers.SerializerMethodField(read_only=True)
     additional_earnings_details = serializers.SerializerMethodField(read_only=True)
     deductions = DeductionsField(required=False)
     employee = serializers.PrimaryKeyRelatedField(
@@ -206,6 +207,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "night_diff_hours",
             "approved_ot_hours",
             "total_hours",
+            "holiday_day_hours",
             "allowances",
             "additional_earnings_total",
             "additional_earnings_details",
@@ -233,6 +235,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "night_diff_hours",
             "approved_ot_hours",
             "total_hours",
+            "holiday_day_hours",
             "additional_earnings_total",
             "gross_pay",
             "night_diff_pay",
@@ -290,6 +293,17 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             return float(total)
         except Exception:
             return 0.0
+
+    def get_holiday_day_hours(self, obj: WeeklyPayroll) -> float:
+        """Return standard paid hours per day from PayrollSettings."""
+        try:
+            from payroll.models import PayrollSettings
+            settings = PayrollSettings.objects.first()
+            if settings and settings.holiday_day_hours:
+                return float(settings.holiday_day_hours)
+        except Exception:
+            pass
+        return 8.0
 
     def get_additional_earnings_details(self, obj: WeeklyPayroll) -> list:
         """Return list of additional earnings for this payroll period with their details."""

@@ -832,6 +832,8 @@ class ServiceCancellationHandler:
         """
         from utils.enums import ServiceStatus, ApplianceStatus
         from inventory.models import StockRequest
+        from installations.models import AirconUnit
+        from installations.business_logic import AirconInventoryManager
 
         with transaction.atomic():
             # Re-fetch with row lock to prevent concurrent operations
@@ -886,6 +888,12 @@ class ServiceCancellationHandler:
                 item_used.is_cancelled = True
                 item_used.cancelled_at = now
                 item_used.save(update_fields=['is_cancelled', 'cancelled_at'])
+
+            # ── 1b. Release aircon unit reservations linked to this service ──
+            # Find all AirconUnit(s) where installation_service is this service and reserved_by is not None
+            reserved_units = AirconUnit.objects.filter(installation_service=service, reserved_by__isnull=False)
+            for unit in reserved_units:
+                AirconInventoryManager.release_reservation(unit)
 
             # ── 2. Cancel pending stock requests ──
             pending_cancelled = StockRequest.objects.filter(

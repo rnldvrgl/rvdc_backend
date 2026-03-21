@@ -149,13 +149,20 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
 
         sales = {pt: sum_sales(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]}
 
-        # Get expenses
-        total_expenses = (
+        # Get expenses (normal expenses minus reimbursements)
+        normal_expenses = (
             Expense.objects.filter(
-                stall=stall, expense_date=target_date
+                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=False
             ).aggregate(total=Sum("paid_amount"))["total"]
             or Decimal("0")
         )
+        reimbursements = (
+            Expense.objects.filter(
+                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=True
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+        total_expenses = normal_expenses - reimbursements
 
         # COD from previous day (relative to the target date, not today)
         cod_info = RemittanceRecord.get_cod_for_date(stall, target_date)
@@ -197,6 +204,76 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
         remittance.save()
 
         return Response({"detail": "Remittance marked as remitted."})
+
+    @action(detail=True, methods=["post"], url_path="recalculate")
+    def recalculate(self, request, pk=None):
+        """
+        Recalculate sales totals and expenses for a not-yet-remitted remittance.
+        This picks up any new sales or expenses added after the remittance was created.
+        POST /remittances/{id}/recalculate/
+        """
+        remittance = self.get_object()
+
+        if remittance.is_remitted:
+            return Response(
+                {"detail": "Cannot recalculate a remittance that has already been marked as remitted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        stall = remittance.stall
+        target_date = remittance.remittance_date
+
+        def sum_sales(payment_type: str):
+            total_payments = SalesPayment.objects.filter(
+                transaction__stall=stall,
+                payment_date__date=target_date,
+                transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                transaction__voided=False,
+                transaction__is_deleted=False,
+                payment_type=payment_type,
+            ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+
+            if payment_type == "cash":
+                from sales.models import SalesTransaction
+                total_change = SalesTransaction.objects.filter(
+                    stall=stall,
+                    payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                    voided=False,
+                    is_deleted=False,
+                    payments__payment_date__date=target_date,
+                ).distinct().aggregate(
+                    total=Sum("change_amount")
+                )["total"] or Decimal("0")
+                return total_payments - total_change
+
+            return total_payments
+
+        sales = {pt: sum_sales(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]}
+
+        normal_expenses = (
+            Expense.objects.filter(
+                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=False
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+        reimbursements = (
+            Expense.objects.filter(
+                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=True
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+        total_expenses = normal_expenses - reimbursements
+
+        remittance.total_sales_cash = sales["cash"]
+        remittance.total_sales_gcash = sales["gcash"]
+        remittance.total_sales_credit = sales["credit"]
+        remittance.total_sales_debit = sales["debit"]
+        remittance.total_sales_cheque = sales["cheque"]
+        remittance.total_expenses = total_expenses
+        remittance.save()
+
+        serializer = self.get_serializer(remittance)
+        return Response(serializer.data)
 
     @action(detail=False, methods=["get"], url_path="sub-stall-payable")
     def sub_stall_payable(self, request):

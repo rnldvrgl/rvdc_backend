@@ -168,79 +168,112 @@ class Command(BaseCommand):
         # Process deletion
         if dry_run:
             self.stdout.write(self.style.WARNING('\nMode: DRY RUN (no changes will be made)'))
-            self._show_deletion_plan(payrolls, hard_delete, verbose)
-        elif delete or hard_delete:
-            action = 'HARD DELETE' if hard_delete else 'SOFT DELETE'
-            self.stdout.write(self.style.SUCCESS(f'\nMode: {action}'))
+            def _delete_payrolls(self, payrolls, hard_delete, verbose):
+                """Delete payrolls (soft or hard), and reverse any cash ban movements linked to each payroll."""
+                from users.models import CashAdvanceMovement
+                deleted = 0
+                errors = []
 
-            if hard_delete:
-                self.stdout.write(self.style.ERROR('\n⚠️  WARNING: HARD DELETE CANNOT BE UNDONE!'))
+                self.stdout.write('\n' + '-' * 80)
 
-            confirm_msg = f'\n{action} {total_count} payroll record(s) from before {cutoff_year}? (yes/no): '
-            confirm = input(confirm_msg)
+                if hard_delete:
+                    self.stdout.write('Permanently deleting payrolls...')
 
-            if confirm.lower() != 'yes':
-                self.stdout.write(self.style.WARNING('Aborted.'))
-                return
+                    for payroll in payrolls:
+                        try:
+                            payroll_id = payroll.id
+                            employee_name = payroll.employee.get_full_name()
+                            week = f'{payroll.week_start} to {payroll.week_end}'
 
-            self._delete_payrolls(payrolls, hard_delete, verbose)
-        else:
-            self.stdout.write(self.style.WARNING('\nNo --delete or --hard-delete flag provided.'))
-            self.stdout.write('This was a preview. Add --delete to perform soft delete.')
-            self.stdout.write('Or add --hard-delete to permanently remove records.')
+                            with transaction.atomic():
+                                # Reverse and soft-delete any cash ban movements linked to this payroll
+                                payroll_movements = CashAdvanceMovement.objects.filter(
+                                    reference=f'payroll-{payroll.id}',
+                                    is_deleted=False,
+                                )
+                                for movement in payroll_movements:
+                                    movement.is_deleted = True
+                                    movement.save(update_fields=['is_deleted'])
+                                    # Only reverse balance if movement was actually applied
+                                    if not movement.is_pending:
+                                        if movement.movement_type == CashAdvanceMovement.MovementType.CREDIT:
+                                            movement.employee.cash_ban_balance -= movement.amount
+                                        else:
+                                            movement.employee.cash_ban_balance += movement.amount
+                                        movement.employee.save(update_fields=['cash_ban_balance'])
 
-    def _export_payrolls(self, payrolls, export_path, cutoff_year):
-        """Export payrolls to CSV before deletion."""
-        self.stdout.write(self.style.SUCCESS('\nExporting payrolls...'))
+                                # Delete related deductions first
+                                payroll.deduction_items.all().delete()
 
-        # Create export directory
-        Path(export_path).mkdir(parents=True, exist_ok=True)
+                                # Delete payroll
+                                payroll.delete()
 
-        # Export main payroll data
-        csv_file = f'{export_path}/payrolls_before_{cutoff_year}.csv'
+                                if verbose:
+                                    self.stdout.write(
+                                        self.style.SUCCESS(
+                                            f'  \u2705 Deleted: ID {payroll_id} - {employee_name} - {week}'
+                                        )
+                                    )
 
-        with open(csv_file, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
+                            deleted += 1
 
-            # Header
-            writer.writerow([
-                'ID', 'Employee', 'Week Start', 'Week End', 'Status',
-                'Regular Hours', 'Overtime Hours', 'Hourly Rate',
-                'Gross Pay', 'Total Deductions', 'Net Pay',
-                'Created At', 'Approved At'
-            ])
+                        except Exception as e:
+                            error_msg = f'Payroll {payroll.id}: {str(e)}'
+                            errors.append(error_msg)
+                            self.stdout.write(self.style.ERROR(f'  \u274c ERROR: {e}'))
 
-            # Data
-            for payroll in payrolls:
-                writer.writerow([
-                    payroll.id,
-                    payroll.employee.get_full_name(),
-                    payroll.week_start,
-                    payroll.week_end,
-                    payroll.status,
-                    payroll.regular_hours,
-                    payroll.overtime_hours,
-                    payroll.hourly_rate,
-                    payroll.gross_pay,
-                    payroll.total_deductions,
-                    payroll.net_pay,
-                    payroll.created_at,
-                    payroll.approved_at,
-                ])
+                else:
+                    self.stdout.write('Soft deleting payrolls (marking as deleted)...')
 
-        self.stdout.write(self.style.SUCCESS(f'✅ Exported to: {csv_file}'))
+                    try:
+                        with transaction.atomic():
+                            for payroll in payrolls:
+                                # Reverse and soft-delete any cash ban movements linked to this payroll
+                                payroll_movements = CashAdvanceMovement.objects.filter(
+                                    reference=f'payroll-{payroll.id}',
+                                    is_deleted=False,
+                                )
+                                for movement in payroll_movements:
+                                    movement.is_deleted = True
+                                    movement.save(update_fields=['is_deleted'])
+                                    if not movement.is_pending:
+                                        if movement.movement_type == CashAdvanceMovement.MovementType.CREDIT:
+                                            movement.employee.cash_ban_balance -= movement.amount
+                                        else:
+                                            movement.employee.cash_ban_balance += movement.amount
+                                        movement.employee.save(update_fields=['cash_ban_balance'])
+                                payroll.is_deleted = True
+                                payroll.deleted_at = timezone.now()
+                                payroll.save(update_fields=["is_deleted", "deleted_at"])
+                                deleted += 1
 
-        # Export deductions separately
-        deductions_file = f'{export_path}/deductions_before_{cutoff_year}.csv'
+                                if verbose:
+                                    self.stdout.write(
+                                        f'  {payroll.id}: {payroll.employee.get_full_name()} - '
+                                        f'{payroll.week_start}'
+                                    )
 
-        with open(deductions_file, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
+                        self.stdout.write(self.style.SUCCESS(f'\u2705 Soft deleted {deleted} payroll(s)'))
 
-            writer.writerow([
-                'Payroll ID', 'Employee', 'Week Start', 'Category',
-                'Name', 'Employee Share', 'Employer Share'
-            ])
+                    except Exception as e:
+                        errors.append(str(e))
+                        self.stdout.write(self.style.ERROR(f'\u274c ERROR: {e}'))
 
+                # Summary
+                self.stdout.write(self.style.SUCCESS('\n' + '=' * 80))
+                self.stdout.write(self.style.SUCCESS('DELETION SUMMARY'))
+                self.stdout.write(self.style.SUCCESS('=' * 80))
+                self.stdout.write(f'Total Deleted: {deleted} \u2705')
+                self.stdout.write(self.style.ERROR(f'Errors: {len(errors)} \u274c'))
+
+                if errors:
+                    self.stdout.write(self.style.ERROR('\nErrors:'))
+                    for error in errors:
+                        self.stdout.write(self.style.ERROR(f'  - {error}'))
+
+                action = 'permanently deleted' if hard_delete else 'soft deleted'
+                self.stdout.write(self.style.SUCCESS(f'\n\u2705 Successfully {action} {deleted} payroll record(s).'))
+                self.stdout.write(self.style.SUCCESS('=' * 80 + '\n'))
             for payroll in payrolls:
                 for deduction in payroll.deduction_items.all():
                     writer.writerow([
