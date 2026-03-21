@@ -480,7 +480,6 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             )
 
         quantity = request.data.get("quantity")
-        reason = request.data.get("reason", "")
 
         if quantity is None:
             return Response(
@@ -519,7 +518,6 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             "quantity_removed": float(quantity),
             "old_quantity": float(old_quantity),
             "new_quantity": float(stock.quantity),
-            "reason": reason,
         })
 
     @action(detail=True, methods=["get", "post"], permission_classes=[IsAdminUser], url_path="audit")
