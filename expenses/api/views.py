@@ -19,6 +19,7 @@ from expenses.api.serializers import (
     ExpenseCategorySerializer,
     ExpenseListSerializer,
     ExpensePaymentSerializer,
+    ExpenseReimbursementSerializer,
     ExpenseSerializer,
 )
 from expenses.business_logic import (
@@ -221,6 +222,14 @@ class ExpenseViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                     {'label': 'Service', 'value': 'service'},
                 ]
             },
+            'reimbursement_status': {
+                'options': lambda: [
+                    {'label': 'Not Applicable', 'value': 'not_applicable'},
+                    {'label': 'Pending', 'value': 'pending'},
+                    {'label': 'Partially Reimbursed', 'value': 'partial'},
+                    {'label': 'Fully Reimbursed', 'value': 'reimbursed'},
+                ]
+            },
         }
 
         ordering_config = [
@@ -379,6 +388,52 @@ class ExpenseViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
+
+    @action(detail=True, methods=['post'], url_path='record-reimbursement')
+    def record_reimbursement(self, request, pk=None):
+        """
+        Record a reimbursement received for an expense.
+
+        Body:
+        - amount: Reimbursement amount (required)
+        - reimbursement_method: How the reimbursement was received (optional, default: 'cash')
+        - reimbursement_date: When the reimbursement was received (optional, default: now)
+        - notes: Reimbursement notes (optional)
+        """
+        expense = self.get_object()
+        serializer = ExpenseReimbursementSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            expense.record_reimbursement(
+                amount=Decimal(str(serializer.validated_data['amount'])),
+                method=serializer.validated_data.get('reimbursement_method', 'cash'),
+                reimbursement_date=serializer.validated_data.get('reimbursement_date'),
+                notes=serializer.validated_data.get('notes', '')
+            )
+
+            response_serializer = ExpenseSerializer(expense)
+            return Response(response_serializer.data)
+
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+
+    @action(detail=False, methods=['get'])
+    def reimbursable(self, request):
+        """
+        Get expenses that are pending reimbursement.
+
+        Returns expenses marked as reimbursable that haven't been fully reimbursed.
+        """
+        queryset = self.get_queryset().filter(
+            is_reimbursable=True,
+            reimbursement_status__in=[
+                Expense.ReimbursementStatus.PENDING,
+                Expense.ReimbursementStatus.PARTIAL,
+            ]
+        )
+        serializer = ExpenseListSerializer(queryset, many=True)
+        return Response(serializer.data)
 
 
 # ================================

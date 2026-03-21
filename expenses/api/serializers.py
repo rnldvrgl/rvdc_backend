@@ -135,9 +135,11 @@ class ExpenseSerializer(serializers.ModelSerializer):
     # Computed fields
     balance_due = serializers.SerializerMethodField()
     is_overdue = serializers.SerializerMethodField()
+    reimbursement_balance = serializers.SerializerMethodField()
 
     # Display fields
     payment_status_display = serializers.CharField(source='get_payment_status_display', read_only=True)
+    reimbursement_status_display = serializers.CharField(source='get_reimbursement_status_display', read_only=True)
 
     class Meta:
         model = Expense
@@ -158,6 +160,14 @@ class ExpenseSerializer(serializers.ModelSerializer):
             'payment_status_display',
             'paid_at',
             'payment_method',
+            'is_reimbursable',
+            'reimbursement_status',
+            'reimbursement_status_display',
+            'reimbursed_amount',
+            'reimbursement_balance',
+            'reimbursed_at',
+            'reimbursement_method',
+            'reimbursement_notes',
             'created_by',
             'created_by_detail',
             'source',
@@ -170,6 +180,7 @@ class ExpenseSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'created_by',
             'payment_status',
+            'reimbursement_status',
             'is_deleted',
             'created_at',
             'updated_at',
@@ -190,6 +201,9 @@ class ExpenseSerializer(serializers.ModelSerializer):
 
     def get_is_overdue(self, obj):
         return obj.is_overdue
+
+    def get_reimbursement_balance(self, obj):
+        return float(obj.reimbursement_balance)
 
     def validate(self, attrs):
         # Validate paid_amount doesn't exceed total_price
@@ -221,6 +235,7 @@ class ExpenseListSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
     balance_due = serializers.SerializerMethodField()
     payment_status_display = serializers.CharField(source='get_payment_status_display', read_only=True)
+    reimbursement_status_display = serializers.CharField(source='get_reimbursement_status_display', read_only=True)
 
     class Meta:
         model = Expense
@@ -241,6 +256,10 @@ class ExpenseListSerializer(serializers.ModelSerializer):
             'payment_status',
             'payment_status_display',
             'payment_method',
+            'is_reimbursable',
+            'reimbursement_status',
+            'reimbursement_status_display',
+            'reimbursed_amount',
             'created_by_name',
             'source',
             'is_deleted',
@@ -274,4 +293,17 @@ class ExpensePaymentSerializer(serializers.Serializer):
     def validate_amount(self, value):
         if value <= 0:
             raise serializers.ValidationError("Payment amount must be positive")
+        return value
+
+
+class ExpenseReimbursementSerializer(serializers.Serializer):
+    """Serializer for recording expense reimbursements"""
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01'))
+    reimbursement_method = serializers.CharField(required=False, default='cash')
+    reimbursement_date = serializers.DateTimeField(required=False, allow_null=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Reimbursement amount must be positive")
         return value

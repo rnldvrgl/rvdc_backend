@@ -85,6 +85,13 @@ class Expense(models.Model):
         PARTIAL = 'partial', _('Partially Paid')
         PAID = 'paid', _('Fully Paid')
 
+    # Reimbursement status choices
+    class ReimbursementStatus(models.TextChoices):
+        NOT_APPLICABLE = 'not_applicable', _('Not Applicable')
+        PENDING = 'pending', _('Pending Reimbursement')
+        PARTIAL = 'partial', _('Partially Reimbursed')
+        REIMBURSED = 'reimbursed', _('Fully Reimbursed')
+
     # Basic information
     stall = models.ForeignKey(
         "inventory.Stall",
@@ -143,6 +150,30 @@ class Expense(models.Model):
         default='cash',
         blank=True,
         help_text="Cash, Bank Transfer, Cheque, etc."
+    )
+
+    # Reimbursement tracking
+    is_reimbursable = models.BooleanField(
+        default=False,
+        help_text="Whether this expense is expected to be reimbursed"
+    )
+    reimbursement_status = models.CharField(
+        max_length=20,
+        choices=ReimbursementStatus.choices,
+        default=ReimbursementStatus.NOT_APPLICABLE,
+    )
+    reimbursed_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0,
+        validators=[MinValueValidator(Decimal("0"))],
+    )
+    reimbursed_at = models.DateTimeField(null=True, blank=True)
+    reimbursement_method = models.CharField(
+        max_length=50, blank=True,
+        help_text="How the reimbursement was received"
+    )
+    reimbursement_notes = models.TextField(
+        blank=True,
+        help_text="Notes about the reimbursement"
     )
 
 
@@ -205,6 +236,17 @@ class Expense(models.Model):
         else:
             self.payment_status = self.PaymentStatus.PARTIAL
 
+        # Auto-update reimbursement status
+        if self.is_reimbursable:
+            if self.reimbursed_amount == 0:
+                self.reimbursement_status = self.ReimbursementStatus.PENDING
+            elif self.reimbursed_amount >= self.total_price:
+                self.reimbursement_status = self.ReimbursementStatus.REIMBURSED
+            else:
+                self.reimbursement_status = self.ReimbursementStatus.PARTIAL
+        else:
+            self.reimbursement_status = self.ReimbursementStatus.NOT_APPLICABLE
+
         super().save(*args, **kwargs)
 
     @property
@@ -235,6 +277,36 @@ class Expense(models.Model):
             self.paid_at = payment_date
         elif not self.paid_at:
             self.paid_at = timezone.now()
+
+        self.save()
+
+    @property
+    def reimbursement_balance(self):
+        """Amount still awaiting reimbursement"""
+        if not self.is_reimbursable:
+            return Decimal('0.00')
+        return max(self.total_price - self.reimbursed_amount, Decimal('0.00'))
+
+    def record_reimbursement(self, amount, method='', reimbursement_date=None, notes=''):
+        """Record a reimbursement received for this expense"""
+        if not self.is_reimbursable:
+            raise ValidationError("This expense is not marked as reimbursable")
+
+        if amount <= 0:
+            raise ValidationError("Reimbursement amount must be positive")
+
+        if self.reimbursed_amount + amount > self.total_price:
+            raise ValidationError("Reimbursement would exceed total expense amount")
+
+        self.reimbursed_amount += amount
+        self.reimbursement_method = method or self.reimbursement_method
+        if notes:
+            self.reimbursement_notes = notes
+
+        if reimbursement_date:
+            self.reimbursed_at = reimbursement_date
+        else:
+            self.reimbursed_at = timezone.now()
 
         self.save()
 

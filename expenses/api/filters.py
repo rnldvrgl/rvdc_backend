@@ -52,6 +52,10 @@ class ExpenseFilter(filters.FilterSet):
     # Source filtering
     source = filters.ChoiceFilter(choices=[('manual', 'Manual'), ('service', 'Service')])
 
+    # Reimbursement filtering
+    is_reimbursable = filters.BooleanFilter()
+    reimbursement_status = filters.ChoiceFilter(choices=Expense.ReimbursementStatus.choices)
+
     # Overdue filter
     is_overdue = filters.BooleanFilter(method='filter_is_overdue')
 
@@ -63,6 +67,8 @@ class ExpenseFilter(filters.FilterSet):
             'payment_status',
             'source',
             'expense_date',
+            'is_reimbursable',
+            'reimbursement_status',
         ]
 
     def filter_is_paid(self, queryset, name, value):
