@@ -66,17 +66,27 @@ def send_web_push(user_id: int, title: str, body: str, url: str = "/", tag: str 
                 },
                 data=payload,
                 vapid_private_key=vapid_private,
-                vapid_claims=vapid_claims,
+                vapid_claims={**vapid_claims},
+                content_encoding="aes128gcm",
             )
+            logger.info("[WebPush] Sent OK to sub %s (endpoint: %s…)", sub.id, sub.endpoint[:60])
         except WebPushException as e:
-            status_code = getattr(e, "response", None)
-            status_code = getattr(status_code, "status_code", None) if status_code else None
-            if status_code in (404, 410):
+            resp = getattr(e, "response", None)
+            status_code = getattr(resp, "status_code", None) if resp else None
+            resp_body = ""
+            if resp is not None:
+                try:
+                    resp_body = resp.text
+                except Exception:
+                    resp_body = str(resp.content) if hasattr(resp, "content") else ""
+            logger.warning(
+                "[WebPush] Failed for sub %s: status=%s body=%s err=%s",
+                sub.id, status_code, resp_body, e,
+            )
+            if status_code in (400, 404, 410):
                 stale_ids.append(sub.id)
-            else:
-                logger.warning("WebPush failed for sub %s: %s", sub.id, e)
         except Exception:
-            logger.exception("Unexpected error sending web push to sub %s", sub.id)
+            logger.exception("[WebPush] Unexpected error sending to sub %s", sub.id)
 
     if stale_ids:
         PushSubscription.objects.filter(id__in=stale_ids).delete()
