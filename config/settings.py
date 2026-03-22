@@ -234,6 +234,14 @@ CHANNEL_LAYERS = {
     }
 }
 
+# ------------------------------------------------------------------------------
+# WEB PUSH (VAPID)
+# ------------------------------------------------------------------------------
+
+VAPID_PUBLIC_KEY = config("VAPID_PUBLIC_KEY", default="")
+VAPID_PRIVATE_KEY = config("VAPID_PRIVATE_KEY", default="")
+VAPID_ADMIN_EMAIL = config("VAPID_ADMIN_EMAIL", default="admin@example.com")
+
 # UNCOMMENT THE FOLLOWING LINE IF USING A REVERSE PROXY WITH HTTPS
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 

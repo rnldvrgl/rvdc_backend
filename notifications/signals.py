@@ -66,6 +66,21 @@ def push_notification_via_websocket(sender, instance, created, **kwargs):
                 },
             },
         )
+
+        # Also send Web Push (for mobile/background tabs)
+        try:
+            from notifications.push import send_web_push
+
+            send_web_push(
+                user_id=instance.user.id,
+                title=instance.title,
+                body=instance.message,
+                url="/notifications",
+                tag=f"notif-{instance.id}",
+            )
+        except Exception:
+            logger.exception("Failed to send web push for notification %s", instance.id)
+
     except Exception:
         logger.exception("Failed to push notification via WebSocket")
 
