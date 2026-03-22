@@ -1,6 +1,9 @@
 import json
+import logging
 
 from channels.generic.websocket import AsyncWebsocketConsumer
+
+logger = logging.getLogger(__name__)
 
 
 class AttendanceConsumer(AsyncWebsocketConsumer):
@@ -15,33 +18,46 @@ class AttendanceConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         user = self.scope.get("user")
         if not user or not user.is_authenticated:
-            await self.close()
+            await self.accept()
+            await self.close(code=4001)
             return
 
         # Personal group – every user gets their own attendance events
         self.personal_group = f"attendance_user_{user.id}"
-        await self.channel_layer.group_add(
-            self.personal_group, self.channel_name
-        )
-
-        # Shared management group – admin/manager see all attendance events
-        if user.role in ("admin", "manager"):
-            self.management_group = "attendance_updates"
+        try:
             await self.channel_layer.group_add(
-                self.management_group, self.channel_name
+                self.personal_group, self.channel_name
             )
+
+            # Shared management group – admin/manager see all attendance events
+            if user.role in ("admin", "manager"):
+                self.management_group = "attendance_updates"
+                await self.channel_layer.group_add(
+                    self.management_group, self.channel_name
+                )
+        except Exception:
+            logger.exception("Failed to join attendance groups")
+            await self.accept()
+            await self.close(code=4002)
+            return
 
         await self.accept()
 
     async def disconnect(self, close_code):
         if hasattr(self, "personal_group"):
-            await self.channel_layer.group_discard(
-                self.personal_group, self.channel_name
-            )
+            try:
+                await self.channel_layer.group_discard(
+                    self.personal_group, self.channel_name
+                )
+            except Exception:
+                logger.exception("Failed to leave personal group")
         if hasattr(self, "management_group"):
-            await self.channel_layer.group_discard(
-                self.management_group, self.channel_name
-            )
+            try:
+                await self.channel_layer.group_discard(
+                    self.management_group, self.channel_name
+                )
+            except Exception:
+                logger.exception("Failed to leave management group")
 
     async def attendance_event(self, event):
         """Forward attendance events to the WebSocket client."""

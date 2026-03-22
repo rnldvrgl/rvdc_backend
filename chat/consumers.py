@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 
 from channels.db import database_sync_to_async
@@ -6,6 +7,8 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from django.conf import settings
 
 import redis.asyncio as aioredis
+
+logger = logging.getLogger(__name__)
 
 REDIS_URL = getattr(settings, "CHANNEL_LAYERS", {}).get(
     "default", {}
@@ -54,19 +57,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.user = self.scope.get("user")
         if not self.user or not self.user.is_authenticated:
-            await self.close()
+            await self.accept()
+            await self.close(code=4001)
             return
 
         self.user_id = self.user.id
         self.user_group = f"chat_user_{self.user_id}"
-        self._redis = aioredis.from_url(REDIS_URL, decode_responses=True)
 
-        # Join personal group for incoming messages
-        await self.channel_layer.group_add(self.user_group, self.channel_name)
-
-        # Mark online
-        await self._redis.sadd(_presence_key(), self.user_id)
-        await self._redis.delete(_last_seen_key(self.user_id))
+        try:
+            self._redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+            # Join personal group for incoming messages
+            await self.channel_layer.group_add(self.user_group, self.channel_name)
+            # Mark online
+            await self._redis.sadd(_presence_key(), self.user_id)
+            await self._redis.delete(_last_seen_key(self.user_id))
+        except Exception:
+            logger.exception("Chat connect failed for user %s", self.user_id)
+            await self.accept()
+            await self.close(code=4002)
+            return
 
         await self.accept()
 
@@ -75,20 +84,30 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         if hasattr(self, "user_group"):
-            await self.channel_layer.group_discard(
-                self.user_group, self.channel_name
-            )
+            try:
+                await self.channel_layer.group_discard(
+                    self.user_group, self.channel_name
+                )
+            except Exception:
+                logger.exception("Failed to leave chat group")
 
         if hasattr(self, "_redis"):
-            await self._redis.srem(_presence_key(), self.user_id)
-            # Store last seen timestamp (7-day expiry)
-            await self._redis.set(
-                _last_seen_key(self.user_id),
-                str(time.time()),
-                ex=60 * 60 * 24 * 7,
-            )
-            await self._broadcast_presence()
-            await self._redis.aclose()
+            try:
+                await self._redis.srem(_presence_key(), self.user_id)
+                # Store last seen timestamp (7-day expiry)
+                await self._redis.set(
+                    _last_seen_key(self.user_id),
+                    str(time.time()),
+                    ex=60 * 60 * 24 * 7,
+                )
+                await self._broadcast_presence()
+            except Exception:
+                logger.exception("Failed to update presence on disconnect")
+            finally:
+                try:
+                    await self._redis.aclose()
+                except Exception:
+                    pass
 
     # ── Inbound from client ──────────────────────────────────────────────
 
