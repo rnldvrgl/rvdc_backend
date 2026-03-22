@@ -5,28 +5,16 @@ services:
             - .env.production
         command:
             [
-                "gunicorn",
-                "config.wsgi:application",
-                "--bind",
-                "0.0.0.0:8000",
-                "--workers",
-                "2",
-                "--threads",
-                "2",
-                "--timeout",
-                "120",
-                "--graceful-timeout",
-                "30",
-                "--max-requests",
-                "1000",
-                "--max-requests-jitter",
-                "50",
-                "--access-logfile",
+                "daphne",
+                "-b",
+                "0.0.0.0",
+                "-p",
+                "8000",
+                "--access-log",
                 "-",
-                "--error-logfile",
-                "-",
-                "--log-level",
-                "info",
+                "--verbosity",
+                "1",
+                "config.asgi:application",
             ]
         volumes:
             - /srv/rvdc_backend/staticfiles:/usr/src/app/staticfiles
@@ -36,11 +24,26 @@ services:
         depends_on:
             db:
                 condition: service_healthy
+            redis:
+                condition: service_healthy
         restart: unless-stopped
         deploy:
             resources:
                 limits:
                     memory: 512M
+
+    redis:
+        image: redis:7-alpine
+        restart: unless-stopped
+        healthcheck:
+            test: ["CMD", "redis-cli", "ping"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        deploy:
+            resources:
+                limits:
+                    memory: 64M
 
     db:
         image: postgres:16

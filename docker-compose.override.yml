@@ -13,9 +13,15 @@ services:
         depends_on:
             db:
                 condition: service_started
+            redis:
+                condition: service_started
 
     db:
         env_file:
             - .env.local
         ports:
             - "5432:5432"
+
+    redis:
+        ports:
+            - "6379:6379"

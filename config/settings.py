@@ -24,6 +24,7 @@ CSRF_TRUSTED_ORIGINS = config("CSRF_TRUSTED_ORIGINS", default="").split(",")
 # ------------------------------------------------------------------------------
 
 INSTALLED_APPS = [
+    "daphne",
     # Core Django
     "django.contrib.admin",
     "django.contrib.auth",
@@ -36,6 +37,7 @@ INSTALLED_APPS = [
     "django_filters",
     "corsheaders",
     "rest_framework_simplejwt.token_blacklist",
+    "channels",
     # Local apps
     "authentication",
     "users",
@@ -87,6 +89,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "config.wsgi.application"
+ASGI_APPLICATION = "config.asgi.application"
 
 # ------------------------------------------------------------------------------
 # DATABASE
@@ -215,6 +218,19 @@ CACHES = {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
         "LOCATION": "rvdc-cache",
         "TIMEOUT": 300,
+    }
+}
+
+# ------------------------------------------------------------------------------
+# CHANNEL LAYERS (WebSocket support)
+# ------------------------------------------------------------------------------
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [config("REDIS_URL", default="redis://redis:6379/0")],
+        },
     }
 }
 

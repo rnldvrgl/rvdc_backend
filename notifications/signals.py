@@ -12,6 +12,8 @@ Signals are triggered for:
 - Sales events (created, voided)
 """
 
+import logging
+
 from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 
@@ -21,6 +23,51 @@ from notifications.business_logic import (
     ServiceNotifications,
     WarrantyNotifications,
 )
+
+logger = logging.getLogger(__name__)
+
+
+# ----------------------------------
+# WebSocket push on notification creation
+# ----------------------------------
+@receiver(post_save, sender="notifications.Notification")
+def push_notification_via_websocket(sender, instance, created, **kwargs):
+    """Send real-time notification to the user's WebSocket channel."""
+    if not created:
+        return
+
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer is None:
+            return
+
+        from notifications.models import Notification
+
+        unread_count = Notification.objects.filter(
+            user=instance.user, is_read=False
+        ).count()
+
+        async_to_sync(channel_layer.group_send)(
+            f"notifications_{instance.user.id}",
+            {
+                "type": "send_notification",
+                "data": {
+                    "event": "new_notification",
+                    "notification": {
+                        "id": instance.id,
+                        "type": instance.type,
+                        "title": instance.title,
+                        "message": instance.message,
+                    },
+                    "unread_count": unread_count,
+                },
+            },
+        )
+    except Exception:
+        logger.exception("Failed to push notification via WebSocket")
 
 
 # ----------------------------------
