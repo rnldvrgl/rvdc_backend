@@ -28,6 +28,7 @@ def send_web_push(user_id: int, title: str, body: str, url: str = "/", tag: str 
     vapid_email = getattr(settings, "VAPID_ADMIN_EMAIL", "")
 
     if not vapid_private or not vapid_public:
+        logger.warning("[WebPush] VAPID keys not configured – skipping")
         return
 
     try:
@@ -35,12 +36,16 @@ def send_web_push(user_id: int, title: str, body: str, url: str = "/", tag: str 
 
         from notifications.models import PushSubscription
     except ImportError:
-        logger.warning("pywebpush not installed – skipping web push")
+        logger.warning("[WebPush] pywebpush not installed – skipping")
         return
 
     subscriptions = PushSubscription.objects.filter(user_id=user_id)
-    if not subscriptions.exists():
+    count = subscriptions.count()
+    if count == 0:
+        logger.info("[WebPush] No subscriptions for user %s – skipping", user_id)
         return
+
+    logger.info("[WebPush] Sending to %d subscription(s) for user %s: %s", count, user_id, title)
 
     payload = json.dumps({
         "title": title,
