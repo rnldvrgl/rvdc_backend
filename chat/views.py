@@ -60,6 +60,15 @@ class ChatUsersView(APIView):
             if last_msgs:
                 last_message = json.loads(last_msgs[0])
 
+            # Build full profile image URL
+            profile_img = u["profile_image"]
+            if profile_img:
+                profile_img = request.build_absolute_uri(
+                    f"{settings.MEDIA_URL}{profile_img}"
+                )
+            else:
+                profile_img = ""
+
             result.append(
                 {
                     "id": u["id"],
@@ -67,7 +76,7 @@ class ChatUsersView(APIView):
                     "last_name": u["last_name"],
                     "name": f"{u['first_name']} {u['last_name']}".strip(),
                     "role": u["role"],
-                    "profile_image": u["profile_image"],
+                    "profile_image": profile_img,
                     "is_online": u["id"] in online_set,
                     "unread_count": unread,
                     "last_message": last_message,
