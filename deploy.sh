@@ -252,6 +252,24 @@ echo ""
 # =============================================================================
 step "Step 10: ${ICON_CHECK} Running health checks..."
 
+# Update nginx config if changed
+NGINX_SRC="${PROJECT_DIR}/nginx_config.conf"
+NGINX_DEST="/etc/nginx/sites-available/rvdc_backend"
+if [ -f "${NGINX_SRC}" ]; then
+    if ! diff -q "${NGINX_SRC}" "${NGINX_DEST}" > /dev/null 2>&1; then
+        log "Nginx config changed, updating..."
+        cp "${NGINX_SRC}" "${NGINX_DEST}"
+        if nginx -t > /dev/null 2>&1; then
+            systemctl reload nginx
+            success "Nginx config updated and reloaded"
+        else
+            warning "Nginx config test failed! Check syntax manually."
+        fi
+    else
+        log "Nginx config unchanged"
+    fi
+fi
+
 echo ""
 log "Checking API health..."
 if ${COMPOSE} exec -T api python manage.py check --deploy > /dev/null 2>&1; then
