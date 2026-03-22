@@ -14,6 +14,9 @@ REDIS_URL = getattr(settings, "CHANNEL_LAYERS", {}).get(
 # Message TTL: 24 hours
 MESSAGE_TTL = 60 * 60 * 24
 
+# Maximum messages to keep per room
+MAX_MESSAGES = 200
+
 
 def _room_key(user_a: int, user_b: int) -> str:
     """Deterministic room key for a 1-on-1 conversation."""
@@ -23,6 +26,10 @@ def _room_key(user_a: int, user_b: int) -> str:
 
 def _presence_key() -> str:
     return "chat:online"
+
+
+def _last_seen_key(user_id: int) -> str:
+    return f"chat:last_seen:{user_id}"
 
 
 class ChatConsumer(AsyncWebsocketConsumer):
@@ -59,6 +66,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Mark online
         await self._redis.sadd(_presence_key(), self.user_id)
+        await self._redis.delete(_last_seen_key(self.user_id))
 
         await self.accept()
 
@@ -73,6 +81,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         if hasattr(self, "_redis"):
             await self._redis.srem(_presence_key(), self.user_id)
+            # Store last seen timestamp (7-day expiry)
+            await self._redis.set(
+                _last_seen_key(self.user_id),
+                str(time.time()),
+                ex=60 * 60 * 24 * 7,
+            )
             await self._broadcast_presence()
             await self._redis.aclose()
 
@@ -126,6 +140,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # Store in Redis sorted set (score = timestamp)
         await self._redis.zadd(room, {json.dumps(message): ts})
         await self._redis.expire(room, MESSAGE_TTL)
+
+        # Trim to keep only the most recent messages
+        await self._redis.zremrangebyrank(room, 0, -(MAX_MESSAGES + 1))
 
         # Store unread counter
         unread_key = f"chat:unread:{to_id}:{self.user_id}"

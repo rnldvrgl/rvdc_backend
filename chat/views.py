@@ -60,6 +60,14 @@ class ChatUsersView(APIView):
             if last_msgs:
                 last_message = json.loads(last_msgs[0])
 
+            # Get last seen timestamp (None if currently online)
+            is_online = u["id"] in online_set
+            last_seen = None
+            if not is_online:
+                last_seen_val = r.get(f"chat:last_seen:{u['id']}")
+                if last_seen_val:
+                    last_seen = float(last_seen_val)
+
             # Build full profile image URL
             profile_img = u["profile_image"]
             if profile_img:
@@ -77,9 +85,10 @@ class ChatUsersView(APIView):
                     "name": f"{u['first_name']} {u['last_name']}".strip(),
                     "role": u["role"],
                     "profile_image": profile_img,
-                    "is_online": u["id"] in online_set,
+                    "is_online": is_online,
                     "unread_count": unread,
                     "last_message": last_message,
+                    "last_seen": last_seen,
                 }
             )
 
