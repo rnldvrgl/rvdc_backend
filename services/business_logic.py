@@ -930,7 +930,7 @@ class ServiceCancellationHandler:
             ])
 
             # ── 6. Reset appliance statuses ──
-            service.appliances.all().update(status=ApplianceStatus.RECEIVED)
+            service.appliances.all().update(status=ApplianceStatus.PENDING)
 
             # ── 7. Calculate refund due ──
             refund_due = float(service.total_paid)
@@ -1088,10 +1088,10 @@ class ServiceReopenHandler:
                 'updated_at',
             ], skip_validation=True)
 
-            # ── Step 7: Reset appliance statuses to in_progress ──
+            # ── Step 7: Reset appliance statuses to pending ──
             service.appliances.filter(
                 status=ApplianceStatus.COMPLETED
-            ).update(status=ApplianceStatus.IN_REPAIR)
+            ).update(status=ApplianceStatus.PENDING)
 
             # ── Step 8: Re-reserve stock for existing parts ──
             re_reserved = []

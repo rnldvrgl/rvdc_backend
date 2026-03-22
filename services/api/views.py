@@ -132,11 +132,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         new_notes = service.service_parts_needed_notes or ""
 
         if old_status != new_status and new_status == "in_progress":
-            from utils.enums import ApplianceStatus
-            # Move appliances that are still in early stages to in_repair
-            service.appliances.filter(
-                status__in=[ApplianceStatus.RECEIVED, ApplianceStatus.DIAGNOSED]
-            ).update(status=ApplianceStatus.IN_REPAIR)
+            pass  # Appliance statuses are simplified (pending/completed/cancelled), no cascade needed
 
         # Auto-reset service_items_checked if service_parts_needed_notes changed
         if old_notes != new_notes and service.service_items_checked:
