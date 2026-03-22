@@ -1,4 +1,5 @@
 from datetime import date
+import logging
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -8,6 +9,7 @@ from django.dispatch import receiver
 from .models import LeaveBalance, OvertimeRequest
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 @receiver(post_save, sender=User)
@@ -172,17 +174,133 @@ def update_draft_payrolls_on_overtime_approval(sender, instance, created, **kwar
                 updated_count += 1
             except Exception as e:
                 # Log error but don't fail the approval
-                import logging
-                logger = logging.getLogger(__name__)
                 logger.error(
                     f"Failed to auto-update draft payroll {payroll.id} after overtime approval: {e}"
                 )
 
     # Log successful updates
     if updated_count > 0:
-        import logging
-        logger = logging.getLogger(__name__)
         logger.info(
             f"Auto-updated {updated_count} draft payroll(s) after approving overtime "
             f"request {instance.id} for employee {instance.employee_id}"
         )
+
+
+# ------------------------------------------------------------------
+# WebSocket push helpers
+# ------------------------------------------------------------------
+
+def _push_attendance_event(event_type, employee_id, data):
+    """Push an attendance event to both the management group and the user's personal group."""
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer is None:
+            return
+
+        payload = {
+            "type": "attendance_event",
+            "data": {"event": event_type, **data},
+        }
+
+        send = async_to_sync(channel_layer.group_send)
+
+        # Push to the shared management group (admin/manager dashboards)
+        send("attendance_updates", payload)
+
+        # Push to the individual employee
+        send(f"attendance_user_{employee_id}", payload)
+    except Exception:
+        logger.exception("Failed to push attendance event via WebSocket")
+
+
+# ------------------------------------------------------------------
+# DailyAttendance – clock-in / clock-out / approval / rejection
+# ------------------------------------------------------------------
+@receiver(post_save, sender="attendance.DailyAttendance")
+def push_daily_attendance_update(sender, instance, created, **kwargs):
+    if created:
+        event = "clock_in"
+    elif instance.status == "approved":
+        event = "attendance_approved"
+    elif instance.status == "rejected":
+        event = "attendance_rejected"
+    elif instance.clock_out:
+        event = "clock_out"
+    else:
+        return
+
+    _push_attendance_event(event, instance.employee_id, {
+        "attendance_id": instance.id,
+        "employee_id": instance.employee_id,
+        "date": str(instance.date),
+        "status": instance.status,
+        "attendance_type": instance.attendance_type,
+    })
+
+
+# ------------------------------------------------------------------
+# LeaveRequest – created / approved / rejected / cancelled
+# ------------------------------------------------------------------
+@receiver(post_save, sender="attendance.LeaveRequest")
+def push_leave_request_update(sender, instance, created, **kwargs):
+    if created:
+        event = "leave_request_created"
+    elif instance.status == "approved":
+        event = "leave_request_approved"
+    elif instance.status == "rejected":
+        event = "leave_request_rejected"
+    elif instance.status == "cancelled":
+        event = "leave_request_cancelled"
+    else:
+        return
+
+    _push_attendance_event(event, instance.employee_id, {
+        "leave_request_id": instance.id,
+        "employee_id": instance.employee_id,
+        "leave_type": instance.leave_type,
+        "status": instance.status,
+    })
+
+
+# ------------------------------------------------------------------
+# OvertimeRequest – created / approved
+# ------------------------------------------------------------------
+@receiver(post_save, sender="attendance.OvertimeRequest")
+def push_overtime_request_update(sender, instance, created, **kwargs):
+    if created:
+        event = "overtime_request_created"
+    elif instance.approved:
+        event = "overtime_request_approved"
+    else:
+        return
+
+    _push_attendance_event(event, instance.employee_id, {
+        "overtime_request_id": instance.id,
+        "employee_id": instance.employee_id,
+        "date": str(instance.date),
+    })
+
+
+# ------------------------------------------------------------------
+# WorkRequest – created / approved / declined
+# ------------------------------------------------------------------
+@receiver(post_save, sender="attendance.WorkRequest")
+def push_work_request_update(sender, instance, created, **kwargs):
+    if created:
+        event = "work_request_created"
+    elif instance.status == "approved":
+        event = "work_request_approved"
+    elif instance.status == "declined":
+        event = "work_request_declined"
+    else:
+        return
+
+    _push_attendance_event(event, instance.employee_id, {
+        "work_request_id": instance.id,
+        "employee_id": instance.employee_id,
+        "date": str(instance.date),
+        "status": instance.status,
+    })
