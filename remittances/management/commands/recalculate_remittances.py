@@ -23,6 +23,8 @@ def sum_sales(stall, date_val, payment_type):
             transaction__stall=stall,
             payment_date__date=date_val,
             transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+            transaction__voided=False,
+            transaction__is_deleted=False,
             payment_type=payment_type,
         ).aggregate(total=Sum("amount"))["total"]
         or Decimal("0")
@@ -33,6 +35,8 @@ def sum_sales(stall, date_val, payment_type):
             SalesTransaction.objects.filter(
                 stall=stall,
                 payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                voided=False,
+                is_deleted=False,
                 payments__payment_date__date=date_val,
             )
             .distinct()
@@ -91,7 +95,7 @@ class Command(BaseCommand):
 
             new_expenses = (
                 Expense.objects.filter(
-                    stall=rem.stall, expense_date=target_date
+                    stall=rem.stall, expense_date=target_date, is_deleted=False
                 ).aggregate(total=Sum("paid_amount"))["total"]
                 or Decimal("0")
             )

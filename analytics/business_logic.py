@@ -219,6 +219,8 @@ class PaymentAnalytics:
         sales_payments_qs = SalesPayment.objects.filter(
             payment_date__date__gte=start_date,
             payment_date__date__lte=end_date,
+            transaction__voided=False,
+            transaction__is_deleted=False,
         )
         if stall:
             sales_payments_qs = sales_payments_qs.filter(transaction__stall=stall)
@@ -279,6 +281,8 @@ class PaymentAnalytics:
         sales_qs = SalesPayment.objects.filter(
             payment_date__date__gte=start_date,
             payment_date__date__lte=end_date,
+            transaction__voided=False,
+            transaction__is_deleted=False,
         )
         if stall:
             sales_qs = sales_qs.filter(transaction__stall=stall)

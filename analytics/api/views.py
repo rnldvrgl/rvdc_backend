@@ -397,7 +397,11 @@ class CashFlowView(APIView):
         stall_filter = get_stall_filter(request)
 
         payments = (
-            SalesPayment.objects.filter(payment_date__range=(start_date, end_date))
+            SalesPayment.objects.filter(
+                payment_date__range=(start_date, end_date),
+                transaction__voided=False,
+                transaction__is_deleted=False,
+            )
             .filter(**{"transaction__%s" % k: v for k, v in stall_filter.items()})
             .annotate(day=TruncDay("payment_date"))
             .values("day")
@@ -441,6 +445,7 @@ class TopClientsView(APIView):
         queryset = (
             SalesTransaction.objects.filter(
                 is_deleted=False,
+                voided=False,
                 client__isnull=False,
                 created_at__range=(start_date, end_date),
             )
@@ -470,7 +475,7 @@ class UnpaidSalesStatusView(APIView):
 
         queryset = (
             SalesTransaction.objects.filter(
-                is_deleted=False, created_at__range=(start_date, end_date)
+                is_deleted=False, voided=False, created_at__range=(start_date, end_date)
             )
             .filter(**stall_filter)
             .values("payment_status")

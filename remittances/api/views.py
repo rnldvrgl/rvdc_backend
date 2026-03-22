@@ -321,6 +321,8 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
                 transaction__payment_status__in=[
                     PaymentStatus.PAID, PaymentStatus.PARTIAL,
                 ],
+                transaction__voided=False,
+                transaction__is_deleted=False,
                 payment_type=payment_type,
             ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
 
@@ -330,6 +332,8 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
                     payment_status__in=[
                         PaymentStatus.PAID, PaymentStatus.PARTIAL,
                     ],
+                    voided=False,
+                    is_deleted=False,
                     payments__payment_date__date=target_date,
                 ).distinct().aggregate(
                     total=Sum("change_amount")
