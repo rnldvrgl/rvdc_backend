@@ -22,4 +22,5 @@ urlpatterns = [
     path("api/payroll/", include("payroll.api.urls"), name="payroll"),
     path("api/attendance/", include("attendance.api.urls"), name="attendance"),
     path("api/quotations/", include("quotations.api.urls"), name="quotations"),
+    path("api/messaging/", include("messaging.api.urls"), name="messaging"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
