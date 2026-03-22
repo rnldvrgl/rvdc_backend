@@ -13,7 +13,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('expenses', '0015_alter_expense_paid_amount_alter_expense_total_price'),
+        ('expenses', '0016_expense_is_reimbursement'),
     ]
 
     operations = [

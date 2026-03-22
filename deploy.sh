@@ -222,13 +222,17 @@ fi
 step "Step 8: ${ICON_DATABASE} Running database migrations..."
 
 log "Checking for pending migrations..."
-MIGRATION_OUTPUT=$(${COMPOSE} exec -T api python manage.py migrate --noinput 2>&1)
-
-if echo "$MIGRATION_OUTPUT" | grep -q "No migrations to apply"; then
-    success "No pending migrations - database is up to date"
+if MIGRATION_OUTPUT=$(${COMPOSE} exec -T api python manage.py migrate --noinput 2>&1); then
+    if echo "$MIGRATION_OUTPUT" | grep -q "No migrations to apply"; then
+        success "No pending migrations - database is up to date"
+    else
+        success "Migrations applied successfully"
+        echo -e "${GRAY}${MIGRATION_OUTPUT}${NC}"
+    fi
 else
-    success "Migrations applied successfully"
-    echo -e "${GRAY}${MIGRATION_OUTPUT}${NC}"
+    err "Migration failed!"
+    echo -e "${RED}${MIGRATION_OUTPUT}${NC}"
+    exit 1
 fi
 
 echo ""
