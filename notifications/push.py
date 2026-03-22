@@ -77,9 +77,10 @@ def send_web_push(user_id: int, title: str, body: str, url: str = "/", tag: str 
         except WebPushException as e:
             status_code = _extract_status_code(e)
             logger.warning("[WebPush] Failed for sub %s: status=%s err=%s", sub.id, status_code, e)
-            # 400 = invalid VAPID keys or mismatched subscription
+            # 400 = invalid keys or mismatched subscription
+            # 401 = VAPID key doesn't match the subscription's applicationServerKey
             # 404/410 = subscription expired or unsubscribed
-            if status_code in (400, 404, 410):
+            if status_code in (400, 401, 404, 410):
                 stale_ids.append(sub.id)
         except Exception:
             logger.exception("[WebPush] Unexpected error sending to sub %s", sub.id)
