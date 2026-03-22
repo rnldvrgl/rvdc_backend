@@ -2,12 +2,13 @@ from django.db.models import Q
 from django.utils import timezone
 from notifications.api.serializers import NotificationSerializer
 from notifications.business_logic import NotificationManager
-from notifications.models import Notification
+from notifications.models import Notification, PushSubscription
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import CursorPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 
 class NotificationCursorPagination(CursorPagination):
@@ -96,3 +97,47 @@ class NotificationViewSet(viewsets.ModelViewSet):
             {"status": "success", "message": "Notification deleted"},
             status=status.HTTP_204_NO_CONTENT,
         )
+
+
+class VapidPublicKeyView(APIView):
+    """Return the VAPID public key so the frontend can subscribe."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from django.conf import settings
+
+        key = getattr(settings, "VAPID_PUBLIC_KEY", "")
+        return Response({"public_key": key})
+
+
+class PushSubscriptionView(APIView):
+    """Create or delete a Web Push subscription for the current user."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        endpoint = request.data.get("endpoint")
+        keys = request.data.get("keys", {})
+        p256dh = keys.get("p256dh", "")
+        auth = keys.get("auth", "")
+
+        if not endpoint or not p256dh or not auth:
+            return Response(
+                {"error": "endpoint, keys.p256dh, and keys.auth are required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        PushSubscription.objects.update_or_create(
+            endpoint=endpoint,
+            defaults={"user": request.user, "p256dh": p256dh, "auth": auth},
+        )
+        return Response({"status": "subscribed"}, status=status.HTTP_201_CREATED)
+
+    def delete(self, request):
+        endpoint = request.data.get("endpoint")
+        if endpoint:
+            PushSubscription.objects.filter(
+                user=request.user, endpoint=endpoint
+            ).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

@@ -173,6 +173,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_send(f"chat_user_{to_id}", event)
         await self.channel_layer.group_send(self.user_group, event)
 
+        # Send Web Push notification to recipient (runs in thread to avoid blocking)
+        sender_name = await self._get_display_name(self.user_id)
+        await database_sync_to_async(self._send_chat_push)(to_id, sender_name, body)
+
     async def _handle_history(self, payload):
         with_id = payload.get("with")
         if not with_id:
@@ -287,3 +291,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
             role__in=["admin", "manager", "clerk"],
         ).values("id", "first_name", "last_name", "role", "profile_image")
         return list(users)
+
+    @staticmethod
+    def _send_chat_push(to_id: int, sender_name: str, body: str):
+        """Send a Web Push for a new chat message (called via database_sync_to_async)."""
+        try:
+            from notifications.push import send_web_push
+
+            preview = body[:100] + ("…" if len(body) > 100 else "")
+            send_web_push(
+                user_id=to_id,
+                title=f"{sender_name}",
+                body=preview,
+                url="/messaging",
+                tag=f"chat-{to_id}",
+            )
+        except Exception:
+            logger.warning("Failed to send chat web push to user %s", to_id)
