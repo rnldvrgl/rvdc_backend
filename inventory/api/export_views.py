@@ -1,10 +1,11 @@
 import re
 from collections import defaultdict
+from datetime import timedelta
 from decimal import Decimal
 from io import BytesIO
 
-from django.db.models import F, Q, Sum, Value
-from django.db.models.functions import Coalesce
+from django.db.models import F, Sum
+from django.db.models.functions import Coalesce, TruncDate, TruncMonth
 from django.http import HttpResponse
 from django.utils import timezone
 from inventory.models import Item, Stock, StockRoomStock, ProductCategory
@@ -280,58 +281,62 @@ def _find_duplicates():
 # ── Sheet builders ─────────────────────────────────────────────────
 
 def _build_no_stock_sheet(wb):
-    ws = wb.create_sheet("No Stock")
+    # Stall no-stock
+    ws = wb.create_sheet("No Stock - Stall")
     headers = [
-        "Item Name", "SKU", "Category", "Unit", "Location",
+        "Item Name", "SKU", "Category", "Unit",
         "Total Qty", "Reserved", "Available", "Threshold",
         "Cost Price", "Retail Price",
     ]
-
     rows = []
-    # Stall stocks
     for s in _get_stock_items("no_stock"):
         rows.append([
             s.item.name, s.item.sku,
             s.item.category.name if s.item.category else "—",
             s.item.unit_of_measure,
-            f"Stall: {s.stall.name}" if s.stall else "—",
             float(s.quantity), float(s.reserved_quantity),
             float(s.avail), float(s.low_stock_threshold),
             float(s.item.cost_price or 0),
             float(s.item.retail_price),
         ])
-
-    # Stockroom
-    for sr in _get_stockroom_items("no_stock"):
-        rows.append([
-            sr.item.name, sr.item.sku,
-            sr.item.category.name if sr.item.category else "—",
-            sr.item.unit_of_measure,
-            "Stockroom",
-            float(sr.quantity), 0, float(sr.quantity),
-            float(sr.low_stock_threshold),
-            float(sr.item.cost_price or 0),
-            float(sr.item.retail_price),
-        ])
-
     last_row = _write_rows(ws, headers, rows)
-
-    # Highlight rows red
     for row_idx in range(2, last_row + 1):
         for col in range(1, len(headers) + 1):
             ws.cell(row=row_idx, column=col).fill = NO_STOCK_FILL
+
+    # Stockroom no-stock
+    ws2 = wb.create_sheet("No Stock - Stockroom")
+    headers2 = [
+        "Item Name", "SKU", "Category", "Unit",
+        "Quantity", "Threshold",
+        "Cost Price", "Retail Price",
+    ]
+    rows2 = []
+    for sr in _get_stockroom_items("no_stock"):
+        rows2.append([
+            sr.item.name, sr.item.sku,
+            sr.item.category.name if sr.item.category else "—",
+            sr.item.unit_of_measure,
+            float(sr.quantity), float(sr.low_stock_threshold),
+            float(sr.item.cost_price or 0),
+            float(sr.item.retail_price),
+        ])
+    last_row2 = _write_rows(ws2, headers2, rows2)
+    for row_idx in range(2, last_row2 + 1):
+        for col in range(1, len(headers2) + 1):
+            ws2.cell(row=row_idx, column=col).fill = NO_STOCK_FILL
 
     return ws
 
 
 def _build_low_stock_sheet(wb):
-    ws = wb.create_sheet("Low Stock")
+    # Stall low-stock
+    ws = wb.create_sheet("Low Stock - Stall")
     headers = [
-        "Item Name", "SKU", "Category", "Unit", "Location",
+        "Item Name", "SKU", "Category", "Unit",
         "Total Qty", "Reserved", "Available", "Threshold",
-        "Qty to Order (Suggested)", "Cost Price", "Retail Price",
+        "Suggested Order Qty", "Cost Price", "Retail Price",
     ]
-
     rows = []
     for s in _get_stock_items("low_stock"):
         avail = float(s.avail)
@@ -341,32 +346,40 @@ def _build_low_stock_sheet(wb):
             s.item.name, s.item.sku,
             s.item.category.name if s.item.category else "—",
             s.item.unit_of_measure,
-            f"Stall: {s.stall.name}" if s.stall else "—",
             float(s.quantity), float(s.reserved_quantity),
             avail, threshold, suggested,
             float(s.item.cost_price or 0),
             float(s.item.retail_price),
         ])
+    last_row = _write_rows(ws, headers, rows)
+    for row_idx in range(2, last_row + 1):
+        for col in range(1, len(headers) + 1):
+            ws.cell(row=row_idx, column=col).fill = LOW_STOCK_FILL
 
+    # Stockroom low-stock
+    ws2 = wb.create_sheet("Low Stock - Stockroom")
+    headers2 = [
+        "Item Name", "SKU", "Category", "Unit",
+        "Quantity", "Threshold",
+        "Suggested Order Qty", "Cost Price", "Retail Price",
+    ]
+    rows2 = []
     for sr in _get_stockroom_items("low_stock"):
         qty = float(sr.quantity)
         threshold = float(sr.low_stock_threshold)
         suggested = max(threshold * 2 - qty, 0)
-        rows.append([
+        rows2.append([
             sr.item.name, sr.item.sku,
             sr.item.category.name if sr.item.category else "—",
             sr.item.unit_of_measure,
-            "Stockroom",
-            qty, 0, qty, threshold, suggested,
+            qty, threshold, suggested,
             float(sr.item.cost_price or 0),
             float(sr.item.retail_price),
         ])
-
-    last_row = _write_rows(ws, headers, rows)
-
-    for row_idx in range(2, last_row + 1):
-        for col in range(1, len(headers) + 1):
-            ws.cell(row=row_idx, column=col).fill = LOW_STOCK_FILL
+    last_row2 = _write_rows(ws2, headers2, rows2)
+    for row_idx in range(2, last_row2 + 1):
+        for col in range(1, len(headers2) + 1):
+            ws2.cell(row=row_idx, column=col).fill = LOW_STOCK_FILL
 
     return ws
 
@@ -606,8 +619,10 @@ def _build_summary_sheet(wb):
     row += 2
     ws.cell(row=row, column=1, value="Sheets Included:").font = Font(bold=True)
     sheets_desc = [
-        ("No Stock", "Items with zero available quantity"),
-        ("Low Stock", "Items below their low stock threshold"),
+        ("No Stock - Stall", "Stall items with zero available quantity"),
+        ("No Stock - Stockroom", "Stockroom items with zero quantity"),
+        ("Low Stock - Stall", "Stall items below their threshold"),
+        ("Low Stock - Stockroom", "Stockroom items below their threshold"),
         ("Most Bought", "Top 50 most consumed items (sales + services)"),
         ("Least Bought", "Bottom 50 least consumed items"),
         ("Custom Items", "Non-inventory items used in services"),

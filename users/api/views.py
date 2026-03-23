@@ -459,6 +459,7 @@ class ServerMaintenanceView(APIView):
             "docker_prune", "log_cleanup", "full_cleanup",
             "restart_containers", "container_logs",
             "run_command", "view_cron_log", "install_cron_jobs",
+            "delete_chats",
         ]
         if action_type not in allowed_actions:
             return Response(
@@ -553,7 +554,7 @@ class ServerMaintenanceView(APIView):
                 )
 
         # Require admin credentials for destructive/aggressive actions
-        destructive_actions = {"full_cleanup", "install_cron_jobs"}
+        destructive_actions = {"full_cleanup", "install_cron_jobs", "delete_chats"}
         requires_auth = (
             action_type in destructive_actions
             or (action_type == "run_command" and command_config and command_config.get("destructive"))
@@ -779,6 +780,45 @@ class ServerMaintenanceView(APIView):
                         "error": str(e)[:500],
                     })
 
+            # Delete all chat messages from Redis
+            if action_type == "delete_chats":
+                try:
+                    import redis
+                    from django.conf import settings
+
+                    redis_url = getattr(settings, "CHANNEL_LAYERS", {}).get(
+                        "default", {}
+                    ).get("CONFIG", {}).get("hosts", [("redis", 6379)])[0]
+                    if isinstance(redis_url, str):
+                        r = redis.from_url(redis_url)
+                    else:
+                        host, port = redis_url if isinstance(redis_url, (list, tuple)) else ("redis", 6379)
+                        r = redis.Redis(host=host, port=port, db=0)
+
+                    deleted_count = 0
+                    patterns = ["chat:*", "chat:unread:*", "chat:online",
+                                "chat:heartbeat:*", "chat:last_seen:*"]
+                    for pattern in patterns:
+                        cursor = 0
+                        while True:
+                            cursor, keys = r.scan(cursor=cursor, match=pattern, count=200)
+                            if keys:
+                                deleted_count += r.delete(*keys)
+                            if cursor == 0:
+                                break
+
+                    results.append({
+                        "task": "delete_chats",
+                        "success": True,
+                        "output": f"Deleted {deleted_count} chat keys from Redis",
+                    })
+                except Exception as e:
+                    results.append({
+                        "task": "delete_chats",
+                        "success": False,
+                        "error": str(e)[:500],
+                    })
+
             all_success = all(r.get("success") for r in results)
             _logger.info(
                 "Server maintenance by %s: action=%s results=%s",
@@ -799,6 +839,7 @@ class ServerMaintenanceView(APIView):
                         "restart_containers": "Container Restart",
                         "run_command": command_config["label"] if command_config else "Command",
                         "install_cron_jobs": "Install Cron Jobs",
+                        "delete_chats": "Delete Chats",
                     }
                     label = action_labels.get(action_type, action_type)
                     failed = [r for r in results if not r.get("success")]
@@ -838,6 +879,7 @@ class ServerMaintenanceView(APIView):
             "restart_containers": "Container Restart",
             "run_command": command_config["label"] if command_config else "Command",
             "install_cron_jobs": "Install Cron Jobs",
+            "delete_chats": "Delete Chats",
         }
         return Response({
             "accepted": True,
