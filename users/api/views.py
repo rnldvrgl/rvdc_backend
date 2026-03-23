@@ -1,4 +1,5 @@
 from rest_framework import generics, permissions, filters, viewsets, status
+from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -250,3 +251,150 @@ class IsAdminOrManager(permissions.BasePermission):
     """Permission class to check if user is admin or manager"""
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role in ['admin', 'manager']
+
+
+class ServerMaintenanceView(APIView):
+    """
+    Admin-only endpoint for server maintenance tasks.
+    POST /maintenance/cleanup/ — Docker prune + log truncation
+    GET  /maintenance/disk-usage/ — Current disk usage stats
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        """Return current disk usage stats."""
+        import shutil
+        import subprocess
+
+        result = {}
+
+        # Disk usage
+        total, used, free = shutil.disk_usage("/")
+        result["disk"] = {
+            "total_gb": round(total / (1024 ** 3), 2),
+            "used_gb": round(used / (1024 ** 3), 2),
+            "free_gb": round(free / (1024 ** 3), 2),
+            "used_percent": round((used / total) * 100, 1),
+        }
+
+        # Docker disk usage (if socket available)
+        try:
+            docker_output = subprocess.run(
+                ["docker", "system", "df", "--format", "{{.Type}}\t{{.Size}}\t{{.Reclaimable}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if docker_output.returncode == 0:
+                lines = docker_output.stdout.strip().split("\n")
+                result["docker"] = []
+                for line in lines:
+                    parts = line.split("\t")
+                    if len(parts) >= 3:
+                        result["docker"].append({
+                            "type": parts[0],
+                            "size": parts[1],
+                            "reclaimable": parts[2],
+                        })
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            result["docker"] = None
+
+        return Response(result)
+
+    def post(self, request):
+        """Run cleanup tasks: docker prune, log truncation."""
+        import subprocess
+        import logging
+
+        logger = logging.getLogger(__name__)
+        action_type = request.data.get("action", "full_cleanup")
+        results = []
+
+        allowed_actions = ["docker_prune", "log_cleanup", "full_cleanup"]
+        if action_type not in allowed_actions:
+            return Response(
+                {"error": f"Invalid action. Allowed: {allowed_actions}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Docker system prune
+        if action_type in ("docker_prune", "full_cleanup"):
+            try:
+                prune_result = subprocess.run(
+                    ["docker", "system", "prune", "-f"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                results.append({
+                    "task": "docker_system_prune",
+                    "success": prune_result.returncode == 0,
+                    "output": prune_result.stdout.strip()[-500:] if prune_result.stdout else "",
+                    "error": prune_result.stderr.strip()[-200:] if prune_result.returncode != 0 else "",
+                })
+            except FileNotFoundError:
+                results.append({
+                    "task": "docker_system_prune",
+                    "success": False,
+                    "error": "Docker not available in this environment",
+                })
+            except subprocess.TimeoutExpired:
+                results.append({
+                    "task": "docker_system_prune",
+                    "success": False,
+                    "error": "Timed out after 120s",
+                })
+
+            # Image prune (unused images older than 7 days)
+            try:
+                img_result = subprocess.run(
+                    ["docker", "image", "prune", "-a", "--filter", "until=168h", "-f"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                results.append({
+                    "task": "docker_image_prune",
+                    "success": img_result.returncode == 0,
+                    "output": img_result.stdout.strip()[-500:] if img_result.stdout else "",
+                    "error": img_result.stderr.strip()[-200:] if img_result.returncode != 0 else "",
+                })
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                results.append({
+                    "task": "docker_image_prune",
+                    "success": False,
+                    "error": str(e)[:200],
+                })
+
+        # Log cleanup
+        if action_type in ("log_cleanup", "full_cleanup"):
+            log_files_truncated = 0
+            try:
+                import glob
+                for log_path in glob.glob("/host-logs/cron-*.log"):
+                    try:
+                        import os
+                        size = os.path.getsize(log_path)
+                        if size > 5 * 1024 * 1024:  # > 5MB
+                            with open(log_path, "w") as f:
+                                f.write(f"--- Log truncated by admin on {timezone.now().isoformat()} ---\n")
+                            log_files_truncated += 1
+                    except OSError:
+                        pass
+                results.append({
+                    "task": "log_cleanup",
+                    "success": True,
+                    "output": f"Truncated {log_files_truncated} log files over 5MB",
+                })
+            except Exception as e:
+                results.append({
+                    "task": "log_cleanup",
+                    "success": False,
+                    "error": str(e)[:200],
+                })
+
+        all_success = all(r.get("success") for r in results)
+        logger.info(
+            "Server maintenance by %s: action=%s results=%s",
+            request.user.get_full_name(), action_type, results,
+        )
+
+        return Response({
+            "success": all_success,
+            "action": action_type,
+            "results": results,
+        }, status=status.HTTP_200_OK)

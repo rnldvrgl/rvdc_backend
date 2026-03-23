@@ -19,6 +19,8 @@ services:
         volumes:
             - /srv/rvdc_backend/staticfiles:/usr/src/app/staticfiles
             - /srv/rvdc_backend/media:/usr/src/app/media
+            - /var/run/docker.sock:/var/run/docker.sock
+            - /var/log:/host-logs
         ports:
             - "8000:8000"
         depends_on:
