@@ -312,10 +312,14 @@ class ServerMaintenanceView(APIView):
                 for line in lines:
                     parts = line.split("\t")
                     if len(parts) >= 3:
+                        reclaimable = parts[2].strip()
+                        # Sanitize negative/malformed reclaimable values
+                        if reclaimable.startswith("-") or "e+" in reclaimable or "e-" in reclaimable:
+                            reclaimable = "0B (0%)"
                         result["docker"].append({
                             "type": parts[0],
                             "size": parts[1],
-                            "reclaimable": parts[2],
+                            "reclaimable": reclaimable,
                         })
         except (FileNotFoundError, subprocess.TimeoutExpired):
             result["docker"] = None
