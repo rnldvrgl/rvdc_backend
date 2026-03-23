@@ -458,7 +458,7 @@ class ServerMaintenanceView(APIView):
         allowed_actions = [
             "docker_prune", "log_cleanup", "full_cleanup",
             "restart_containers", "container_logs",
-            "run_command", "view_cron_log",
+            "run_command", "view_cron_log", "install_cron_jobs",
         ]
         if action_type not in allowed_actions:
             return Response(
@@ -550,6 +550,28 @@ class ServerMaintenanceView(APIView):
                 return Response(
                     {"error": f"Unknown or disallowed command: {command_id}"},
                     status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Require admin credentials for destructive/aggressive actions
+        destructive_actions = {"full_cleanup", "install_cron_jobs"}
+        requires_auth = (
+            action_type in destructive_actions
+            or (action_type == "run_command" and command_config and command_config.get("destructive"))
+        )
+        if requires_auth:
+            from django.contrib.auth import authenticate as auth_check
+            admin_username = request.data.get("admin_username", "")
+            admin_password = request.data.get("admin_password", "")
+            if not admin_username or not admin_password:
+                return Response(
+                    {"error": "Admin credentials required for this action."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            admin_user = auth_check(username=admin_username, password=admin_password)
+            if not admin_user or admin_user.role != "admin":
+                return Response(
+                    {"error": "Invalid admin credentials."},
+                    status=status.HTTP_403_FORBIDDEN,
                 )
 
         def _run_maintenance():
@@ -688,6 +710,75 @@ class ServerMaintenanceView(APIView):
                         "error": str(e)[:500],
                     })
 
+            # Install cron jobs on host
+            if action_type == "install_cron_jobs":
+                import os
+                import shutil
+
+                container_name = "rvdc_backend-api-1"
+                staging_dir = "/host-logs/cron-scripts-staging"
+                try:
+                    # Generate all cron scripts and crontab entries to staging dir
+                    os.makedirs(staging_dir, exist_ok=True)
+                    cron_scripts = ServerMaintenanceView._generate_cron_scripts(container_name)
+                    for filename, content in cron_scripts.items():
+                        fpath = os.path.join(staging_dir, filename)
+                        with open(fpath, "w", newline="\n") as f:
+                            f.write(content)
+                    crontab_entries = ServerMaintenanceView._generate_crontab_entries()
+                    with open(os.path.join(staging_dir, "rvdc-crontab-entries.txt"), "w", newline="\n") as f:
+                        f.write(crontab_entries)
+
+                    # Deploy to host via temp Docker container with host path mounts
+                    deploy_script = (
+                        'set -e\n'
+                        'mkdir -p /opt/cron-scripts\n'
+                        'cp /staging/*.sh /opt/cron-scripts/\n'
+                        'chmod +x /opt/cron-scripts/*.sh\n'
+                        'CRONTAB_FILE="/crontab-dir/root"\n'
+                        'if [ -f "$CRONTAB_FILE" ]; then\n'
+                        '  sed "/^# ==.*RVDC/,/^# ==.*END RVDC/d" "$CRONTAB_FILE" > /tmp/clean.txt 2>/dev/null || true\n'
+                        'else\n'
+                        '  touch /tmp/clean.txt\n'
+                        'fi\n'
+                        'cat /tmp/clean.txt > "$CRONTAB_FILE"\n'
+                        'cat /staging/rvdc-crontab-entries.txt >> "$CRONTAB_FILE"\n'
+                        'chmod 600 "$CRONTAB_FILE"\n'
+                        'SCRIPT_COUNT=$(ls -1 /opt/cron-scripts/*.sh 2>/dev/null | wc -l)\n'
+                        'echo "Deployed $SCRIPT_COUNT cron scripts and updated crontab"\n'
+                    )
+                    deploy_result = subprocess.run(
+                        [
+                            "docker", "run", "--rm",
+                            "-v", "/var/log/cron-scripts-staging:/staging:ro",
+                            "-v", "/opt/cron-scripts:/opt/cron-scripts",
+                            "-v", "/var/spool/cron/crontabs:/crontab-dir",
+                            "alpine:latest", "sh", "-c", deploy_script,
+                        ],
+                        capture_output=True, text=True, timeout=120,
+                    )
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+
+                    if deploy_result.returncode == 0:
+                        results.append({
+                            "task": "install_cron_jobs",
+                            "success": True,
+                            "output": deploy_result.stdout.strip()[-500:] or "Cron jobs installed successfully",
+                        })
+                    else:
+                        results.append({
+                            "task": "install_cron_jobs",
+                            "success": False,
+                            "error": (deploy_result.stderr.strip() or deploy_result.stdout.strip())[-500:],
+                        })
+                except Exception as e:
+                    shutil.rmtree(staging_dir, ignore_errors=True)
+                    results.append({
+                        "task": "install_cron_jobs",
+                        "success": False,
+                        "error": str(e)[:500],
+                    })
+
             all_success = all(r.get("success") for r in results)
             _logger.info(
                 "Server maintenance by %s: action=%s results=%s",
@@ -707,6 +798,7 @@ class ServerMaintenanceView(APIView):
                         "full_cleanup": "Full System Cleanup",
                         "restart_containers": "Container Restart",
                         "run_command": command_config["label"] if command_config else "Command",
+                        "install_cron_jobs": "Install Cron Jobs",
                     }
                     label = action_labels.get(action_type, action_type)
                     failed = [r for r in results if not r.get("success")]
@@ -745,9 +837,261 @@ class ServerMaintenanceView(APIView):
             "full_cleanup": "Full System Cleanup",
             "restart_containers": "Container Restart",
             "run_command": command_config["label"] if command_config else "Command",
+            "install_cron_jobs": "Install Cron Jobs",
         }
         return Response({
             "accepted": True,
             "action": action_type,
             "message": f"{action_labels.get(action_type, action_type)} started. You'll be notified when it completes.",
         }, status=status.HTTP_202_ACCEPTED)
+
+    @staticmethod
+    def _generate_cron_scripts(container_name):
+        """Generate all cron script file contents keyed by filename."""
+
+        def _mgmt(log_file, title, command, extra_args=""):
+            return (
+                '#!/bin/bash\n'
+                f'LOG_FILE="/var/log/{log_file}"\n'
+                f'CONTAINER_NAME="{container_name}"\n'
+                'export TZ=Asia/Manila\n\n'
+                'echo "=== ' + title + " - $(date '+%Y-%m-%d %H:%M:%S %Z') ===\" >> \"$LOG_FILE\"\n"
+                f'docker exec "$CONTAINER_NAME" python manage.py {command}'
+                f'{" " + extra_args if extra_args else ""} >> "$LOG_FILE" 2>&1\n\n'
+                'if [ $? -eq 0 ]; then\n'
+                "    echo \"✅ Success - $(date '+%Y-%m-%d %H:%M:%S %Z')\" >> \"$LOG_FILE\"\n"
+                'else\n'
+                "    echo \"❌ Failed - $(date '+%Y-%m-%d %H:%M:%S %Z')\" >> \"$LOG_FILE\"\n"
+                'fi\n'
+                'echo "" >> "$LOG_FILE"\n'
+            )
+
+        scripts = {
+            "auto-close-attendance.sh": _mgmt(
+                "cron-auto-close-attendance.log", "Auto-Close Attendance", "auto_close_attendance",
+            ),
+            "mark-absences.sh": _mgmt(
+                "cron-mark-absences.log", "Mark Daily Absences", "mark_daily_absences",
+            ),
+            "delete-old-notifications.sh": _mgmt(
+                "cron-delete-old-notifications.log", "Delete Old Notifications",
+                "delete_old_notifications", "--all --days 7",
+            ),
+            "cleanup-archived-quotations.sh": _mgmt(
+                "cron-cleanup-archived-quotations.log", "Cleanup Archived Quotations",
+                "cleanup_archived_quotations", "--days 14",
+            ),
+            "cleanup-unused-images.sh": _mgmt(
+                "cron-cleanup-images.log", "Cleanup Unused Images", "cleanup_unused_images",
+            ),
+        }
+
+        # Weekly attendance + payroll fix (multi-step)
+        scripts["weekly-attendance-payroll-fix.sh"] = (
+            '#!/bin/bash\n'
+            f'LOG_FILE="/var/log/cron-weekly-attendance-payroll-fix.log"\n'
+            f'CONTAINER_NAME="{container_name}"\n'
+            'export TZ=Asia/Manila\n\n'
+            'LAST_SATURDAY=$(date -d "last saturday -7 days" +%Y-%m-%d)\n'
+            'LAST_FRIDAY=$(date -d "yesterday" +%Y-%m-%d)\n\n'
+            "echo \"=== Weekly Attendance & Payroll Fix - $(date '+%Y-%m-%d %H:%M:%S %Z') ===\" >> \"$LOG_FILE\"\n"
+            'echo "Processing period: $LAST_SATURDAY to $LAST_FRIDAY" >> "$LOG_FILE"\n\n'
+            'echo "--- Step 1: Verifying attendance ---" >> "$LOG_FILE"\n'
+            'docker exec "$CONTAINER_NAME" python manage.py fix_attendance_time_entries \\\n'
+            '    --verify-only \\\n'
+            '    --start-date "$LAST_SATURDAY" \\\n'
+            '    --end-date "$LAST_FRIDAY" >> "$LOG_FILE" 2>&1\n\n'
+            'echo "--- Step 2: Fixing attendance ---" >> "$LOG_FILE"\n'
+            'docker exec "$CONTAINER_NAME" python manage.py fix_attendance_time_entries \\\n'
+            '    --force \\\n'
+            '    --start-date "$LAST_SATURDAY" \\\n'
+            '    --end-date "$LAST_FRIDAY" >> "$LOG_FILE" 2>&1\n\n'
+            'echo "--- Step 3: Refreshing payroll ---" >> "$LOG_FILE"\n'
+            'docker exec "$CONTAINER_NAME" python manage.py refresh_payroll_from_attendance \\\n'
+            '    --force \\\n'
+            '    --start-date "$LAST_SATURDAY" \\\n'
+            '    --end-date "$LAST_FRIDAY" >> "$LOG_FILE" 2>&1\n\n'
+            'if [ $? -eq 0 ]; then\n'
+            "    echo \"✅ Weekly fix complete - $(date '+%Y-%m-%d %H:%M:%S %Z')\" >> \"$LOG_FILE\"\n"
+            'else\n'
+            "    echo \"❌ Weekly fix failed - $(date '+%Y-%m-%d %H:%M:%S %Z')\" >> \"$LOG_FILE\"\n"
+            'fi\n'
+            'echo "" >> "$LOG_FILE"\n'
+        )
+
+        scripts["yearly-update-holidays.sh"] = (
+            '#!/bin/bash\n'
+            f'LOG_FILE="/var/log/cron-yearly-update-holidays.log"\n'
+            f'CONTAINER_NAME="{container_name}"\n'
+            'export TZ=Asia/Manila\n\n'
+            'CURRENT_YEAR=$(date +%Y)\n'
+            'NEXT_YEAR=$((CURRENT_YEAR + 1))\n\n'
+            "echo \"=== Update Holiday Years - $(date '+%Y-%m-%d %H:%M:%S %Z') ===\" >> \"$LOG_FILE\"\n"
+            'echo "Updating holidays to year: $NEXT_YEAR" >> "$LOG_FILE"\n\n'
+            'docker exec "$CONTAINER_NAME" python manage.py update_holiday_years \\\n'
+            '    --year "$NEXT_YEAR" --force >> "$LOG_FILE" 2>&1\n\n'
+            'if [ $? -eq 0 ]; then\n'
+            "    echo \"✅ Holiday years updated - $(date '+%Y-%m-%d %H:%M:%S %Z')\" >> \"$LOG_FILE\"\n"
+            'else\n'
+            "    echo \"❌ Holiday update failed - $(date '+%Y-%m-%d %H:%M:%S %Z')\" >> \"$LOG_FILE\"\n"
+            'fi\n'
+            'echo "" >> "$LOG_FILE"\n'
+        )
+
+        scripts["yearly-replenish-leaves.sh"] = (
+            '#!/bin/bash\n'
+            f'LOG_FILE="/var/log/cron-yearly-replenish-leaves.log"\n'
+            f'CONTAINER_NAME="{container_name}"\n'
+            'export TZ=Asia/Manila\n\n'
+            "echo \"=== Replenish Leave Balances - $(date '+%Y-%m-%d %H:%M:%S %Z') ===\" >> \"$LOG_FILE\"\n\n"
+            'docker exec "$CONTAINER_NAME" python manage.py replenish_leave_balances \\\n'
+            '    --reset --sick-leave 7 --emergency-leave 3 --force >> "$LOG_FILE" 2>&1\n\n'
+            'if [ $? -eq 0 ]; then\n'
+            "    echo \"✅ Leave balances replenished - $(date '+%Y-%m-%d %H:%M:%S %Z')\" >> \"$LOG_FILE\"\n"
+            'else\n'
+            "    echo \"❌ Leave replenishment failed - $(date '+%Y-%m-%d %H:%M:%S %Z')\" >> \"$LOG_FILE\"\n"
+            'fi\n'
+            'echo "" >> "$LOG_FILE"\n'
+        )
+
+        scripts["yearly-archive-payrolls.sh"] = (
+            '#!/bin/bash\n'
+            f'LOG_FILE="/var/log/cron-yearly-archive-payrolls.log"\n'
+            f'CONTAINER_NAME="{container_name}"\n'
+            'export TZ=Asia/Manila\n\n'
+            'CURRENT_YEAR=$(date +%Y)\n'
+            'LAST_YEAR=$((CURRENT_YEAR - 1))\n\n'
+            "echo \"=== Archive Old Payrolls - $(date '+%Y-%m-%d %H:%M:%S %Z') ===\" >> \"$LOG_FILE\"\n"
+            'echo "Archiving payrolls from year: $LAST_YEAR and earlier" >> "$LOG_FILE"\n\n'
+            'docker exec "$CONTAINER_NAME" python manage.py archive_old_payrolls \\\n'
+            '    --year "$LAST_YEAR" --export --delete --force >> "$LOG_FILE" 2>&1\n\n'
+            'if [ $? -eq 0 ]; then\n'
+            "    echo \"✅ Payrolls archived - $(date '+%Y-%m-%d %H:%M:%S %Z')\" >> \"$LOG_FILE\"\n"
+            'else\n'
+            "    echo \"❌ Payroll archival failed - $(date '+%Y-%m-%d %H:%M:%S %Z')\" >> \"$LOG_FILE\"\n"
+            'fi\n'
+            'echo "" >> "$LOG_FILE"\n'
+        )
+
+        # Host-level scripts (no docker exec needed)
+        scripts["docker-system-prune.sh"] = (
+            '#!/bin/bash\n'
+            'LOG_FILE="/var/log/cron-docker-prune.log"\n'
+            'export TZ=Asia/Manila\n\n'
+            "echo \"=== Docker System Prune - $(date '+%Y-%m-%d %H:%M:%S %Z') ===\" >> \"$LOG_FILE\"\n\n"
+            'echo "--- Pruning containers, networks, and dangling images ---" >> "$LOG_FILE"\n'
+            'docker system prune -f >> "$LOG_FILE" 2>&1\n\n'
+            'echo "--- Removing unused images older than 7 days ---" >> "$LOG_FILE"\n'
+            'docker image prune -a --filter "until=168h" -f >> "$LOG_FILE" 2>&1\n\n'
+            'echo "--- Docker disk usage after prune ---" >> "$LOG_FILE"\n'
+            'docker system df >> "$LOG_FILE" 2>&1\n\n'
+            "echo \"✅ Docker prune complete - $(date '+%Y-%m-%d %H:%M:%S %Z')\" >> \"$LOG_FILE\"\n"
+            'echo "" >> "$LOG_FILE"\n'
+        )
+
+        scripts["disk-usage-check.sh"] = (
+            '#!/bin/bash\n'
+            'LOG_FILE="/var/log/cron-disk-usage.log"\n'
+            'export TZ=Asia/Manila\n\n'
+            'DISK_THRESHOLD=80\n'
+            'DISK_CRITICAL=90\n'
+            "DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')\n"
+            "DISK_AVAIL=$(df -h / | awk 'NR==2 {print $4}')\n\n"
+            "echo \"=== Disk Usage Check - $(date '+%Y-%m-%d %H:%M:%S %Z') ===\" >> \"$LOG_FILE\"\n"
+            'echo "Disk usage: ${DISK_USAGE}% (Available: ${DISK_AVAIL})" >> "$LOG_FILE"\n\n'
+            'if [ "$DISK_USAGE" -ge "$DISK_CRITICAL" ]; then\n'
+            '    echo "CRITICAL: Disk usage ${DISK_USAGE}% exceeds ${DISK_CRITICAL}%!" >> "$LOG_FILE"\n'
+            '    echo "Running emergency cleanup..." >> "$LOG_FILE"\n'
+            '    apt-get clean 2>/dev/null\n'
+            '    journalctl --vacuum-size=50M 2>/dev/null\n'
+            '    for logfile in /var/log/cron-*.log; do\n'
+            '        if [ -f "$logfile" ] && [ $(wc -l < "$logfile") -gt 1000 ]; then\n'
+            '            tail -1000 "$logfile" > "${logfile}.tmp" && mv "${logfile}.tmp" "$logfile"\n'
+            '            echo "  Truncated: $logfile" >> "$LOG_FILE"\n'
+            '        fi\n'
+            '    done\n'
+            '    docker system prune -f >> "$LOG_FILE" 2>&1\n'
+            "    NEW_USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')\n"
+            '    echo "After cleanup: ${NEW_USAGE}%" >> "$LOG_FILE"\n'
+            'elif [ "$DISK_USAGE" -ge "$DISK_THRESHOLD" ]; then\n'
+            '    echo "WARNING: Disk usage ${DISK_USAGE}% exceeds ${DISK_THRESHOLD}% threshold" >> "$LOG_FILE"\n'
+            'else\n'
+            '    echo "Disk usage OK" >> "$LOG_FILE"\n'
+            'fi\n'
+            'echo "" >> "$LOG_FILE"\n'
+        )
+
+        scripts["truncate-large-logs.sh"] = (
+            '#!/bin/bash\n'
+            'LOG_FILE="/var/log/cron-log-maintenance.log"\n'
+            'export TZ=Asia/Manila\n'
+            'MAX_LOG_SIZE_KB=10240\n\n'
+            "echo \"=== Log Truncation - $(date '+%Y-%m-%d %H:%M:%S %Z') ===\" >> \"$LOG_FILE\"\n\n"
+            'for logfile in /var/log/cron-*.log; do\n'
+            '    if [ -f "$logfile" ] && [ "$logfile" != "$LOG_FILE" ]; then\n'
+            '        SIZE_KB=$(du -k "$logfile" | cut -f1)\n'
+            '        if [ "$SIZE_KB" -gt "$MAX_LOG_SIZE_KB" ]; then\n'
+            '            LINES=$(wc -l < "$logfile")\n'
+            '            tail -500 "$logfile" > "${logfile}.tmp" && mv "${logfile}.tmp" "$logfile"\n'
+            '            echo "  Truncated $logfile (was ${SIZE_KB}KB, ${LINES} lines)" >> "$LOG_FILE"\n'
+            '        fi\n'
+            '    fi\n'
+            'done\n\n'
+            'for syslog in /var/log/syslog /var/log/kern.log /var/log/auth.log; do\n'
+            '    if [ -f "$syslog" ]; then\n'
+            '        SIZE_KB=$(du -k "$syslog" | cut -f1)\n'
+            '        if [ "$SIZE_KB" -gt 51200 ]; then\n'
+            '            tail -2000 "$syslog" > "${syslog}.tmp" && mv "${syslog}.tmp" "$syslog"\n'
+            '            echo "  Truncated $syslog (was ${SIZE_KB}KB)" >> "$LOG_FILE"\n'
+            '        fi\n'
+            '    fi\n'
+            'done\n\n'
+            'journalctl --vacuum-size=100M >> "$LOG_FILE" 2>&1\n\n'
+            "echo \"✅ Log maintenance complete\" >> \"$LOG_FILE\"\n"
+            'echo "" >> "$LOG_FILE"\n'
+        )
+
+        return scripts
+
+    @staticmethod
+    def _generate_crontab_entries():
+        """Generate RVDC crontab entries for root crontab."""
+        return (
+            '# ============================================================================\n'
+            '# RVDC Attendance & Payroll Management Cron Jobs\n'
+            '# Auto-installed via Server Maintenance Dashboard\n'
+            '# All times are in Philippines Time (UTC+8)\n'
+            '# ============================================================================\n\n'
+            '# DAILY TASKS\n'
+            '# 9:00 PM PHT (1:00 PM UTC) - Auto-close open attendance records\n'
+            '0 13 * * * /opt/cron-scripts/auto-close-attendance.sh\n\n'
+            '# 11:30 PM PHT (3:30 PM UTC) - Mark absent employees\n'
+            '30 15 * * * /opt/cron-scripts/mark-absences.sh\n\n'
+            '# 2:00 AM PHT (6:00 PM prev day UTC) - Delete old notifications\n'
+            '0 18 * * * /opt/cron-scripts/delete-old-notifications.sh\n\n'
+            '# 3:00 AM PHT (7:00 PM prev day UTC) - Cleanup archived quotations\n'
+            '0 19 * * * /opt/cron-scripts/cleanup-archived-quotations.sh\n\n'
+            '# 5:00 AM PHT (9:00 PM prev day UTC) - Truncate large log files\n'
+            '0 21 * * * /opt/cron-scripts/truncate-large-logs.sh\n\n'
+            '# 6:00 AM PHT (10:00 PM prev day UTC) - Disk usage check\n'
+            '0 22 * * * /opt/cron-scripts/disk-usage-check.sh\n\n'
+            '# WEEKLY TASKS\n'
+            '# Friday 11:00 PM PHT (3:00 PM UTC) - Fix attendance + refresh payroll\n'
+            '0 15 * * 5 /opt/cron-scripts/weekly-attendance-payroll-fix.sh\n\n'
+            '# Sunday 3:00 AM PHT (7:00 PM Sat UTC) - Docker system prune\n'
+            '0 19 * * 6 /opt/cron-scripts/docker-system-prune.sh\n\n'
+            '# Sunday 3:30 AM PHT (7:30 PM Sat UTC) - Cleanup unused profile images\n'
+            '30 19 * * 6 /opt/cron-scripts/cleanup-unused-images.sh\n\n'
+            '# YEARLY TASKS\n'
+            '# Jan 1 2:00 AM PHT (6:00 PM Dec 31 UTC) - Update holiday years\n'
+            '0 18 31 12 * /opt/cron-scripts/yearly-update-holidays.sh\n\n'
+            '# Jan 1 3:00 AM PHT (7:00 PM Dec 31 UTC) - Replenish leave balances\n'
+            '0 19 31 12 * /opt/cron-scripts/yearly-replenish-leaves.sh\n\n'
+            '# Jan 2 2:00 AM PHT (6:00 PM Jan 1 UTC) - Archive old payrolls\n'
+            '0 18 1 1 * /opt/cron-scripts/yearly-archive-payrolls.sh\n\n'
+            '# MONTHLY - Delete old log files (90+ days)\n'
+            '0 19 * * * [ "$(date +\\%d)" = "01" ] && find /var/log/cron-*.log -type f -mtime +90 -delete\n\n'
+            '# ============================================================================\n'
+            '# END RVDC Cron Jobs\n'
+            '# ============================================================================\n'
+        )
