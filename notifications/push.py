@@ -72,6 +72,7 @@ def send_web_push(user_id: int, title: str, body: str, url: str = "/", tag: str 
                 data=payload,
                 vapid_private_key=vapid_private,
                 vapid_claims={**vapid_claims},
+                ttl=86400,
             )
             logger.info("[WebPush] Sent OK to sub %s", sub.id)
         except WebPushException as e:
