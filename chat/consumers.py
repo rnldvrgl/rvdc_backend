@@ -45,6 +45,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
       { "action": "history", "with": <user_id>, "before": <timestamp?> }
       { "action": "typing", "to": <user_id> }
       { "action": "read", "from": <user_id> }
+      { "action": "react", "to": <user_id>, "msg_id": "<id>", "emoji": "👍" }
 
     Server pushes:
       { "type": "message", "message": { id, from, to, body, ts } }
@@ -52,6 +53,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
       { "type": "read", "from": <user_id> }
       { "type": "history", "messages": [...], "with": <user_id> }
       { "type": "presence", "online": [<user_id>, ...] }
+      { "type": "reaction", "msg_id": "<id>", "emoji": "👍", "from": <user_id>, "reactions": {...} }
     """
 
     async def connect(self):
@@ -127,6 +129,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_typing(payload)
         elif action == "read":
             await self._handle_read(payload)
+        elif action == "react":
+            await self._handle_react(payload)
         elif action == "presence":
             await self._send_presence()
 
@@ -188,6 +192,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
         raw = await self._redis.zrevrange(room, 0, 99)
         messages = [json.loads(m) for m in reversed(raw)]
 
+        # Attach reactions to each message
+        for msg in messages:
+            reaction_key = f"{room}:reactions:{msg['id']}"
+            all_fields = await self._redis.hgetall(reaction_key)
+            if all_fields:
+                reactions = {}
+                for k in all_fields:
+                    e, uid = k.rsplit(":", 1)
+                    reactions.setdefault(e, []).append(int(uid))
+                msg["reactions"] = reactions
+
         await self.send(text_data=json.dumps({
             "type": "history",
             "with": with_id,
@@ -218,6 +233,50 @@ class ChatConsumer(AsyncWebsocketConsumer):
             {"type": "chat.read", "data": {"type": "read", "from": self.user_id}},
         )
 
+    ALLOWED_EMOJIS = {"❤️", "😂", "😮", "😢", "😡", "👍"}
+
+    async def _handle_react(self, payload):
+        to_id = payload.get("to")
+        msg_id = payload.get("msg_id")
+        emoji = payload.get("emoji", "")
+        if not to_id or not msg_id or emoji not in self.ALLOWED_EMOJIS:
+            return
+
+        room = _room_key(self.user_id, to_id)
+        reaction_key = f"{room}:reactions:{msg_id}"
+
+        # Toggle reaction: if user already reacted with this emoji, remove it
+        field = f"{emoji}:{self.user_id}"
+        existing = await self._redis.hget(reaction_key, field)
+        if existing:
+            await self._redis.hdel(reaction_key, field)
+        else:
+            await self._redis.hset(reaction_key, field, "1")
+        await self._redis.expire(reaction_key, MESSAGE_TTL)
+
+        # Build current reactions summary: { "👍": [user_id, ...], ... }
+        all_fields = await self._redis.hgetall(reaction_key)
+        reactions = {}
+        for k in all_fields:
+            e, uid = k.rsplit(":", 1)
+            reactions.setdefault(e, []).append(int(uid))
+
+        event_data = {
+            "type": "reaction",
+            "msg_id": msg_id,
+            "emoji": emoji,
+            "from": self.user_id,
+            "reactions": reactions,
+        }
+        await self.channel_layer.group_send(
+            f"chat_user_{to_id}",
+            {"type": "chat.reaction", "data": event_data},
+        )
+        await self.channel_layer.group_send(
+            self.user_group,
+            {"type": "chat.reaction", "data": event_data},
+        )
+
     # ── Group event handlers ─────────────────────────────────────────────
 
     async def chat_message(self, event):
@@ -227,6 +286,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps(event["data"]))
 
     async def chat_read(self, event):
+        await self.send(text_data=json.dumps(event["data"]))
+
+    async def chat_reaction(self, event):
         await self.send(text_data=json.dumps(event["data"]))
 
     async def chat_presence(self, event):

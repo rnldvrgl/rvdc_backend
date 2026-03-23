@@ -92,8 +92,13 @@ class ChatUsersView(APIView):
                 }
             )
 
-        # Sort: online first, then by unread desc, then name
-        result.sort(key=lambda x: (-x["is_online"], -x["unread_count"], x["name"]))
+        # Sort: most recent conversation first, then online, then unread, then name
+        result.sort(key=lambda x: (
+            -(x["last_message"]["ts"] if x["last_message"] else 0),
+            -x["is_online"],
+            -x["unread_count"],
+            x["name"],
+        ))
         r.close()
 
         return Response(result)
