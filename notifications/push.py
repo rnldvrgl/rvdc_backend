@@ -27,7 +27,7 @@ def _extract_status_code(exc):
     return int(match.group(1)) if match else None
 
 
-def send_web_push(user_id: int, title: str, body: str, url: str = "/", tag: str = ""):
+def send_web_push(user_id: int, title: str, body: str, url: str = "/", tag: str = "", extra_data: dict | None = None):
     """Send a Web Push notification to all subscriptions of a user."""
     vapid_private = getattr(settings, "VAPID_PRIVATE_KEY", "")
     vapid_email = getattr(settings, "VAPID_ADMIN_EMAIL", "")
@@ -57,6 +57,7 @@ def send_web_push(user_id: int, title: str, body: str, url: str = "/", tag: str 
         "body": body,
         "url": url,
         "tag": tag,
+        **(extra_data or {}),
     })
 
     vapid_claims = {"sub": f"mailto:{vapid_email}"}
