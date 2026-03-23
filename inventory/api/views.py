@@ -1,7 +1,11 @@
+import io
+from decimal import Decimal, InvalidOperation
+
 from django.contrib.auth import get_user_model
 from django.db import models, transaction
 from django.db.models import Q
 from django.db.models.functions import Lower, Replace
+from django.http import HttpResponse
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from inventory.api.filters import (
@@ -117,6 +121,200 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             filters_config,
             ordering_config,
         )
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="bulk-template",
+        permission_classes=[IsAdminUser],
+    )
+    def bulk_template(self, request):
+        """Download an XLSX file pre-filled with all active items and their prices."""
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+        items = Item.objects.filter(is_deleted=False).select_related("category").order_by("name")
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Items"
+
+        headers = ["SKU", "Name", "Category", "Cost Price", "Retail Price", "Wholesale Price", "Technician Price"]
+        header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True, size=11)
+        thin_border = Border(
+            left=Side(style="thin"),
+            right=Side(style="thin"),
+            top=Side(style="thin"),
+            bottom=Side(style="thin"),
+        )
+
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+
+        for row_idx, item in enumerate(items, 2):
+            ws.cell(row=row_idx, column=1, value=item.sku).border = thin_border
+            ws.cell(row=row_idx, column=2, value=item.name).border = thin_border
+            ws.cell(row=row_idx, column=3, value=item.category.name if item.category else "").border = thin_border
+            ws.cell(row=row_idx, column=4, value=float(item.cost_price or 0)).border = thin_border
+            ws.cell(row=row_idx, column=5, value=float(item.retail_price or 0)).border = thin_border
+            ws.cell(row=row_idx, column=6, value=float(item.wholesale_price or 0)).border = thin_border
+            ws.cell(row=row_idx, column=7, value=float(item.technician_price or 0)).border = thin_border
+
+        # Lock SKU column (read-only identifier)
+        ws.sheet_properties.tabColor = "1F4E79"
+
+        # Auto-width
+        for col in ws.columns:
+            max_len = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                if cell.value:
+                    max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = min(max_len + 4, 40)
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        response = HttpResponse(
+            buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = 'attachment; filename="item_pricing_template.xlsx"'
+        return response
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-update",
+        permission_classes=[IsAdminUser],
+    )
+    def bulk_update(self, request):
+        """
+        Upload an XLSX file to bulk-update item names and prices.
+        Matches items by SKU (column A). Updatable columns:
+        Name, Cost Price, Retail Price, Wholesale Price, Technician Price.
+        """
+        import openpyxl
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response(
+                {"detail": "No file uploaded. Send as 'file' in multipart form data."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response(
+                {"detail": "Only .xlsx files are supported."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if xlsx_file.size > 5 * 1024 * 1024:
+            return Response(
+                {"detail": "File too large. Maximum 5 MB."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response(
+                {"detail": "Could not parse the uploaded file. Ensure it is a valid .xlsx."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ws = wb.active
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response(
+                {"detail": "The file contains no data rows."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Build SKU lookup
+        all_items = {
+            item.sku: item
+            for item in Item.objects.filter(is_deleted=False)
+        }
+
+        updated = []
+        skipped = []
+        errors = []
+
+        for row_num, row in enumerate(rows, 2):
+            if len(row) < 7:
+                errors.append({"row": row_num, "error": "Row has fewer than 7 columns."})
+                continue
+
+            sku = str(row[0] or "").strip()
+            if not sku:
+                continue  # skip blank rows
+
+            item = all_items.get(sku)
+            if not item:
+                errors.append({"row": row_num, "sku": sku, "error": "SKU not found."})
+                continue
+
+            new_name = str(row[1] or "").strip()
+            # row[2] is category (read-only, skip)
+
+            try:
+                new_cost = Decimal(str(row[3])) if row[3] is not None and str(row[3]).strip() != "" else None
+                new_retail = Decimal(str(row[4])) if row[4] is not None and str(row[4]).strip() != "" else None
+                new_wholesale = Decimal(str(row[5])) if row[5] is not None and str(row[5]).strip() != "" else None
+                new_tech = Decimal(str(row[6])) if row[6] is not None and str(row[6]).strip() != "" else None
+            except (InvalidOperation, ValueError) as e:
+                errors.append({"row": row_num, "sku": sku, "error": f"Invalid price value: {e}"})
+                continue
+
+            # Validate non-negative
+            for label, val in [("cost", new_cost), ("retail", new_retail), ("wholesale", new_wholesale), ("technician", new_tech)]:
+                if val is not None and val < 0:
+                    errors.append({"row": row_num, "sku": sku, "error": f"{label} price cannot be negative."})
+                    break
+            else:
+                # Check if anything changed
+                changed = False
+                if new_name and new_name != item.name:
+                    item.name = new_name
+                    changed = True
+                if new_cost is not None and new_cost != item.cost_price:
+                    item.cost_price = new_cost
+                    changed = True
+                if new_retail is not None and new_retail != item.retail_price:
+                    item.retail_price = new_retail
+                    changed = True
+                if new_wholesale is not None and new_wholesale != (item.wholesale_price or Decimal("0")):
+                    item.wholesale_price = new_wholesale
+                    changed = True
+                if new_tech is not None and new_tech != (item.technician_price or Decimal("0")):
+                    item.technician_price = new_tech
+                    changed = True
+
+                if changed:
+                    updated.append(item)
+                else:
+                    skipped.append(sku)
+
+        # Save in a transaction — Item.save() creates price history automatically
+        with transaction.atomic():
+            for item in updated:
+                item.save()
+
+        return Response({
+            "updated": len(updated),
+            "skipped": len(skipped),
+            "errors": errors,
+            "detail": f"Updated {len(updated)} items, skipped {len(skipped)} unchanged, {len(errors)} errors.",
+        })
 
     @action(detail=False, methods=["get"], url_path="check-duplicates")
     def check_duplicates(self, request):
