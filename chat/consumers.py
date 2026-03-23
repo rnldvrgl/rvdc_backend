@@ -158,6 +158,15 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "ts": ts,
         }
 
+        # Attach reply_to if provided
+        reply_to = payload.get("reply_to")
+        if reply_to and isinstance(reply_to, dict):
+            message["reply_to"] = {
+                "id": str(reply_to.get("id", "")),
+                "body": str(reply_to.get("body", ""))[:100],
+                "from_name": str(reply_to.get("from_name", "")),
+            }
+
         room = _room_key(self.user_id, to_id)
 
         # Store in Redis sorted set (score = timestamp)
@@ -198,8 +207,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             all_fields = await self._redis.hgetall(reaction_key)
             if all_fields:
                 reactions = {}
-                for k in all_fields:
-                    e, uid = k.rsplit(":", 1)
+                for uid, e in all_fields.items():
                     reactions.setdefault(e, []).append(int(uid))
                 msg["reactions"] = reactions
 
@@ -245,20 +253,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
         room = _room_key(self.user_id, to_id)
         reaction_key = f"{room}:reactions:{msg_id}"
 
-        # Toggle reaction: if user already reacted with this emoji, remove it
-        field = f"{emoji}:{self.user_id}"
+        # One reaction per user per message:
+        # field = user_id, value = emoji
+        field = str(self.user_id)
         existing = await self._redis.hget(reaction_key, field)
-        if existing:
+        is_removal = False
+
+        if existing == emoji:
+            # Same emoji → toggle off (remove)
             await self._redis.hdel(reaction_key, field)
+            is_removal = True
         else:
-            await self._redis.hset(reaction_key, field, "1")
+            # New emoji or different emoji → set/replace
+            await self._redis.hset(reaction_key, field, emoji)
         await self._redis.expire(reaction_key, MESSAGE_TTL)
 
         # Build current reactions summary: { "👍": [user_id, ...], ... }
         all_fields = await self._redis.hgetall(reaction_key)
         reactions = {}
-        for k in all_fields:
-            e, uid = k.rsplit(":", 1)
+        for uid, e in all_fields.items():
             reactions.setdefault(e, []).append(int(uid))
 
         event_data = {
@@ -277,8 +290,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             {"type": "chat.reaction", "data": event_data},
         )
 
-        # Send push notification if reacting to someone else's message (not removing)
-        if not existing and to_id != self.user_id:
+        # Send push notification if reacting (not removing)
+        if not is_removal and to_id != self.user_id:
             sender_name = await self._get_display_name(self.user_id)
             await database_sync_to_async(self._send_chat_push)(
                 to_id, sender_name, f"reacted {emoji} to your message"
