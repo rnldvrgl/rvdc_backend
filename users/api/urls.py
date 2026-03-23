@@ -24,5 +24,6 @@ urlpatterns = [
         name="employee-restore",
     ),
     path("settings/", views.SystemSettingsView.as_view(), name="system-settings"),
+    path("maintenance/", views.ServerMaintenanceView.as_view(), name="server-maintenance"),
     path("", include(router.urls)),
 ]
