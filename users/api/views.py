@@ -256,15 +256,16 @@ class IsAdminOrManager(permissions.BasePermission):
 class ServerMaintenanceView(APIView):
     """
     Admin-only endpoint for server maintenance tasks.
-    POST /maintenance/cleanup/ — Docker prune + log truncation
-    GET  /maintenance/disk-usage/ — Current disk usage stats
+    GET  — Disk, memory, Docker stats, container info
+    POST — Cleanup actions, restart containers, view logs
     """
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
-        """Return current disk usage stats."""
+        """Return server stats: disk, memory, docker, containers."""
         import shutil
         import subprocess
+        import os
 
         result = {}
 
@@ -276,6 +277,28 @@ class ServerMaintenanceView(APIView):
             "free_gb": round(free / (1024 ** 3), 2),
             "percent_used": round((used / total) * 100, 1),
         }
+
+        # Memory usage
+        try:
+            with open("/proc/meminfo", "r") as f:
+                meminfo = {}
+                for line in f:
+                    parts = line.split(":")
+                    if len(parts) == 2:
+                        key = parts[0].strip()
+                        val = parts[1].strip().split()[0]  # value in kB
+                        meminfo[key] = int(val)
+                total_mem = meminfo.get("MemTotal", 0)
+                available = meminfo.get("MemAvailable", 0)
+                used_mem = total_mem - available
+                result["memory"] = {
+                    "total_gb": round(total_mem / (1024 ** 2), 2),
+                    "used_gb": round(used_mem / (1024 ** 2), 2),
+                    "available_gb": round(available / (1024 ** 2), 2),
+                    "percent_used": round((used_mem / total_mem) * 100, 1) if total_mem else 0,
+                }
+        except (FileNotFoundError, ValueError, ZeroDivisionError):
+            result["memory"] = None
 
         # Docker disk usage (if socket available)
         try:
@@ -297,10 +320,62 @@ class ServerMaintenanceView(APIView):
         except (FileNotFoundError, subprocess.TimeoutExpired):
             result["docker"] = None
 
+        # Docker containers status
+        try:
+            containers_output = subprocess.run(
+                [
+                    "docker", "ps", "-a",
+                    "--format", "{{.Names}}\t{{.Status}}\t{{.State}}\t{{.Size}}"
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            if containers_output.returncode == 0 and containers_output.stdout.strip():
+                result["containers"] = []
+                for line in containers_output.stdout.strip().split("\n"):
+                    parts = line.split("\t")
+                    if len(parts) >= 3:
+                        result["containers"].append({
+                            "name": parts[0],
+                            "status": parts[1],
+                            "state": parts[2],
+                            "size": parts[3] if len(parts) > 3 else "",
+                        })
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            result["containers"] = None
+
+        # Top large files in media directory
+        media_root = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "media")
+        try:
+            large_files = []
+            for dirpath, _, filenames in os.walk(media_root):
+                for fname in filenames:
+                    fpath = os.path.join(dirpath, fname)
+                    try:
+                        fsize = os.path.getsize(fpath)
+                        if fsize > 1 * 1024 * 1024:  # > 1MB
+                            large_files.append({
+                                "path": os.path.relpath(fpath, media_root),
+                                "size_mb": round(fsize / (1024 * 1024), 2),
+                            })
+                    except OSError:
+                        pass
+            large_files.sort(key=lambda x: x["size_mb"], reverse=True)
+            result["large_media_files"] = large_files[:20]
+            # Total media size
+            total_media = sum(
+                os.path.getsize(os.path.join(dp, f))
+                for dp, _, fns in os.walk(media_root) for f in fns
+                if os.path.isfile(os.path.join(dp, f))
+            )
+            result["media_total_mb"] = round(total_media / (1024 * 1024), 2)
+        except (FileNotFoundError, OSError):
+            result["large_media_files"] = []
+            result["media_total_mb"] = 0
+
         return Response(result)
 
     def post(self, request):
-        """Run cleanup tasks: docker prune, log truncation."""
+        """Run maintenance actions."""
         import subprocess
         import logging
 
@@ -308,7 +383,10 @@ class ServerMaintenanceView(APIView):
         action_type = request.data.get("action", "full_cleanup")
         results = []
 
-        allowed_actions = ["docker_prune", "log_cleanup", "full_cleanup"]
+        allowed_actions = [
+            "docker_prune", "log_cleanup", "full_cleanup",
+            "restart_containers", "container_logs",
+        ]
         if action_type not in allowed_actions:
             return Response(
                 {"error": f"Invalid action. Allowed: {allowed_actions}"},
@@ -384,6 +462,85 @@ class ServerMaintenanceView(APIView):
                 results.append({
                     "task": "log_cleanup",
                     "success": False,
+                    "error": str(e)[:200],
+                })
+
+        # Restart containers
+        if action_type == "restart_containers":
+            container = request.data.get("container", "")
+            # Only allow restarting known project containers
+            allowed_containers = ["rvdc_backend-api-1", "rvdc_backend-redis-1", "rvdc_backend-db-1"]
+            if container and container in allowed_containers:
+                try:
+                    restart_result = subprocess.run(
+                        ["docker", "restart", container],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    results.append({
+                        "task": f"restart_{container}",
+                        "success": restart_result.returncode == 0,
+                        "output": f"Container {container} restarted" if restart_result.returncode == 0 else "",
+                        "error": restart_result.stderr.strip()[:200] if restart_result.returncode != 0 else "",
+                    })
+                except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                    results.append({
+                        "task": f"restart_{container}",
+                        "success": False,
+                        "error": str(e)[:200],
+                    })
+            elif not container:
+                # Restart all project containers
+                for c_name in allowed_containers:
+                    try:
+                        restart_result = subprocess.run(
+                            ["docker", "restart", c_name],
+                            capture_output=True, text=True, timeout=60,
+                        )
+                        results.append({
+                            "task": f"restart_{c_name}",
+                            "success": restart_result.returncode == 0,
+                            "output": f"{c_name} restarted" if restart_result.returncode == 0 else "",
+                            "error": restart_result.stderr.strip()[:200] if restart_result.returncode != 0 else "",
+                        })
+                    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                        results.append({
+                            "task": f"restart_{c_name}",
+                            "success": False,
+                            "error": str(e)[:200],
+                        })
+            else:
+                results.append({
+                    "task": "restart",
+                    "success": False,
+                    "error": f"Container not allowed. Allowed: {allowed_containers}",
+                })
+
+        # Container logs
+        if action_type == "container_logs":
+            container = request.data.get("container", "rvdc_backend-api-1")
+            tail_lines = min(int(request.data.get("lines", 100)), 500)
+            allowed_containers = ["rvdc_backend-api-1", "rvdc_backend-redis-1", "rvdc_backend-db-1"]
+            if container not in allowed_containers:
+                return Response(
+                    {"error": f"Container not allowed. Allowed: {allowed_containers}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                logs_result = subprocess.run(
+                    ["docker", "logs", "--tail", str(tail_lines), container],
+                    capture_output=True, text=True, timeout=15,
+                )
+                log_output = logs_result.stdout or logs_result.stderr or ""
+                return Response({
+                    "success": True,
+                    "action": "container_logs",
+                    "container": container,
+                    "logs": log_output[-10000:],  # Cap at 10k chars
+                })
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                return Response({
+                    "success": False,
+                    "action": "container_logs",
                     "error": str(e)[:200],
                 })
 
