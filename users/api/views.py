@@ -256,10 +256,43 @@ class IsAdminOrManager(permissions.BasePermission):
 class ServerMaintenanceView(APIView):
     """
     Admin-only endpoint for server maintenance tasks.
-    GET  — Disk, memory, Docker stats, container info
-    POST — Cleanup actions, restart containers, view logs
+    GET  — Disk, memory, Docker stats, container info, cron jobs, management commands
+    POST — Cleanup actions, restart containers, view logs, run management commands
     """
     permission_classes = [permissions.IsAdminUser]
+
+    # Defined cron schedule (runs on host, not in container)
+    CRON_JOBS = [
+        {"id": "auto_close_attendance", "schedule": "Daily 9:00 PM", "description": "Auto-close open attendance sessions for employees who forgot to clock out", "log_file": "cron-auto-close-attendance.log", "category": "attendance"},
+        {"id": "mark_daily_absences", "schedule": "Daily 11:30 PM", "description": "Mark employees absent if no clock-in/out and no approved leave", "log_file": "cron-mark-absences.log", "category": "attendance"},
+        {"id": "delete_old_notifications", "schedule": "Daily 2:00 AM", "description": "Delete read notifications older than 7 days", "log_file": "cron-delete-old-notifications.log", "category": "maintenance"},
+        {"id": "cleanup_archived_quotations", "schedule": "Daily 3:00 AM", "description": "Delete archived quotations older than 14 days", "log_file": "cron-cleanup-archived-quotations.log", "category": "maintenance"},
+        {"id": "truncate_large_logs", "schedule": "Daily 5:00 AM", "description": "Truncate cron log files over 10MB, keep last 500 lines", "log_file": "cron-log-maintenance.log", "category": "maintenance"},
+        {"id": "disk_usage_check", "schedule": "Daily 6:00 AM", "description": "Monitor disk usage, auto-cleanup at 90%+ (apt cache, journal, Docker)", "log_file": "cron-disk-usage.log", "category": "maintenance"},
+        {"id": "weekly_attendance_payroll_fix", "schedule": "Friday 11:00 PM", "description": "Verify and fix attendance for the past week, then refresh payroll for Saturday payday", "log_file": "cron-weekly-attendance-payroll-fix.log", "category": "payroll"},
+        {"id": "docker_system_prune", "schedule": "Sunday 3:00 AM", "description": "Remove unused containers, networks, and dangling images", "log_file": "cron-docker-prune.log", "category": "maintenance"},
+        {"id": "cleanup_unused_images", "schedule": "Sunday 3:30 AM", "description": "Delete unused user profile images not linked to any employee", "log_file": "cron-cleanup-images.log", "category": "maintenance"},
+        {"id": "update_holiday_years", "schedule": "Jan 1, 2:00 AM", "description": "Shift all holidays to the next calendar year", "log_file": "cron-yearly-update-holidays.log", "category": "payroll"},
+        {"id": "replenish_leave_balances", "schedule": "Jan 1, 3:00 AM", "description": "Reset annual leave balances (7 sick, 3 emergency days)", "log_file": "cron-yearly-replenish-leaves.log", "category": "attendance"},
+        {"id": "archive_old_payrolls", "schedule": "Jan 2, 2:00 AM", "description": "Export and delete payroll data from the previous year", "log_file": "cron-yearly-archive-payrolls.log", "category": "payroll"},
+    ]
+
+    # Management commands safe for manual triggering
+    TRIGGERABLE_COMMANDS = [
+        {"id": "auto_close_attendance", "label": "Auto-Close Attendance", "description": "Close any open attendance sessions", "app": "attendance", "category": "attendance", "destructive": False},
+        {"id": "mark_daily_absences", "label": "Mark Daily Absences", "description": "Mark employees absent for today if no attendance record", "app": "attendance", "category": "attendance", "destructive": False},
+        {"id": "fix_attendance_time_entries", "label": "Fix Attendance Entries", "description": "Recalculate paid hours, lateness, and penalties for all attendance records", "app": "attendance", "args": ["--verify-only"], "category": "attendance", "destructive": False},
+        {"id": "recalculate_pending_attendance", "label": "Recalculate Attendance", "description": "Recompute attendance metrics for pending records", "app": "attendance", "category": "attendance", "destructive": False},
+        {"id": "refresh_payroll_from_attendance", "label": "Refresh Payroll", "description": "Recompute payroll calculations from attendance data", "app": "payroll", "category": "payroll", "destructive": False},
+        {"id": "delete_old_notifications", "label": "Delete Old Notifications", "description": "Remove read notifications older than 7 days", "app": "notifications", "args": ["--all", "--days", "7"], "category": "maintenance", "destructive": False},
+        {"id": "cleanup_unused_images", "label": "Cleanup Unused Images", "description": "Delete orphaned profile images not linked to any user", "app": "users", "category": "maintenance", "destructive": False},
+        {"id": "cleanup_archived_quotations", "label": "Cleanup Archived Quotations", "description": "Delete archived quotations older than 14 days", "app": "quotations", "args": ["--days", "14"], "category": "maintenance", "destructive": False},
+        {"id": "recalculate_remittances", "label": "Recalculate Remittances", "description": "Recalculate sales totals on all remittance records", "app": "remittances", "category": "sales", "destructive": False},
+        {"id": "recalculate_service_revenue", "label": "Recalculate Service Revenue", "description": "Recalculate revenue figures for all services", "app": "services", "category": "sales", "destructive": False},
+        {"id": "find_duplicate_items", "label": "Find Duplicate Items", "description": "Scan inventory for duplicate items by name", "app": "inventory", "category": "inventory", "destructive": False},
+        {"id": "remove_duplicate_clients", "label": "Remove Duplicate Clients", "description": "Remove duplicate client records by contact number, keeping the oldest", "app": "clients", "category": "maintenance", "destructive": True},
+        {"id": "add_philippine_holidays", "label": "Add PH Holidays", "description": "Add Philippine holidays for the current year (skip existing)", "app": "payroll", "args": ["--skip-existing"], "category": "payroll", "destructive": False},
+    ]
 
     def get(self, request):
         """Return server stats: disk, memory, docker, containers."""
@@ -376,6 +409,41 @@ class ServerMaintenanceView(APIView):
             result["large_media_files"] = []
             result["media_total_mb"] = 0
 
+        # Cron jobs with log info
+        host_logs_dir = "/host-logs"
+        cron_jobs = []
+        for job in self.CRON_JOBS:
+            job_info = {**job}
+            log_path = os.path.join(host_logs_dir, job["log_file"])
+            if os.path.isfile(log_path):
+                try:
+                    stat = os.stat(log_path)
+                    job_info["log_size_kb"] = round(stat.st_size / 1024, 1)
+                    job_info["last_modified"] = timezone.datetime.fromtimestamp(
+                        stat.st_mtime, tz=timezone.get_current_timezone()
+                    ).isoformat()
+                    # Read last few lines to detect success/failure
+                    with open(log_path, "r", errors="replace") as f:
+                        lines = f.readlines()
+                        tail = "".join(lines[-5:]) if lines else ""
+                        if "✅" in tail or "Success" in tail or "complete" in tail.lower():
+                            job_info["last_status"] = "success"
+                        elif "❌" in tail or "Failed" in tail or "Error" in tail:
+                            job_info["last_status"] = "error"
+                        else:
+                            job_info["last_status"] = "unknown"
+                except OSError:
+                    job_info["last_status"] = "no_log"
+            else:
+                job_info["last_status"] = "no_log"
+                job_info["log_size_kb"] = 0
+                job_info["last_modified"] = None
+            cron_jobs.append(job_info)
+        result["cron_jobs"] = cron_jobs
+
+        # Available management commands for manual triggering
+        result["management_commands"] = self.TRIGGERABLE_COMMANDS
+
         return Response(result)
 
     def post(self, request):
@@ -390,6 +458,7 @@ class ServerMaintenanceView(APIView):
         allowed_actions = [
             "docker_prune", "log_cleanup", "full_cleanup",
             "restart_containers", "container_logs",
+            "run_command", "view_cron_log",
         ]
         if action_type not in allowed_actions:
             return Response(
@@ -397,7 +466,9 @@ class ServerMaintenanceView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Container logs runs synchronously (fast, returns data)
+        # --- Synchronous actions (fast, return data immediately) ---
+
+        # Container logs
         if action_type == "container_logs":
             container = request.data.get("container", "rvdc_backend-api-1")
             tail_lines = min(int(request.data.get("lines", 100)), 500)
@@ -426,10 +497,60 @@ class ServerMaintenanceView(APIView):
                     "error": str(e)[:200],
                 })
 
-        # All other actions run in background thread
+        # View cron log file
+        if action_type == "view_cron_log":
+            import os
+            log_file = request.data.get("log_file", "")
+            # Validate against known cron job log files only
+            allowed_log_files = {job["log_file"] for job in self.CRON_JOBS}
+            if log_file not in allowed_log_files:
+                return Response(
+                    {"error": "Log file not allowed."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            log_path = os.path.join("/host-logs", log_file)
+            try:
+                with open(log_path, "r", errors="replace") as f:
+                    content = f.read()
+                # Return last 15000 chars
+                return Response({
+                    "success": True,
+                    "action": "view_cron_log",
+                    "log_file": log_file,
+                    "logs": content[-15000:],
+                })
+            except FileNotFoundError:
+                return Response({
+                    "success": True,
+                    "action": "view_cron_log",
+                    "log_file": log_file,
+                    "logs": "No log file found. This job may not have run yet.",
+                })
+            except OSError as e:
+                return Response({
+                    "success": False,
+                    "action": "view_cron_log",
+                    "error": str(e)[:200],
+                })
+
+        # --- Background actions (threaded, push result via WebSocket) ---
         user_id = request.user.id
         user_name = request.user.get_full_name()
         container_arg = request.data.get("container", "")
+        command_id = request.data.get("command", "")
+
+        # Validate run_command before starting thread
+        command_config = None
+        if action_type == "run_command":
+            command_config = next(
+                (cmd for cmd in self.TRIGGERABLE_COMMANDS if cmd["id"] == command_id),
+                None,
+            )
+            if not command_config:
+                return Response(
+                    {"error": f"Unknown or disallowed command: {command_id}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         def _run_maintenance():
             _logger = logging.getLogger(__name__)
@@ -540,6 +661,33 @@ class ServerMaintenanceView(APIView):
                             "error": str(e)[:200],
                         })
 
+            # Run management command
+            if action_type == "run_command" and command_config:
+                from io import StringIO
+                from django.core.management import call_command
+
+                cmd_name = command_config["id"]
+                cmd_args = command_config.get("args", [])
+                try:
+                    out = StringIO()
+                    err = StringIO()
+                    call_command(cmd_name, *cmd_args, stdout=out, stderr=err)
+                    output = out.getvalue().strip()
+                    error_output = err.getvalue().strip()
+                    results.append({
+                        "task": cmd_name,
+                        "success": True,
+                        "output": (output or "Command completed successfully.")[-1000:],
+                    })
+                    if error_output:
+                        results[-1]["output"] += f"\n{error_output[-500:]}"
+                except Exception as e:
+                    results.append({
+                        "task": cmd_name,
+                        "success": False,
+                        "error": str(e)[:500],
+                    })
+
             all_success = all(r.get("success") for r in results)
             _logger.info(
                 "Server maintenance by %s: action=%s results=%s",
@@ -558,6 +706,7 @@ class ServerMaintenanceView(APIView):
                         "log_cleanup": "Log Cleanup",
                         "full_cleanup": "Full System Cleanup",
                         "restart_containers": "Container Restart",
+                        "run_command": command_config["label"] if command_config else "Command",
                     }
                     label = action_labels.get(action_type, action_type)
                     failed = [r for r in results if not r.get("success")]
@@ -595,6 +744,7 @@ class ServerMaintenanceView(APIView):
             "log_cleanup": "Log Cleanup",
             "full_cleanup": "Full System Cleanup",
             "restart_containers": "Container Restart",
+            "run_command": command_config["label"] if command_config else "Command",
         }
         return Response({
             "accepted": True,
