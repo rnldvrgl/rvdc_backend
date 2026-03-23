@@ -191,6 +191,124 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     @action(
         detail=False,
         methods=["post"],
+        url_path="bulk-preview",
+        permission_classes=[IsAdminUser],
+    )
+    def bulk_preview(self, request):
+        """
+        Upload an XLSX file to preview changes before applying them.
+        Returns a list of changes (old vs new) without saving anything.
+        """
+        import openpyxl
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response(
+                {"detail": "No file uploaded. Send as 'file' in multipart form data."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response(
+                {"detail": "Only .xlsx files are supported."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if xlsx_file.size > 5 * 1024 * 1024:
+            return Response(
+                {"detail": "File too large. Maximum 5 MB."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response(
+                {"detail": "Could not parse the uploaded file. Ensure it is a valid .xlsx."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ws = wb.active
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response(
+                {"detail": "The file contains no data rows."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        all_items = {
+            item.sku: item
+            for item in Item.objects.filter(is_deleted=False)
+        }
+
+        changes = []
+        skipped = 0
+        errors = []
+
+        for row_num, row in enumerate(rows, 2):
+            if len(row) < 7:
+                errors.append({"row": row_num, "error": "Row has fewer than 7 columns."})
+                continue
+
+            sku = str(row[0] or "").strip()
+            if not sku:
+                continue
+
+            item = all_items.get(sku)
+            if not item:
+                errors.append({"row": row_num, "sku": sku, "error": "SKU not found."})
+                continue
+
+            new_name = str(row[1] or "").strip()
+
+            try:
+                new_cost = Decimal(str(row[3])) if row[3] is not None and str(row[3]).strip() != "" else None
+                new_retail = Decimal(str(row[4])) if row[4] is not None and str(row[4]).strip() != "" else None
+                new_wholesale = Decimal(str(row[5])) if row[5] is not None and str(row[5]).strip() != "" else None
+                new_tech = Decimal(str(row[6])) if row[6] is not None and str(row[6]).strip() != "" else None
+            except (InvalidOperation, ValueError) as e:
+                errors.append({"row": row_num, "sku": sku, "error": f"Invalid price value: {e}"})
+                continue
+
+            for label, val in [("cost", new_cost), ("retail", new_retail), ("wholesale", new_wholesale), ("technician", new_tech)]:
+                if val is not None and val < 0:
+                    errors.append({"row": row_num, "sku": sku, "error": f"{label} price cannot be negative."})
+                    break
+            else:
+                item_changes = []
+                if new_name and new_name != item.name:
+                    item_changes.append({"field": "Name", "old": item.name, "new": new_name})
+                if new_cost is not None and new_cost != item.cost_price:
+                    item_changes.append({"field": "Cost Price", "old": str(item.cost_price), "new": str(new_cost)})
+                if new_retail is not None and new_retail != item.retail_price:
+                    item_changes.append({"field": "Retail Price", "old": str(item.retail_price), "new": str(new_retail)})
+                if new_wholesale is not None and new_wholesale != (item.wholesale_price or Decimal("0")):
+                    item_changes.append({"field": "Wholesale Price", "old": str(item.wholesale_price or 0), "new": str(new_wholesale)})
+                if new_tech is not None and new_tech != (item.technician_price or Decimal("0")):
+                    item_changes.append({"field": "Technician Price", "old": str(item.technician_price or 0), "new": str(new_tech)})
+
+                if item_changes:
+                    changes.append({
+                        "row": row_num,
+                        "sku": sku,
+                        "name": item.name,
+                        "changes": item_changes,
+                    })
+                else:
+                    skipped += 1
+
+        return Response({
+            "changes": changes,
+            "skipped": skipped,
+            "errors": errors,
+            "summary": f"{len(changes)} items to update, {skipped} unchanged, {len(errors)} errors.",
+        })
+
+    @action(
+        detail=False,
+        methods=["post"],
         url_path="bulk-update",
         permission_classes=[IsAdminUser],
     )
