@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .export_views import BackgroundExportView, ExportDownloadView
 from .views import (
     AnalyticsViewSet,
     CalendarEventsView,
@@ -44,6 +45,8 @@ urlpatterns = [
         name="unpaid-sales-status",
     ),
     path("calendar/events/", CalendarEventsView.as_view(), name="calendar-events"),
+    path("export/", BackgroundExportView.as_view(), name="background-export"),
+    path("export/download/<str:token>/", ExportDownloadView.as_view(), name="export-download"),
 ]
 
 # Include router URLs
