@@ -207,9 +207,17 @@ class ChatConsumer(AsyncWebsocketConsumer):
             all_fields = await self._redis.hgetall(reaction_key)
             if all_fields:
                 reactions = {}
+                bad_fields = []
                 for uid, e in all_fields.items():
-                    reactions.setdefault(e, []).append(int(uid))
-                msg["reactions"] = reactions
+                    try:
+                        reactions.setdefault(e, []).append(int(uid))
+                    except (ValueError, TypeError):
+                        bad_fields.append(uid)
+                # Clean up corrupted entries
+                if bad_fields:
+                    await self._redis.hdel(reaction_key, *bad_fields)
+                if reactions:
+                    msg["reactions"] = reactions
 
         await self.send(text_data=json.dumps({
             "type": "history",
@@ -272,7 +280,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         all_fields = await self._redis.hgetall(reaction_key)
         reactions = {}
         for uid, e in all_fields.items():
-            reactions.setdefault(e, []).append(int(uid))
+            try:
+                reactions.setdefault(e, []).append(int(uid))
+            except (ValueError, TypeError):
+                await self._redis.hdel(reaction_key, uid)
 
         event_data = {
             "type": "reaction",
