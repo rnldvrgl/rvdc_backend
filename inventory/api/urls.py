@@ -1,4 +1,5 @@
 from django.urls import include, path
+from inventory.api.export_views import InventoryExportView
 from inventory.api.views import (
     CustomItemTemplateViewSet,
     ItemViewSet,
@@ -21,4 +22,5 @@ router.register(r"custom-item-templates", CustomItemTemplateViewSet, basename="c
 
 urlpatterns = [
     path("", include(router.urls)),
+    path("export-report/", InventoryExportView.as_view(), name="inventory-export-report"),
 ]
