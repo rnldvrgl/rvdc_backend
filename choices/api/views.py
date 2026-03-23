@@ -77,6 +77,10 @@ class ClientChoicesAPIView(BaseChoicesAPIView):
     queryset = Client.objects.filter(is_deleted=False)
     serializer_class = ClientSerializer
 
+    def list(self, request, *args, **kwargs):
+        # Skip cache — clients change frequently (new clients added often)
+        return super(BaseChoicesAPIView, self).list(request, *args, **kwargs)
+
 
 class EmployeesChoicesAPIView(BaseChoicesAPIView):
     queryset = CustomUser.objects.exclude(role="admin").filter(is_deleted=False, is_active=True)
