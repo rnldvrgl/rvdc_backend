@@ -86,6 +86,11 @@ class Command(BaseCommand):
             action='store_true',
             help='Recalculate all metrics even if they seem correct',
         )
+        parser.add_argument(
+            '--force',
+            action='store_true',
+            help='Skip confirmation prompt (for non-interactive use like cron)',
+        )
 
     def handle(self, *args, **options):
         dry_run = options['dry_run']
@@ -97,6 +102,7 @@ class Command(BaseCommand):
         end_date = options['end_date']
         all_status = options['all_status']
         recalculate_all = options['recalculate_all']
+        force = options['force']
 
         self.stdout.write(self.style.SUCCESS('\n' + '=' * 80))
         self.stdout.write(self.style.SUCCESS('ATTENDANCE TIME ENTRY FIX'))
@@ -150,10 +156,11 @@ class Command(BaseCommand):
             self._fix_attendances(attendances, verbose, dry_run=True, recalculate_all=recalculate_all)
         else:
             self.stdout.write(self.style.SUCCESS('\nMode: LIVE (will update records)'))
-            confirm = input('\nAre you sure you want to fix these attendance records? (yes/no): ')
-            if confirm.lower() != 'yes':
-                self.stdout.write(self.style.WARNING('Aborted.'))
-                return
+            if not force:
+                confirm = input('\nAre you sure you want to fix these attendance records? (yes/no): ')
+                if confirm.lower() != 'yes':
+                    self.stdout.write(self.style.WARNING('Aborted.'))
+                    return
             self._fix_attendances(attendances, verbose, dry_run=False, recalculate_all=recalculate_all)
 
     def _verify_attendances(self, attendances, verbose):

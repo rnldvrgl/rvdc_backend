@@ -65,6 +65,11 @@ class Command(BaseCommand):
             help='Show detailed output',
         )
         parser.add_argument(
+            '--force',
+            action='store_true',
+            help='Skip confirmation prompt (for non-interactive use like cron)',
+        )
+        parser.add_argument(
             '--reset',
             action='store_true',
             help='Reset to full allocation (overwrite existing)',
@@ -78,6 +83,7 @@ class Command(BaseCommand):
         emergency_leave_days = options['emergency_leave']
         year = options['year']
         reset = options['reset']
+        force = options['force']
 
         self.stdout.write(self.style.SUCCESS('\n' + '=' * 80))
         self.stdout.write(self.style.SUCCESS('LEAVE BALANCE REPLENISHMENT'))
@@ -118,10 +124,11 @@ class Command(BaseCommand):
             )
         else:
             self.stdout.write(self.style.SUCCESS('\nMode: LIVE (will update records)'))
-            confirm = input(f'\nReplenish leave balances for {total_count} employee(s)? (yes/no): ')
-            if confirm.lower() != 'yes':
-                self.stdout.write(self.style.WARNING('Aborted.'))
-                return
+            if not force:
+                confirm = input(f'\nReplenish leave balances for {total_count} employee(s)? (yes/no): ')
+                if confirm.lower() != 'yes':
+                    self.stdout.write(self.style.WARNING('Aborted.'))
+                    return
             self._replenish_leaves(
                 employees,
                 sick_leave_days,

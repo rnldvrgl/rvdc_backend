@@ -164,18 +164,16 @@ docker exec "$CONTAINER_NAME" python manage.py fix_attendance_time_entries \
 # Step 2: Fix attendance
 echo "--- Step 2: Fixing attendance ---" >> "$LOG_FILE"
 docker exec "$CONTAINER_NAME" python manage.py fix_attendance_time_entries \
+    --force \
     --start-date "$LAST_SATURDAY" \
-    --end-date "$LAST_FRIDAY" << CONFIRM >> "$LOG_FILE" 2>&1
-yes
-CONFIRM
+    --end-date "$LAST_FRIDAY" >> "$LOG_FILE" 2>&1
 
 # Step 3: Refresh payroll from attendance
 echo "--- Step 3: Refreshing payroll ---" >> "$LOG_FILE"
 docker exec "$CONTAINER_NAME" python manage.py refresh_payroll_from_attendance \
+    --force \
     --start-date "$LAST_SATURDAY" \
-    --end-date "$LAST_FRIDAY" << CONFIRM >> "$LOG_FILE" 2>&1
-yes
-CONFIRM
+    --end-date "$LAST_FRIDAY" >> "$LOG_FILE" 2>&1
 
 if [ $? -eq 0 ]; then
     echo "✅ Weekly fix complete - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
@@ -199,9 +197,7 @@ echo "=== Update Holiday Years - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_F
 echo "Updating holidays to year: $NEXT_YEAR" >> "$LOG_FILE"
 
 docker exec "$CONTAINER_NAME" python manage.py update_holiday_years \
-    --year "$NEXT_YEAR" << CONFIRM >> "$LOG_FILE" 2>&1
-yes
-CONFIRM
+    --year "$NEXT_YEAR" --force >> "$LOG_FILE" 2>&1
 
 if [ $? -eq 0 ]; then
     echo "✅ Holiday years updated - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
@@ -224,9 +220,7 @@ echo "Resetting leave balances for all employees" >> "$LOG_FILE"
 docker exec "$CONTAINER_NAME" python manage.py replenish_leave_balances \
     --reset \
     --sick-leave 7 \
-    --emergency-leave 3 << CONFIRM >> "$LOG_FILE" 2>&1
-yes
-CONFIRM
+    --emergency-leave 3 --force >> "$LOG_FILE" 2>&1
 
 if [ $? -eq 0 ]; then
     echo "✅ Leave balances replenished - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
@@ -253,9 +247,7 @@ echo "Archiving payrolls from year: $LAST_YEAR and earlier" >> "$LOG_FILE"
 docker exec "$CONTAINER_NAME" python manage.py archive_old_payrolls \
     --year "$LAST_YEAR" \
     --export \
-    --delete << CONFIRM >> "$LOG_FILE" 2>&1
-yes
-CONFIRM
+    --delete --force >> "$LOG_FILE" 2>&1
 
 if [ $? -eq 0 ]; then
     echo "✅ Payrolls archived - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"

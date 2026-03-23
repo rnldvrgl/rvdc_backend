@@ -50,12 +50,16 @@ class Command(BaseCommand):
             action='store_true',
             help='Show detailed output',
         )
-
-    def handle(self, *args, **options):
+        parser.add_argument(
+            '--force',
+            action='store_true',
+            help='Skip confirmation prompt (for non-interactive use like cron)',
+        )(self, *args, **options):
         dry_run = options['dry_run']
         verbose = options['verbose']
         target_year = options['year']
         holiday_ids = options['ids']
+        force = options['force']
 
         current_year = date.today().year
         target_year = target_year or (current_year + 1)
@@ -92,10 +96,11 @@ class Command(BaseCommand):
             self._update_holidays(holidays, target_year, verbose, dry_run=True)
         else:
             self.stdout.write(self.style.SUCCESS('\nMode: LIVE (will update records)'))
-            confirm = input(f'\nUpdate {total_count} holiday(s) to year {target_year}? (yes/no): ')
-            if confirm.lower() != 'yes':
-                self.stdout.write(self.style.WARNING('Aborted.'))
-                return
+            if not force:
+                confirm = input(f'\nUpdate {total_count} holiday(s) to year {target_year}? (yes/no): ')
+                if confirm.lower() != 'yes':
+                    self.stdout.write(self.style.WARNING('Aborted.'))
+                    return
             self._update_holidays(holidays, target_year, verbose, dry_run=False)
 
     def _update_holidays(self, holidays, target_year, verbose, dry_run):

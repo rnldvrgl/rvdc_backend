@@ -78,7 +78,11 @@ class Command(BaseCommand):
             help='Show detailed output',
         )
         parser.add_argument(
-            '--status',
+            '--force',
+            action='store_true',
+            help='Skip confirmation prompt (for non-interactive use like cron)',
+        )
+        parser.add_argument(
             type=str,
             choices=['draft', 'approved', 'paid', 'all'],
             default='all',
