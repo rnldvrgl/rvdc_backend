@@ -382,10 +382,10 @@ class ServerMaintenanceView(APIView):
         """Run maintenance actions."""
         import subprocess
         import logging
+        import threading
 
         logger = logging.getLogger(__name__)
         action_type = request.data.get("action", "full_cleanup")
-        results = []
 
         allowed_actions = [
             "docker_prune", "log_cleanup", "full_cleanup",
@@ -397,129 +397,7 @@ class ServerMaintenanceView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Docker system prune
-        if action_type in ("docker_prune", "full_cleanup"):
-            try:
-                prune_result = subprocess.run(
-                    ["docker", "system", "prune", "-f"],
-                    capture_output=True, text=True, timeout=120,
-                )
-                results.append({
-                    "task": "docker_system_prune",
-                    "success": prune_result.returncode == 0,
-                    "output": prune_result.stdout.strip()[-500:] if prune_result.stdout else "",
-                    "error": prune_result.stderr.strip()[-200:] if prune_result.returncode != 0 else "",
-                })
-            except FileNotFoundError:
-                results.append({
-                    "task": "docker_system_prune",
-                    "success": False,
-                    "error": "Docker not available in this environment",
-                })
-            except subprocess.TimeoutExpired:
-                results.append({
-                    "task": "docker_system_prune",
-                    "success": False,
-                    "error": "Timed out after 120s",
-                })
-
-            # Image prune (unused images older than 7 days)
-            try:
-                img_result = subprocess.run(
-                    ["docker", "image", "prune", "-a", "--filter", "until=168h", "-f"],
-                    capture_output=True, text=True, timeout=120,
-                )
-                results.append({
-                    "task": "docker_image_prune",
-                    "success": img_result.returncode == 0,
-                    "output": img_result.stdout.strip()[-500:] if img_result.stdout else "",
-                    "error": img_result.stderr.strip()[-200:] if img_result.returncode != 0 else "",
-                })
-            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-                results.append({
-                    "task": "docker_image_prune",
-                    "success": False,
-                    "error": str(e)[:200],
-                })
-
-        # Log cleanup
-        if action_type in ("log_cleanup", "full_cleanup"):
-            log_files_truncated = 0
-            try:
-                import glob
-                for log_path in glob.glob("/host-logs/cron-*.log"):
-                    try:
-                        import os
-                        size = os.path.getsize(log_path)
-                        if size > 5 * 1024 * 1024:  # > 5MB
-                            with open(log_path, "w") as f:
-                                f.write(f"--- Log truncated by admin on {timezone.now().isoformat()} ---\n")
-                            log_files_truncated += 1
-                    except OSError:
-                        pass
-                results.append({
-                    "task": "log_cleanup",
-                    "success": True,
-                    "output": f"Truncated {log_files_truncated} log files over 5MB",
-                })
-            except Exception as e:
-                results.append({
-                    "task": "log_cleanup",
-                    "success": False,
-                    "error": str(e)[:200],
-                })
-
-        # Restart containers
-        if action_type == "restart_containers":
-            container = request.data.get("container", "")
-            # Only allow restarting known project containers
-            allowed_containers = ["rvdc_backend-api-1", "rvdc_backend-redis-1", "rvdc_backend-db-1"]
-            if container and container in allowed_containers:
-                try:
-                    restart_result = subprocess.run(
-                        ["docker", "restart", container],
-                        capture_output=True, text=True, timeout=60,
-                    )
-                    results.append({
-                        "task": f"restart_{container}",
-                        "success": restart_result.returncode == 0,
-                        "output": f"Container {container} restarted" if restart_result.returncode == 0 else "",
-                        "error": restart_result.stderr.strip()[:200] if restart_result.returncode != 0 else "",
-                    })
-                except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-                    results.append({
-                        "task": f"restart_{container}",
-                        "success": False,
-                        "error": str(e)[:200],
-                    })
-            elif not container:
-                # Restart all project containers
-                for c_name in allowed_containers:
-                    try:
-                        restart_result = subprocess.run(
-                            ["docker", "restart", c_name],
-                            capture_output=True, text=True, timeout=60,
-                        )
-                        results.append({
-                            "task": f"restart_{c_name}",
-                            "success": restart_result.returncode == 0,
-                            "output": f"{c_name} restarted" if restart_result.returncode == 0 else "",
-                            "error": restart_result.stderr.strip()[:200] if restart_result.returncode != 0 else "",
-                        })
-                    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-                        results.append({
-                            "task": f"restart_{c_name}",
-                            "success": False,
-                            "error": str(e)[:200],
-                        })
-            else:
-                results.append({
-                    "task": "restart",
-                    "success": False,
-                    "error": f"Container not allowed. Allowed: {allowed_containers}",
-                })
-
-        # Container logs
+        # Container logs runs synchronously (fast, returns data)
         if action_type == "container_logs":
             container = request.data.get("container", "rvdc_backend-api-1")
             tail_lines = min(int(request.data.get("lines", 100)), 500)
@@ -539,7 +417,7 @@ class ServerMaintenanceView(APIView):
                     "success": True,
                     "action": "container_logs",
                     "container": container,
-                    "logs": log_output[-10000:],  # Cap at 10k chars
+                    "logs": log_output[-10000:],
                 })
             except (FileNotFoundError, subprocess.TimeoutExpired) as e:
                 return Response({
@@ -548,14 +426,178 @@ class ServerMaintenanceView(APIView):
                     "error": str(e)[:200],
                 })
 
-        all_success = all(r.get("success") for r in results)
-        logger.info(
-            "Server maintenance by %s: action=%s results=%s",
-            request.user.get_full_name(), action_type, results,
-        )
+        # All other actions run in background thread
+        user_id = request.user.id
+        user_name = request.user.get_full_name()
+        container_arg = request.data.get("container", "")
 
+        def _run_maintenance():
+            _logger = logging.getLogger(__name__)
+            results = []
+
+            # Docker system prune
+            if action_type in ("docker_prune", "full_cleanup"):
+                try:
+                    prune_result = subprocess.run(
+                        ["docker", "system", "prune", "-f"],
+                        capture_output=True, text=True, timeout=300,
+                    )
+                    output = prune_result.stdout.strip()[-500:] if prune_result.stdout else ""
+                    results.append({
+                        "task": "docker_system_prune",
+                        "success": prune_result.returncode == 0,
+                        "output": output,
+                        "error": prune_result.stderr.strip()[-200:] if prune_result.returncode != 0 else "",
+                    })
+                except FileNotFoundError:
+                    results.append({
+                        "task": "docker_system_prune",
+                        "success": False,
+                        "error": "Docker not available in this environment",
+                    })
+                except subprocess.TimeoutExpired:
+                    results.append({
+                        "task": "docker_system_prune",
+                        "success": False,
+                        "error": "Timed out after 300s",
+                    })
+
+                # Image prune (unused images older than 7 days)
+                try:
+                    img_result = subprocess.run(
+                        ["docker", "image", "prune", "-a", "--filter", "until=168h", "-f"],
+                        capture_output=True, text=True, timeout=300,
+                    )
+                    output = img_result.stdout.strip()[-500:] if img_result.stdout else ""
+                    results.append({
+                        "task": "docker_image_prune",
+                        "success": img_result.returncode == 0,
+                        "output": output,
+                        "error": img_result.stderr.strip()[-200:] if img_result.returncode != 0 else "",
+                    })
+                except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                    results.append({
+                        "task": "docker_image_prune",
+                        "success": False,
+                        "error": str(e)[:200],
+                    })
+
+            # Log cleanup
+            if action_type in ("log_cleanup", "full_cleanup"):
+                log_files_truncated = 0
+                try:
+                    import glob
+                    import os
+                    for log_path in glob.glob("/host-logs/cron-*.log"):
+                        try:
+                            size = os.path.getsize(log_path)
+                            if size > 5 * 1024 * 1024:
+                                with open(log_path, "w") as f:
+                                    f.write(f"--- Log truncated by admin on {timezone.now().isoformat()} ---\n")
+                                log_files_truncated += 1
+                        except OSError:
+                            pass
+                    results.append({
+                        "task": "log_cleanup",
+                        "success": True,
+                        "output": f"Truncated {log_files_truncated} log files over 5MB",
+                    })
+                except Exception as e:
+                    results.append({
+                        "task": "log_cleanup",
+                        "success": False,
+                        "error": str(e)[:200],
+                    })
+
+            # Restart containers
+            if action_type == "restart_containers":
+                allowed_containers = ["rvdc_backend-api-1", "rvdc_backend-redis-1", "rvdc_backend-db-1"]
+                targets = [container_arg] if container_arg and container_arg in allowed_containers else (
+                    allowed_containers if not container_arg else []
+                )
+                if not targets and container_arg:
+                    results.append({
+                        "task": "restart",
+                        "success": False,
+                        "error": f"Container not allowed. Allowed: {allowed_containers}",
+                    })
+                for c_name in targets:
+                    try:
+                        restart_result = subprocess.run(
+                            ["docker", "restart", c_name],
+                            capture_output=True, text=True, timeout=60,
+                        )
+                        results.append({
+                            "task": f"restart_{c_name}",
+                            "success": restart_result.returncode == 0,
+                            "output": f"{c_name} restarted" if restart_result.returncode == 0 else "",
+                            "error": restart_result.stderr.strip()[:200] if restart_result.returncode != 0 else "",
+                        })
+                    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                        results.append({
+                            "task": f"restart_{c_name}",
+                            "success": False,
+                            "error": str(e)[:200],
+                        })
+
+            all_success = all(r.get("success") for r in results)
+            _logger.info(
+                "Server maintenance by %s: action=%s results=%s",
+                user_name, action_type, results,
+            )
+
+            # Push result to admin via WebSocket notification channel
+            try:
+                from asgiref.sync import async_to_sync
+                from channels.layers import get_channel_layer
+
+                channel_layer = get_channel_layer()
+                if channel_layer:
+                    action_labels = {
+                        "docker_prune": "Docker Cleanup",
+                        "log_cleanup": "Log Cleanup",
+                        "full_cleanup": "Full System Cleanup",
+                        "restart_containers": "Container Restart",
+                    }
+                    label = action_labels.get(action_type, action_type)
+                    failed = [r for r in results if not r.get("success")]
+                    if all_success:
+                        title = f"{label} completed"
+                        message = "; ".join(r.get("output", r["task"]) for r in results if r.get("output"))
+                        if not message:
+                            message = "All tasks completed successfully."
+                    else:
+                        title = f"{label} finished with issues"
+                        message = "; ".join(r.get("error", r["task"]) for r in failed)
+
+                    async_to_sync(channel_layer.group_send)(
+                        f"notifications_{user_id}",
+                        {
+                            "type": "send_notification",
+                            "data": {
+                                "event": "maintenance_result",
+                                "success": all_success,
+                                "action": action_type,
+                                "title": title,
+                                "message": message,
+                                "results": results,
+                            },
+                        },
+                    )
+            except Exception:
+                _logger.exception("Failed to send maintenance result via WebSocket")
+
+        thread = threading.Thread(target=_run_maintenance, daemon=True)
+        thread.start()
+
+        action_labels = {
+            "docker_prune": "Docker Cleanup",
+            "log_cleanup": "Log Cleanup",
+            "full_cleanup": "Full System Cleanup",
+            "restart_containers": "Container Restart",
+        }
         return Response({
-            "success": all_success,
+            "accepted": True,
             "action": action_type,
-            "results": results,
-        }, status=status.HTTP_200_OK)
+            "message": f"{action_labels.get(action_type, action_type)} started. You'll be notified when it completes.",
+        }, status=status.HTTP_202_ACCEPTED)
