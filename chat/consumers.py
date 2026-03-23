@@ -277,6 +277,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
             {"type": "chat.reaction", "data": event_data},
         )
 
+        # Send push notification if reacting to someone else's message (not removing)
+        if not existing and to_id != self.user_id:
+            sender_name = await self._get_display_name(self.user_id)
+            await database_sync_to_async(self._send_chat_push)(
+                to_id, sender_name, f"reacted {emoji} to your message"
+            )
+
     # ── Group event handlers ─────────────────────────────────────────────
 
     async def chat_message(self, event):
