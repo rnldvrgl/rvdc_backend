@@ -197,9 +197,11 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     def bulk_update(self, request):
         """
         Upload an XLSX file to bulk-update item names and prices.
-        Matches items by SKU (column A). Updatable columns:
-        Name, Cost Price, Retail Price, Wholesale Price, Technician Price.
+        Validates the file synchronously, then processes in a background
+        thread. Results are delivered via WebSocket notification.
         """
+        import threading
+
         import openpyxl
 
         xlsx_file = request.FILES.get("file")
@@ -239,82 +241,93 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Build SKU lookup
-        all_items = {
-            item.sku: item
-            for item in Item.objects.filter(is_deleted=False)
-        }
+        user_id = request.user.id
 
-        updated = []
-        skipped = []
-        errors = []
-
-        for row_num, row in enumerate(rows, 2):
-            if len(row) < 7:
-                errors.append({"row": row_num, "error": "Row has fewer than 7 columns."})
-                continue
-
-            sku = str(row[0] or "").strip()
-            if not sku:
-                continue  # skip blank rows
-
-            item = all_items.get(sku)
-            if not item:
-                errors.append({"row": row_num, "sku": sku, "error": "SKU not found."})
-                continue
-
-            new_name = str(row[1] or "").strip()
-            # row[2] is category (read-only, skip)
-
+        def _process_bulk_update():
             try:
-                new_cost = Decimal(str(row[3])) if row[3] is not None and str(row[3]).strip() != "" else None
-                new_retail = Decimal(str(row[4])) if row[4] is not None and str(row[4]).strip() != "" else None
-                new_wholesale = Decimal(str(row[5])) if row[5] is not None and str(row[5]).strip() != "" else None
-                new_tech = Decimal(str(row[6])) if row[6] is not None and str(row[6]).strip() != "" else None
-            except (InvalidOperation, ValueError) as e:
-                errors.append({"row": row_num, "sku": sku, "error": f"Invalid price value: {e}"})
-                continue
+                all_items = {
+                    item.sku: item
+                    for item in Item.objects.filter(is_deleted=False)
+                }
 
-            # Validate non-negative
-            for label, val in [("cost", new_cost), ("retail", new_retail), ("wholesale", new_wholesale), ("technician", new_tech)]:
-                if val is not None and val < 0:
-                    errors.append({"row": row_num, "sku": sku, "error": f"{label} price cannot be negative."})
-                    break
-            else:
-                # Check if anything changed
-                changed = False
-                if new_name and new_name != item.name:
-                    item.name = new_name
-                    changed = True
-                if new_cost is not None and new_cost != item.cost_price:
-                    item.cost_price = new_cost
-                    changed = True
-                if new_retail is not None and new_retail != item.retail_price:
-                    item.retail_price = new_retail
-                    changed = True
-                if new_wholesale is not None and new_wholesale != (item.wholesale_price or Decimal("0")):
-                    item.wholesale_price = new_wholesale
-                    changed = True
-                if new_tech is not None and new_tech != (item.technician_price or Decimal("0")):
-                    item.technician_price = new_tech
-                    changed = True
+                updated = []
+                skipped = []
+                errors = []
 
-                if changed:
-                    updated.append(item)
-                else:
-                    skipped.append(sku)
+                for row_num, row in enumerate(rows, 2):
+                    if len(row) < 7:
+                        errors.append({"row": row_num, "error": "Row has fewer than 7 columns."})
+                        continue
 
-        # Save in a transaction — Item.save() creates price history automatically
-        with transaction.atomic():
-            for item in updated:
-                item.save()
+                    sku = str(row[0] or "").strip()
+                    if not sku:
+                        continue
 
-        return Response({
-            "updated": len(updated),
-            "skipped": len(skipped),
-            "errors": errors,
-            "detail": f"Updated {len(updated)} items, skipped {len(skipped)} unchanged, {len(errors)} errors.",
-        })
+                    item = all_items.get(sku)
+                    if not item:
+                        errors.append({"row": row_num, "sku": sku, "error": "SKU not found."})
+                        continue
+
+                    new_name = str(row[1] or "").strip()
+
+                    try:
+                        new_cost = Decimal(str(row[3])) if row[3] is not None and str(row[3]).strip() != "" else None
+                        new_retail = Decimal(str(row[4])) if row[4] is not None and str(row[4]).strip() != "" else None
+                        new_wholesale = Decimal(str(row[5])) if row[5] is not None and str(row[5]).strip() != "" else None
+                        new_tech = Decimal(str(row[6])) if row[6] is not None and str(row[6]).strip() != "" else None
+                    except (InvalidOperation, ValueError) as e:
+                        errors.append({"row": row_num, "sku": sku, "error": f"Invalid price value: {e}"})
+                        continue
+
+                    for label, val in [("cost", new_cost), ("retail", new_retail), ("wholesale", new_wholesale), ("technician", new_tech)]:
+                        if val is not None and val < 0:
+                            errors.append({"row": row_num, "sku": sku, "error": f"{label} price cannot be negative."})
+                            break
+                    else:
+                        changed = False
+                        if new_name and new_name != item.name:
+                            item.name = new_name
+                            changed = True
+                        if new_cost is not None and new_cost != item.cost_price:
+                            item.cost_price = new_cost
+                            changed = True
+                        if new_retail is not None and new_retail != item.retail_price:
+                            item.retail_price = new_retail
+                            changed = True
+                        if new_wholesale is not None and new_wholesale != (item.wholesale_price or Decimal("0")):
+                            item.wholesale_price = new_wholesale
+                            changed = True
+                        if new_tech is not None and new_tech != (item.technician_price or Decimal("0")):
+                            item.technician_price = new_tech
+                            changed = True
+
+                        if changed:
+                            updated.append(item)
+                        else:
+                            skipped.append(sku)
+
+                with transaction.atomic():
+                    for item in updated:
+                        item.save()
+
+                detail = f"Updated {len(updated)} items, skipped {len(skipped)} unchanged, {len(errors)} errors."
+                _notify_bulk_update(user_id, {
+                    "updated": len(updated),
+                    "skipped": len(skipped),
+                    "errors": errors,
+                    "detail": detail,
+                })
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("Bulk update failed")
+                _notify_bulk_update_failed(user_id)
+
+        threading.Thread(target=_process_bulk_update, daemon=True).start()
+
+        return Response(
+            {"detail": "Bulk update started. You will be notified when it's done."},
+            status=status.HTTP_202_ACCEPTED,
+        )
 
     @action(detail=False, methods=["get"], url_path="check-duplicates")
     def check_duplicates(self, request):
@@ -476,6 +489,57 @@ class StallViewSet(viewsets.ModelViewSet):
             },
             status=status.HTTP_405_METHOD_NOT_ALLOWED,
         )
+
+
+def _notify_bulk_update(user_id, result):
+    """Push bulk_update_complete event via WebSocket."""
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {
+                    "type": "send_notification",
+                    "data": {
+                        "event": "export_ready",
+                        "export_type": "bulk_update",
+                        "title": "Bulk Update Complete",
+                        "message": result["detail"],
+                        "result": result,
+                    },
+                },
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send bulk_update via WebSocket")
+
+
+def _notify_bulk_update_failed(user_id):
+    """Push bulk_update_failed event via WebSocket."""
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {
+                    "type": "send_notification",
+                    "data": {
+                        "event": "export_failed",
+                        "export_type": "bulk_update",
+                        "title": "Bulk Update Failed",
+                        "message": "Failed to process the bulk update. Please try again.",
+                    },
+                },
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send bulk_update_failed via WebSocket")
 
 
 class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
