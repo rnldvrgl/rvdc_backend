@@ -20,6 +20,9 @@ MESSAGE_TTL = 60 * 60 * 24
 # Maximum messages to keep per room
 MAX_MESSAGES = 200
 
+# Heartbeat: client must ping within this window to stay "online"
+PRESENCE_TTL = 45  # seconds
+
 
 def _room_key(user_a: int, user_b: int) -> str:
     """Deterministic room key for a 1-on-1 conversation."""
@@ -29,6 +32,10 @@ def _room_key(user_a: int, user_b: int) -> str:
 
 def _presence_key() -> str:
     return "chat:online"
+
+
+def _presence_heartbeat_key(user_id: int) -> str:
+    return f"chat:heartbeat:{user_id}"
 
 
 def _last_seen_key(user_id: int) -> str:
@@ -72,6 +79,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_add(self.user_group, self.channel_name)
             # Mark online
             await self._redis.sadd(_presence_key(), self.user_id)
+            await self._redis.set(
+                _presence_heartbeat_key(self.user_id), "1", ex=PRESENCE_TTL
+            )
             await self._redis.delete(_last_seen_key(self.user_id))
         except Exception:
             logger.exception("Chat connect failed for user %s", self.user_id)
@@ -96,6 +106,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if hasattr(self, "_redis"):
             try:
                 await self._redis.srem(_presence_key(), self.user_id)
+                await self._redis.delete(_presence_heartbeat_key(self.user_id))
                 # Store last seen timestamp (7-day expiry)
                 await self._redis.set(
                     _last_seen_key(self.user_id),
@@ -133,6 +144,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._handle_react(payload)
         elif action == "presence":
             await self._send_presence()
+        elif action == "ping":
+            await self._handle_ping()
 
     # ── Actions ──────────────────────────────────────────────────────────
 
@@ -330,7 +343,20 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def _broadcast_presence(self):
         """Push online user list to all chat-connected users."""
         online_ids = await self._redis.smembers(_presence_key())
-        online = [int(uid) for uid in online_ids]
+        # Clean stale entries: remove users whose heartbeat key has expired
+        live = []
+        for uid in online_ids:
+            if await self._redis.exists(_presence_heartbeat_key(int(uid))):
+                live.append(int(uid))
+            else:
+                await self._redis.srem(_presence_key(), uid)
+                # Set last_seen for cleaned-up users
+                await self._redis.set(
+                    _last_seen_key(int(uid)),
+                    str(time.time()),
+                    ex=60 * 60 * 24 * 7,
+                )
+        online = live
         eligible = await self._get_chat_users()
         eligible_ids = {u["id"] for u in eligible}
 
@@ -347,11 +373,26 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def _send_presence(self):
         """Send presence list to the requesting client only."""
         online_ids = await self._redis.smembers(_presence_key())
-        online = [int(uid) for uid in online_ids]
+        # Filter to only users with active heartbeat
+        live = []
+        for uid in online_ids:
+            if await self._redis.exists(_presence_heartbeat_key(int(uid))):
+                live.append(int(uid))
+            else:
+                await self._redis.srem(_presence_key(), uid)
         await self.send(text_data=json.dumps({
             "type": "presence",
-            "online": online,
+            "online": live,
         }))
+
+    async def _handle_ping(self):
+        """Heartbeat: refresh presence TTL and respond with pong."""
+        await self._redis.set(
+            _presence_heartbeat_key(self.user_id), "1", ex=PRESENCE_TTL
+        )
+        # Ensure still in the online set
+        await self._redis.sadd(_presence_key(), self.user_id)
+        await self.send(text_data=json.dumps({"type": "pong"}))
 
     @database_sync_to_async
     def _is_chat_eligible(self, user_id):
