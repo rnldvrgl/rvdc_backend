@@ -67,6 +67,7 @@ class BankChoices(models.TextChoices):
     EASTWEST_BANK = "EastWestBank", "EastWest Bank"
     CHINA_BANK = "ChinaBank", "China Bank"
     MAYBANK_PH = "Maybank Philippines", "Maybank Philippines"
+    PORAC_BANK = "Porac Bank", "Porac Bank"
 
 
 class CollectionType(models.TextChoices):
