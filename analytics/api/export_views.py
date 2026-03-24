@@ -707,7 +707,7 @@ def _write_bir_sheet(wb, title, rows, period_key_fn, period_label):
     Inserts subtotals per period. Highlights MISSING receipt rows in orange.
     """
     ws = wb.create_sheet(title)
-    headers = [period_label, "Receipt #", "Total Amount"]
+    headers = [period_label, "Official Receipt #", "Total Amount"]
     rows_data = []
     missing_row_indices = []  # track which data rows are MISSING
 
