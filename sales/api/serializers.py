@@ -1,5 +1,7 @@
+from datetime import datetime, time as dt_time
 from rest_framework import serializers
 from django.db import transaction
+from django.utils import timezone as dj_timezone
 from rest_framework.exceptions import ValidationError
 from inventory.models import Stock
 from sales.models import SalesTransaction, SalesItem, SalesPayment
@@ -84,6 +86,7 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             "note",
             "items",
             "payments",
+            "transaction_date",
             "created_at",
             "voided",
             "void_reason",
@@ -150,7 +153,14 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
                 SalesItem.objects.create(transaction=sale_txn, **item_data)
 
             # Create payments if any
+            payment_date_override = None
+            if sale_txn.transaction_date:
+                payment_date_override = dj_timezone.make_aware(
+                    datetime.combine(sale_txn.transaction_date, dt_time(12, 0))
+                )
             for payment_data in payments_data:
+                if payment_date_override:
+                    payment_data["payment_date"] = payment_date_override
                 SalesPayment.objects.create(transaction=sale_txn, **payment_data)
 
             sale_txn.update_payment_status()
@@ -239,6 +249,13 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             if payments_data is not None:
                 existing_payments = {p.id: p for p in instance.payments.all()}
                 sent_payment_ids = []
+
+                payment_date_override = None
+                if instance.transaction_date:
+                    payment_date_override = dj_timezone.make_aware(
+                        datetime.combine(instance.transaction_date, dt_time(12, 0))
+                    )
+
                 for payment_data in payments_data:
                     payment_id = payment_data.pop("id", None)
                     if payment_id and payment_id in existing_payments:
@@ -248,6 +265,8 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
                         payment.save()
                         sent_payment_ids.append(payment_id)
                     else:
+                        if payment_date_override:
+                            payment_data["payment_date"] = payment_date_override
                         SalesPayment.objects.create(
                             transaction=instance, **payment_data
                         )

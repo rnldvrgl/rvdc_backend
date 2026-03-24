@@ -61,6 +61,12 @@ class SalesTransaction(models.Model):
     is_deleted = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
+    transaction_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="The date this transaction occurred. Defaults to creation date.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
