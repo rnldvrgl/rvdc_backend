@@ -8,6 +8,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db.models import Q
+from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone as dj_timezone
 from django.utils.dateparse import parse_date
 
@@ -27,7 +28,7 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     ).prefetch_related(
         'items__item__category',
         'payments',
-    ).order_by("-created_at")
+    ).order_by(Coalesce("transaction_date", TruncDate("created_at")).desc(), "-created_at")
     serializer_class = SalesTransactionSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [
@@ -108,7 +109,8 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         }
 
         ordering_config = [
-            {"label": "Date", "value": "created_at"},
+            {"label": "Date", "value": "transaction_date"},
+            {"label": "Created", "value": "created_at"},
             {"label": "Stall", "value": "stall__name"},
         ]
 
