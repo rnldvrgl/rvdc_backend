@@ -290,6 +290,7 @@ class ServerMaintenanceView(APIView):
         {"id": "recalculate_remittances", "label": "Recalculate Remittances", "description": "Recalculate sales totals on all remittance records", "app": "remittances", "category": "sales", "destructive": False},
         {"id": "recalculate_service_revenue", "label": "Recalculate Service Revenue", "description": "Recalculate revenue figures for all services", "app": "services", "category": "sales", "destructive": False},
         {"id": "find_duplicate_items", "label": "Find Duplicate Items", "description": "Scan inventory for duplicate items by name", "app": "inventory", "category": "inventory", "destructive": False},
+        {"id": "fix_service_transaction_types", "label": "Fix Service Transaction Types", "description": "Update service-linked sales transactions from 'sale' to 'service' type", "app": "sales", "category": "sales", "destructive": False},
         {"id": "remove_duplicate_clients", "label": "Remove Duplicate Clients", "description": "Remove duplicate client records by contact number, keeping the oldest", "app": "clients", "category": "maintenance", "destructive": True},
         {"id": "add_philippine_holidays", "label": "Add PH Holidays", "description": "Add Philippine holidays for the current year (skip existing)", "app": "payroll", "args": ["--skip-existing"], "category": "payroll", "destructive": False},
     ]
