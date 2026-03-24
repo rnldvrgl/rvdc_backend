@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import NotFound
 from django_filters.rest_framework import DjangoFilterBackend
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db.models import Q
 from django.utils import timezone as dj_timezone
@@ -112,6 +113,36 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         ]
 
         return get_role_based_filter_response(request, filters_config, ordering_config)
+
+    def create(self, request, *args, **kwargs):
+        # Idempotency guard: prevent duplicate transactions from double-clicks
+        # or slow connections. Uses Idempotency-Key header if provided,
+        # otherwise falls back to a hash of the request body + user.
+        idempotency_key = request.headers.get("Idempotency-Key")
+        if not idempotency_key:
+            import hashlib, json
+            body_hash = hashlib.sha256(
+                json.dumps(request.data, sort_keys=True, default=str).encode()
+            ).hexdigest()[:16]
+            idempotency_key = f"{request.user.id}:{body_hash}"
+
+        cache_key = f"sales_create_idempotency:{idempotency_key}"
+
+        if cache.get(cache_key):
+            return Response(
+                {"detail": "Duplicate request detected. This transaction was already submitted."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Lock for 30 seconds to prevent duplicate within that window
+        cache.set(cache_key, True, timeout=30)
+
+        try:
+            return super().create(request, *args, **kwargs)
+        except Exception:
+            # If creation fails, clear the lock so the user can retry
+            cache.delete(cache_key)
+            raise
 
     def perform_create(self, serializer):
         serializer.save(sales_clerk=self.request.user)
