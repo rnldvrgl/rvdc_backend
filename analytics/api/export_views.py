@@ -15,8 +15,8 @@ from decimal import Decimal
 from io import BytesIO
 
 from django.conf import settings
-from django.db.models import Count, Sum
-from django.db.models.functions import Coalesce
+from django.db.models import Count, Sum, Value
+from django.db.models.functions import Coalesce, TruncDate
 from django.http import FileResponse, HttpResponse
 from django.utils import timezone
 from openpyxl import Workbook
@@ -145,19 +145,26 @@ SALES_VALID_SHEETS = {
 }
 
 
+def _effective_date(txn):
+    """Return transaction_date if set, otherwise created_at.date()."""
+    return txn.transaction_date or txn.created_at.date()
+
+
 def build_sales_workbook(start, end, requested):
     """Build and return a sales report Workbook."""
     from sales.models import SalesItem, SalesTransaction
 
     txns = (
-        SalesTransaction.objects.filter(
+        SalesTransaction.objects
+        .annotate(effective_date=Coalesce("transaction_date", TruncDate("created_at")))
+        .filter(
             is_deleted=False, voided=False,
-            created_at__date__gte=start,
-            created_at__date__lte=end,
+            effective_date__gte=start,
+            effective_date__lte=end,
         )
         .select_related("stall", "client", "sales_clerk")
         .prefetch_related("items__item", "payments")
-        .order_by("created_at")
+        .order_by("effective_date", "created_at")
     )
 
     wb = Workbook()
@@ -207,7 +214,7 @@ def build_sales_workbook(start, end, requested):
             paid = float(t.total_paid)
             rows_data.append([
                 t.id,
-                t.created_at.strftime("%Y-%m-%d %I:%M %p"),
+                _effective_date(t).strftime("%Y-%m-%d"),
                 t.client.full_name if t.client else "Walk-in",
                 t.stall.name if t.stall else "—",
                 t.sales_clerk.get_full_name() if t.sales_clerk else "—",
@@ -235,7 +242,7 @@ def build_sales_workbook(start, end, requested):
         ws_d = wb.create_sheet("Daily Summary")
         daily_map = defaultdict(lambda: {"count": 0, "total": Decimal("0"), "paid": Decimal("0")})
         for t in txns:
-            day = t.created_at.date()
+            day = _effective_date(t)
             daily_map[day]["count"] += 1
             daily_map[day]["total"] += t.computed_total
             daily_map[day]["paid"] += t.total_paid
@@ -254,7 +261,8 @@ def build_sales_workbook(start, end, requested):
         ws_m = wb.create_sheet("Monthly Summary")
         monthly_map = defaultdict(lambda: {"count": 0, "total": Decimal("0"), "paid": Decimal("0")})
         for t in txns:
-            key = t.created_at.strftime("%Y-%m")
+            d = _effective_date(t)
+            key = d.strftime("%Y-%m")
             monthly_map[key]["count"] += 1
             monthly_map[key]["total"] += t.computed_total
             monthly_map[key]["paid"] += t.total_paid
@@ -272,8 +280,9 @@ def build_sales_workbook(start, end, requested):
         ws_q = wb.create_sheet("Quarterly Summary")
         quarterly_map = defaultdict(lambda: {"count": 0, "total": Decimal("0"), "paid": Decimal("0")})
         for t in txns:
-            q = (t.created_at.month - 1) // 3 + 1
-            key = f"{t.created_at.year} Q{q}"
+            d = _effective_date(t)
+            q = (d.month - 1) // 3 + 1
+            key = f"{d.year} Q{q}"
             quarterly_map[key]["count"] += 1
             quarterly_map[key]["total"] += t.computed_total
             quarterly_map[key]["paid"] += t.total_paid
@@ -348,20 +357,22 @@ def build_daily_sales_workbook(start, end, stall_type):
     )
 
     txns = (
-        SalesTransaction.objects.filter(
+        SalesTransaction.objects
+        .annotate(effective_date=Coalesce("transaction_date", TruncDate("created_at")))
+        .filter(
             is_deleted=False, voided=False,
-            created_at__date__gte=start,
-            created_at__date__lte=end,
+            effective_date__gte=start,
+            effective_date__lte=end,
             stall_id__in=stall_ids,
         )
         .prefetch_related("items__item")
-        .order_by("created_at")
+        .order_by("effective_date", "created_at")
     )
 
     # Group transactions by date
     daily_txns = defaultdict(list)
     for t in txns:
-        day = t.created_at.date()
+        day = _effective_date(t)
         daily_txns[day].append(t)
 
     wb = Workbook()
@@ -675,13 +686,15 @@ def _get_bir_2307_sub_stall_rows(start, end):
     )
 
     direct_sales = (
-        SalesTransaction.objects.filter(
+        SalesTransaction.objects
+        .annotate(effective_date=Coalesce("transaction_date", TruncDate("created_at")))
+        .filter(
             manual_receipt_number__isnull=False,
             is_deleted=False,
             voided=False,
             stall_id__in=sub_stall_ids,
-            created_at__date__gte=start,
-            created_at__date__lte=end,
+            effective_date__gte=start,
+            effective_date__lte=end,
         )
         .exclude(manual_receipt_number="")
         .exclude(id__in=service_txn_ids)
@@ -692,7 +705,7 @@ def _get_bir_2307_sub_stall_rows(start, end):
     rows = []
     for txn in direct_sales:
         rows.append({
-            "date": txn.created_at.date(),
+            "date": _effective_date(txn),
             "receipt_number": txn.manual_receipt_number,
             "total_amount": txn.computed_total,
             "source": "Direct Sale",

@@ -68,24 +68,29 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             return qs.none()
 
         if start or end:
-            created_q = Q()
+            # Use effective date (transaction_date if set, otherwise created_at date)
+            # so backdated transactions appear on the correct day
+            qs = qs.annotate(
+                effective_date=Coalesce("transaction_date", TruncDate("created_at"))
+            )
+            date_q = Q()
             payment_q = Q()
 
             if start:
                 start_date = parse_date(start)
                 if start_date:
                     start_dt = dj_timezone.make_aware(datetime.combine(start_date, dt_time.min))
-                    created_q &= Q(created_at__gte=start_dt)
+                    date_q &= Q(effective_date__gte=start_date)
                     payment_q &= Q(payments__payment_date__gte=start_dt)
 
             if end:
                 end_date = parse_date(end)
                 if end_date:
                     end_dt = dj_timezone.make_aware(datetime.combine(end_date, dt_time.max))
-                    created_q &= Q(created_at__lte=end_dt)
+                    date_q &= Q(effective_date__lte=end_date)
                     payment_q &= Q(payments__payment_date__lte=end_dt)
 
-            qs = qs.filter(created_q | payment_q).distinct()
+            qs = qs.filter(date_q | payment_q).distinct()
 
         return qs
 
