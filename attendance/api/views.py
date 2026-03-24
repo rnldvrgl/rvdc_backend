@@ -230,6 +230,29 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         ).first()
 
         if existing:
+            # Allow clock-in if the existing record is from a half-day leave
+            half_day_leave = LeaveRequest.objects.filter(
+                employee_id=employee_id,
+                status='APPROVED',
+                is_half_day=True,
+                shift_period__in=['AM', 'PM'],
+            ).filter(
+                models.Q(date=attendance_date) |
+                models.Q(start_date__lte=attendance_date, end_date__gte=attendance_date)
+            ).first()
+
+            if existing.attendance_type == 'LEAVE' and half_day_leave and not existing.clock_in:
+                existing.clock_in = clock_in_time
+                existing.attendance_type = 'PENDING'
+                existing.status = 'PENDING'
+                if notes:
+                    existing.notes = f"{existing.notes}\n{notes}" if existing.notes else notes
+                existing.save(update_fields=['clock_in', 'attendance_type', 'status', 'notes', 'updated_at'])
+                return Response(
+                    DailyAttendanceSerializer(existing).data,
+                    status=status.HTTP_200_OK
+                )
+
             return Response(
                 {'detail': f'Attendance already exists for this employee on {attendance_date}.'},
                 status=status.HTTP_400_BAD_REQUEST
