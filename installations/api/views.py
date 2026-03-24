@@ -97,6 +97,337 @@ class AirconModelViewSet(viewsets.ModelViewSet):
         ]
         return get_role_based_filter_response(request, filters_config, ordering_config)
 
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="bulk-template",
+        permission_classes=[IsAuthenticated],
+    )
+    def bulk_template(self, request):
+        """Download an XLSX file pre-filled with all aircon models."""
+        import io
+        import openpyxl
+        from django.http import HttpResponse
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+        models = AirconModel.objects.select_related("brand").order_by("brand__name", "name")
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Aircon Models"
+
+        headers = [
+            "ID", "Brand", "Name", "Aircon Type", "Horsepower", "Is Inverter",
+            "Retail Price", "Cost Price", "Promo Price",
+            "Parts Warranty (months)", "Compressor Warranty (months)", "Labor Warranty (months)",
+        ]
+        header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True, size=11)
+        thin_border = Border(
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"), bottom=Side(style="thin"),
+        )
+
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+
+        for row_idx, m in enumerate(models, 2):
+            ws.cell(row=row_idx, column=1, value=m.id).border = thin_border
+            ws.cell(row=row_idx, column=2, value=m.brand.name).border = thin_border
+            ws.cell(row=row_idx, column=3, value=m.name).border = thin_border
+            ws.cell(row=row_idx, column=4, value=m.aircon_type).border = thin_border
+            ws.cell(row=row_idx, column=5, value=m.horsepower).border = thin_border
+            ws.cell(row=row_idx, column=6, value="Yes" if m.is_inverter else "No").border = thin_border
+            ws.cell(row=row_idx, column=7, value=float(m.retail_price)).border = thin_border
+            ws.cell(row=row_idx, column=8, value=float(m.cost_price)).border = thin_border
+            ws.cell(row=row_idx, column=9, value=float(m.promo_price) if m.promo_price else "").border = thin_border
+            ws.cell(row=row_idx, column=10, value=m.parts_warranty_months).border = thin_border
+            ws.cell(row=row_idx, column=11, value=m.compressor_warranty_months).border = thin_border
+            ws.cell(row=row_idx, column=12, value=m.labor_warranty_months).border = thin_border
+
+        ws.sheet_properties.tabColor = "1F4E79"
+        for col in ws.columns:
+            max_len = max((len(str(cell.value or "")) for cell in col), default=0)
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        resp = HttpResponse(
+            buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        resp["Content-Disposition"] = 'attachment; filename="aircon_model_template.xlsx"'
+        return resp
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-preview",
+        permission_classes=[IsAuthenticated],
+    )
+    def bulk_preview(self, request):
+        """Upload an XLSX to preview aircon model changes."""
+        import openpyxl
+        from decimal import Decimal, InvalidOperation
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response({"detail": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response({"detail": "Only .xlsx files are supported."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response({"detail": "Could not parse the uploaded file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ws = wb.active
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response({"detail": "The file contains no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+
+        all_models = {m.id: m for m in AirconModel.objects.select_related("brand").all()}
+
+        changes = []
+        skipped = 0
+        errors = []
+
+        for row_num, row in enumerate(rows, 2):
+            if len(row) < 12:
+                errors.append({"row": row_num, "error": "Row has fewer than 12 columns."})
+                continue
+
+            try:
+                model_id = int(row[0]) if row[0] is not None else None
+            except (ValueError, TypeError):
+                errors.append({"row": row_num, "error": f"Invalid ID: {row[0]}"})
+                continue
+
+            if not model_id:
+                continue
+
+            model = all_models.get(model_id)
+            if not model:
+                errors.append({"row": row_num, "sku": str(model_id), "error": "Model ID not found."})
+                continue
+
+            new_name = str(row[2] or "").strip()
+
+            try:
+                new_retail = Decimal(str(row[6])) if row[6] is not None and str(row[6]).strip() != "" else None
+                new_cost = Decimal(str(row[7])) if row[7] is not None and str(row[7]).strip() != "" else None
+                new_promo = Decimal(str(row[8])) if row[8] is not None and str(row[8]).strip() != "" else None
+            except (InvalidOperation, ValueError) as e:
+                errors.append({"row": row_num, "sku": str(model_id), "error": f"Invalid price: {e}"})
+                continue
+
+            try:
+                new_parts = int(row[9]) if row[9] is not None and str(row[9]).strip() != "" else None
+                new_compressor = int(row[10]) if row[10] is not None and str(row[10]).strip() != "" else None
+                new_labor = int(row[11]) if row[11] is not None and str(row[11]).strip() != "" else None
+            except (ValueError, TypeError) as e:
+                errors.append({"row": row_num, "sku": str(model_id), "error": f"Invalid warranty value: {e}"})
+                continue
+
+            item_changes = []
+            if new_name and new_name != model.name:
+                item_changes.append({"field": "Name", "old": model.name, "new": new_name})
+            if new_retail is not None and new_retail != model.retail_price:
+                item_changes.append({"field": "Retail Price", "old": str(model.retail_price), "new": str(new_retail)})
+            if new_cost is not None and new_cost != model.cost_price:
+                item_changes.append({"field": "Cost Price", "old": str(model.cost_price), "new": str(new_cost)})
+            if new_promo is not None and new_promo != (model.promo_price or Decimal("0")):
+                item_changes.append({"field": "Promo Price", "old": str(model.promo_price or 0), "new": str(new_promo)})
+            if new_parts is not None and new_parts != model.parts_warranty_months:
+                item_changes.append({"field": "Parts Warranty", "old": str(model.parts_warranty_months), "new": str(new_parts)})
+            if new_compressor is not None and new_compressor != model.compressor_warranty_months:
+                item_changes.append({"field": "Compressor Warranty", "old": str(model.compressor_warranty_months), "new": str(new_compressor)})
+            if new_labor is not None and new_labor != model.labor_warranty_months:
+                item_changes.append({"field": "Labor Warranty", "old": str(model.labor_warranty_months), "new": str(new_labor)})
+
+            if item_changes:
+                changes.append({"row": row_num, "sku": str(model_id), "name": f"{model.brand.name} {model.name}", "changes": item_changes})
+            else:
+                skipped += 1
+
+        return Response({
+            "changes": changes, "skipped": skipped, "errors": errors,
+            "summary": f"{len(changes)} models to update, {skipped} unchanged, {len(errors)} errors.",
+        })
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-update",
+        permission_classes=[IsAuthenticated],
+    )
+    def bulk_update(self, request):
+        """Upload an XLSX file to bulk-update aircon models."""
+        import threading
+        import openpyxl
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response({"detail": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response({"detail": "Only .xlsx files are supported."}, status=status.HTTP_400_BAD_REQUEST)
+        if xlsx_file.size > 5 * 1024 * 1024:
+            return Response({"detail": "File too large. Maximum 5 MB."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response({"detail": "Could not parse the uploaded file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ws = wb.active
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response({"detail": "The file contains no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user_id = request.user.id
+
+        def _process():
+            from decimal import Decimal, InvalidOperation
+            from django.db import transaction
+            try:
+                all_models = {m.id: m for m in AirconModel.objects.select_related("brand").all()}
+                updated = []
+                skipped = []
+                errors = []
+
+                for row_num, row in enumerate(rows, 2):
+                    if len(row) < 12:
+                        errors.append({"row": row_num, "error": "Row has fewer than 12 columns."})
+                        continue
+
+                    try:
+                        model_id = int(row[0]) if row[0] is not None else None
+                    except (ValueError, TypeError):
+                        errors.append({"row": row_num, "error": f"Invalid ID: {row[0]}"})
+                        continue
+
+                    if not model_id:
+                        continue
+
+                    model = all_models.get(model_id)
+                    if not model:
+                        errors.append({"row": row_num, "sku": str(model_id), "error": "Model ID not found."})
+                        continue
+
+                    new_name = str(row[2] or "").strip()
+
+                    try:
+                        new_retail = Decimal(str(row[6])) if row[6] is not None and str(row[6]).strip() != "" else None
+                        new_cost = Decimal(str(row[7])) if row[7] is not None and str(row[7]).strip() != "" else None
+                        new_promo = Decimal(str(row[8])) if row[8] is not None and str(row[8]).strip() != "" else None
+                    except (InvalidOperation, ValueError) as e:
+                        errors.append({"row": row_num, "sku": str(model_id), "error": f"Invalid price: {e}"})
+                        continue
+
+                    try:
+                        new_parts = int(row[9]) if row[9] is not None and str(row[9]).strip() != "" else None
+                        new_compressor = int(row[10]) if row[10] is not None and str(row[10]).strip() != "" else None
+                        new_labor = int(row[11]) if row[11] is not None and str(row[11]).strip() != "" else None
+                    except (ValueError, TypeError) as e:
+                        errors.append({"row": row_num, "sku": str(model_id), "error": f"Invalid warranty value: {e}"})
+                        continue
+
+                    changed = False
+                    if new_name and new_name != model.name:
+                        model.name = new_name
+                        changed = True
+                    if new_retail is not None and new_retail != model.retail_price:
+                        model.retail_price = new_retail
+                        changed = True
+                    if new_cost is not None and new_cost != model.cost_price:
+                        model.cost_price = new_cost
+                        changed = True
+                    if new_promo is not None and new_promo != (model.promo_price or Decimal("0")):
+                        model.promo_price = new_promo
+                        changed = True
+                    if new_parts is not None and new_parts != model.parts_warranty_months:
+                        model.parts_warranty_months = new_parts
+                        changed = True
+                    if new_compressor is not None and new_compressor != model.compressor_warranty_months:
+                        model.compressor_warranty_months = new_compressor
+                        changed = True
+                    if new_labor is not None and new_labor != model.labor_warranty_months:
+                        model.labor_warranty_months = new_labor
+                        changed = True
+
+                    if changed:
+                        updated.append(model)
+                    else:
+                        skipped.append(str(model_id))
+
+                with transaction.atomic():
+                    for m in updated:
+                        m.save()
+
+                detail = f"Updated {len(updated)} aircon models, skipped {len(skipped)} unchanged, {len(errors)} errors."
+                _notify_aircon_model_bulk_update(user_id, {
+                    "updated": len(updated), "skipped": len(skipped),
+                    "errors": errors, "detail": detail,
+                })
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("Aircon model bulk update failed")
+                _notify_aircon_model_bulk_update_failed(user_id)
+
+        threading.Thread(target=_process, daemon=True).start()
+        return Response(
+            {"detail": "Bulk update started. You will be notified when it's done."},
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+def _notify_aircon_model_bulk_update(user_id, result):
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {"type": "send_notification", "data": {
+                    "event": "export_ready", "export_type": "aircon_model_bulk_update",
+                    "title": "Aircon Model Bulk Update Complete", "message": result["detail"],
+                    "result": result,
+                }},
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send aircon_model_bulk_update via WebSocket")
+
+
+def _notify_aircon_model_bulk_update_failed(user_id):
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {"type": "send_notification", "data": {
+                    "event": "export_failed", "export_type": "aircon_model_bulk_update",
+                    "title": "Aircon Model Bulk Update Failed",
+                    "message": "Failed to process the bulk update. Please try again.",
+                }},
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send aircon_model_bulk_update_failed via WebSocket")
+
 
 class AirconUnitViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """

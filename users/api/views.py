@@ -1138,3 +1138,374 @@ class ServerMaintenanceView(APIView):
             '# END RVDC Cron Jobs\n'
             '# ============================================================================\n'
         )
+
+
+# -----------------------------------------------------------------------
+# Employee Bulk Update
+# -----------------------------------------------------------------------
+
+class EmployeeBulkTemplateView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        """Download an XLSX file pre-filled with all active employees."""
+        import io
+        import openpyxl
+        from django.http import HttpResponse
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+        employees = CustomUser.objects.filter(is_deleted=False).order_by("last_name", "first_name")
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Employees"
+
+        headers = [
+            "ID", "First Name", "Last Name", "Role", "Contact Number",
+            "Province", "City", "Barangay", "Address",
+            "Basic Salary", "SSS #", "PhilHealth #", "TIN #",
+        ]
+        header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True, size=11)
+        thin_border = Border(
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"), bottom=Side(style="thin"),
+        )
+
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+
+        for row_idx, emp in enumerate(employees, 2):
+            ws.cell(row=row_idx, column=1, value=emp.id).border = thin_border
+            ws.cell(row=row_idx, column=2, value=emp.first_name or "").border = thin_border
+            ws.cell(row=row_idx, column=3, value=emp.last_name or "").border = thin_border
+            ws.cell(row=row_idx, column=4, value=emp.role or "").border = thin_border
+            ws.cell(row=row_idx, column=5, value=emp.contact_number or "").border = thin_border
+            ws.cell(row=row_idx, column=6, value=emp.province or "").border = thin_border
+            ws.cell(row=row_idx, column=7, value=emp.city or "").border = thin_border
+            ws.cell(row=row_idx, column=8, value=emp.barangay or "").border = thin_border
+            ws.cell(row=row_idx, column=9, value=emp.address or "").border = thin_border
+            ws.cell(row=row_idx, column=10, value=float(emp.basic_salary) if emp.basic_salary else "").border = thin_border
+            ws.cell(row=row_idx, column=11, value=emp.sss_number or "").border = thin_border
+            ws.cell(row=row_idx, column=12, value=emp.philhealth_number or "").border = thin_border
+            ws.cell(row=row_idx, column=13, value=emp.tin_number or "").border = thin_border
+
+        ws.sheet_properties.tabColor = "1F4E79"
+        for col in ws.columns:
+            max_len = max((len(str(cell.value or "")) for cell in col), default=0)
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 50)
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        resp = HttpResponse(
+            buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        resp["Content-Disposition"] = 'attachment; filename="employee_template.xlsx"'
+        return resp
+
+
+class EmployeeBulkPreviewView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request):
+        """Upload an XLSX to preview employee changes."""
+        import openpyxl
+        from decimal import Decimal, InvalidOperation
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response({"detail": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response({"detail": "Only .xlsx files are supported."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response({"detail": "Could not parse the uploaded file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ws = wb.active
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response({"detail": "The file contains no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+
+        all_employees = {e.id: e for e in CustomUser.objects.filter(is_deleted=False)}
+
+        changes = []
+        skipped = 0
+        errors = []
+
+        for row_num, row in enumerate(rows, 2):
+            if len(row) < 13:
+                errors.append({"row": row_num, "error": "Row has fewer than 13 columns."})
+                continue
+
+            try:
+                emp_id = int(row[0]) if row[0] is not None else None
+            except (ValueError, TypeError):
+                errors.append({"row": row_num, "error": f"Invalid ID: {row[0]}"})
+                continue
+
+            if not emp_id:
+                continue
+
+            emp = all_employees.get(emp_id)
+            if not emp:
+                errors.append({"row": row_num, "sku": str(emp_id), "error": "Employee ID not found."})
+                continue
+
+            new_first = str(row[1] or "").strip()
+            new_last = str(row[2] or "").strip()
+            new_role = str(row[3] or "").strip()
+            new_contact = str(row[4] or "").strip() or None
+            new_province = str(row[5] or "").strip() or None
+            new_city = str(row[6] or "").strip() or None
+            new_barangay = str(row[7] or "").strip() or None
+            new_address = str(row[8] or "").strip() or None
+
+            try:
+                new_salary = Decimal(str(row[9])) if row[9] is not None and str(row[9]).strip() != "" else None
+            except (InvalidOperation, ValueError) as e:
+                errors.append({"row": row_num, "sku": str(emp_id), "error": f"Invalid salary: {e}"})
+                continue
+
+            new_sss = str(row[10] or "").strip() or None
+            new_philhealth = str(row[11] or "").strip() or None
+            new_tin = str(row[12] or "").strip() or None
+
+            valid_roles = {"admin", "manager", "clerk", "technician"}
+            if new_role and new_role not in valid_roles:
+                errors.append({"row": row_num, "sku": str(emp_id), "error": f"Invalid role: {new_role}"})
+                continue
+
+            item_changes = []
+            if new_first and new_first != (emp.first_name or ""):
+                item_changes.append({"field": "First Name", "old": emp.first_name or "", "new": new_first})
+            if new_last and new_last != (emp.last_name or ""):
+                item_changes.append({"field": "Last Name", "old": emp.last_name or "", "new": new_last})
+            if new_role and new_role != emp.role:
+                item_changes.append({"field": "Role", "old": emp.role, "new": new_role})
+            if new_contact != (emp.contact_number or None):
+                item_changes.append({"field": "Contact Number", "old": emp.contact_number or "", "new": new_contact or ""})
+            if new_province != (emp.province or None):
+                item_changes.append({"field": "Province", "old": emp.province or "", "new": new_province or ""})
+            if new_city != (emp.city or None):
+                item_changes.append({"field": "City", "old": emp.city or "", "new": new_city or ""})
+            if new_barangay != (emp.barangay or None):
+                item_changes.append({"field": "Barangay", "old": emp.barangay or "", "new": new_barangay or ""})
+            if new_address != (emp.address or None):
+                item_changes.append({"field": "Address", "old": emp.address or "", "new": new_address or ""})
+            if new_salary is not None and new_salary != (emp.basic_salary or Decimal("0")):
+                item_changes.append({"field": "Basic Salary", "old": str(emp.basic_salary or 0), "new": str(new_salary)})
+            if new_sss != (emp.sss_number or None):
+                item_changes.append({"field": "SSS #", "old": emp.sss_number or "", "new": new_sss or ""})
+            if new_philhealth != (emp.philhealth_number or None):
+                item_changes.append({"field": "PhilHealth #", "old": emp.philhealth_number or "", "new": new_philhealth or ""})
+            if new_tin != (emp.tin_number or None):
+                item_changes.append({"field": "TIN #", "old": emp.tin_number or "", "new": new_tin or ""})
+
+            if item_changes:
+                changes.append({
+                    "row": row_num, "sku": str(emp_id),
+                    "name": f"{emp.first_name or ''} {emp.last_name or ''}".strip(),
+                    "changes": item_changes,
+                })
+            else:
+                skipped += 1
+
+        return Response({
+            "changes": changes, "skipped": skipped, "errors": errors,
+            "summary": f"{len(changes)} employees to update, {skipped} unchanged, {len(errors)} errors.",
+        })
+
+
+class EmployeeBulkUpdateView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request):
+        """Upload an XLSX file to bulk-update employees."""
+        import threading
+        import openpyxl
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response({"detail": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response({"detail": "Only .xlsx files are supported."}, status=status.HTTP_400_BAD_REQUEST)
+        if xlsx_file.size > 5 * 1024 * 1024:
+            return Response({"detail": "File too large. Maximum 5 MB."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response({"detail": "Could not parse the uploaded file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ws = wb.active
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response({"detail": "The file contains no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user_id = request.user.id
+
+        def _process():
+            from decimal import Decimal, InvalidOperation
+            from django.db import transaction
+            try:
+                all_employees = {e.id: e for e in CustomUser.objects.filter(is_deleted=False)}
+                valid_roles = {"admin", "manager", "clerk", "technician"}
+                updated = []
+                skipped = []
+                errors = []
+
+                for row_num, row in enumerate(rows, 2):
+                    if len(row) < 13:
+                        errors.append({"row": row_num, "error": "Row has fewer than 13 columns."})
+                        continue
+
+                    try:
+                        emp_id = int(row[0]) if row[0] is not None else None
+                    except (ValueError, TypeError):
+                        errors.append({"row": row_num, "error": f"Invalid ID: {row[0]}"})
+                        continue
+
+                    if not emp_id:
+                        continue
+
+                    emp = all_employees.get(emp_id)
+                    if not emp:
+                        errors.append({"row": row_num, "sku": str(emp_id), "error": "Employee ID not found."})
+                        continue
+
+                    new_first = str(row[1] or "").strip()
+                    new_last = str(row[2] or "").strip()
+                    new_role = str(row[3] or "").strip()
+                    new_contact = str(row[4] or "").strip() or None
+                    new_province = str(row[5] or "").strip() or None
+                    new_city = str(row[6] or "").strip() or None
+                    new_barangay = str(row[7] or "").strip() or None
+                    new_address = str(row[8] or "").strip() or None
+
+                    try:
+                        new_salary = Decimal(str(row[9])) if row[9] is not None and str(row[9]).strip() != "" else None
+                    except (InvalidOperation, ValueError) as e:
+                        errors.append({"row": row_num, "sku": str(emp_id), "error": f"Invalid salary: {e}"})
+                        continue
+
+                    new_sss = str(row[10] or "").strip() or None
+                    new_philhealth = str(row[11] or "").strip() or None
+                    new_tin = str(row[12] or "").strip() or None
+
+                    if new_role and new_role not in valid_roles:
+                        errors.append({"row": row_num, "sku": str(emp_id), "error": f"Invalid role: {new_role}"})
+                        continue
+
+                    changed = False
+                    if new_first and new_first != (emp.first_name or ""):
+                        emp.first_name = new_first
+                        changed = True
+                    if new_last and new_last != (emp.last_name or ""):
+                        emp.last_name = new_last
+                        changed = True
+                    if new_role and new_role != emp.role:
+                        emp.role = new_role
+                        changed = True
+                    if new_contact != (emp.contact_number or None):
+                        emp.contact_number = new_contact
+                        changed = True
+                    if new_province != (emp.province or None):
+                        emp.province = new_province
+                        changed = True
+                    if new_city != (emp.city or None):
+                        emp.city = new_city
+                        changed = True
+                    if new_barangay != (emp.barangay or None):
+                        emp.barangay = new_barangay
+                        changed = True
+                    if new_address != (emp.address or None):
+                        emp.address = new_address
+                        changed = True
+                    if new_salary is not None and new_salary != (emp.basic_salary or Decimal("0")):
+                        emp.basic_salary = new_salary
+                        changed = True
+                    if new_sss != (emp.sss_number or None):
+                        emp.sss_number = new_sss
+                        changed = True
+                    if new_philhealth != (emp.philhealth_number or None):
+                        emp.philhealth_number = new_philhealth
+                        changed = True
+                    if new_tin != (emp.tin_number or None):
+                        emp.tin_number = new_tin
+                        changed = True
+
+                    if changed:
+                        updated.append(emp)
+                    else:
+                        skipped.append(str(emp_id))
+
+                with transaction.atomic():
+                    for e in updated:
+                        e.save()
+
+                detail = f"Updated {len(updated)} employees, skipped {len(skipped)} unchanged, {len(errors)} errors."
+                _notify_employee_bulk_update(user_id, {
+                    "updated": len(updated), "skipped": len(skipped),
+                    "errors": errors, "detail": detail,
+                })
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("Employee bulk update failed")
+                _notify_employee_bulk_update_failed(user_id)
+
+        threading.Thread(target=_process, daemon=True).start()
+        return Response(
+            {"detail": "Bulk update started. You will be notified when it's done."},
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+def _notify_employee_bulk_update(user_id, result):
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {"type": "send_notification", "data": {
+                    "event": "export_ready", "export_type": "employee_bulk_update",
+                    "title": "Employee Bulk Update Complete", "message": result["detail"],
+                    "result": result,
+                }},
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send employee_bulk_update via WebSocket")
+
+
+def _notify_employee_bulk_update_failed(user_id):
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {"type": "send_notification", "data": {
+                    "event": "export_failed", "export_type": "employee_bulk_update",
+                    "title": "Employee Bulk Update Failed",
+                    "message": "Failed to process the bulk update. Please try again.",
+                }},
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send employee_bulk_update_failed via WebSocket")

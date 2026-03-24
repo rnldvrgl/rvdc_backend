@@ -1361,6 +1361,289 @@ class HolidayViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         return Response({"imported_count": imported_count, "skipped_count": len(errors), "errors": errors}, status=status.HTTP_200_OK)
 
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="bulk-template",
+        permission_classes=[permissions.IsAdminUser],
+    )
+    def bulk_template(self, request):
+        """Download an XLSX file pre-filled with all holidays."""
+        import openpyxl
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+        holidays = Holiday.objects.filter(is_deleted=False).order_by("date")
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Holidays"
+
+        headers = ["ID", "Date", "Name", "Kind"]
+        header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True, size=11)
+        thin_border = Border(
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"), bottom=Side(style="thin"),
+        )
+
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+
+        for row_idx, h in enumerate(holidays, 2):
+            ws.cell(row=row_idx, column=1, value=h.id).border = thin_border
+            ws.cell(row=row_idx, column=2, value=str(h.date)).border = thin_border
+            ws.cell(row=row_idx, column=3, value=h.name).border = thin_border
+            ws.cell(row=row_idx, column=4, value=h.kind).border = thin_border
+
+        ws.sheet_properties.tabColor = "1F4E79"
+        for col in ws.columns:
+            max_len = max((len(str(cell.value or "")) for cell in col), default=0)
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        from django.http import HttpResponse as DjangoHttpResponse
+        resp = DjangoHttpResponse(
+            buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        resp["Content-Disposition"] = 'attachment; filename="holiday_template.xlsx"'
+        return resp
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-preview",
+        permission_classes=[permissions.IsAdminUser],
+    )
+    def bulk_preview(self, request):
+        """Upload an XLSX to preview holiday changes before applying."""
+        import openpyxl
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response({"detail": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response({"detail": "Only .xlsx files are supported."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response({"detail": "Could not parse the uploaded file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ws = wb.active
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response({"detail": "The file contains no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+
+        all_holidays = {h.id: h for h in Holiday.objects.filter(is_deleted=False)}
+        valid_kinds = {"regular", "special_non_working"}
+
+        changes = []
+        skipped = 0
+        errors = []
+
+        for row_num, row in enumerate(rows, 2):
+            if len(row) < 4:
+                errors.append({"row": row_num, "error": "Row has fewer than 4 columns."})
+                continue
+
+            try:
+                holiday_id = int(row[0]) if row[0] is not None else None
+            except (ValueError, TypeError):
+                errors.append({"row": row_num, "error": f"Invalid ID: {row[0]}"})
+                continue
+
+            if not holiday_id:
+                continue
+
+            holiday = all_holidays.get(holiday_id)
+            if not holiday:
+                errors.append({"row": row_num, "sku": str(holiday_id), "error": "Holiday ID not found."})
+                continue
+
+            new_date = str(row[1] or "").strip()
+            new_name = str(row[2] or "").strip()
+            new_kind = str(row[3] or "").strip()
+
+            if new_kind and new_kind not in valid_kinds:
+                errors.append({"row": row_num, "sku": str(holiday_id), "error": f"Invalid kind: {new_kind}"})
+                continue
+
+            item_changes = []
+            if new_date and new_date != str(holiday.date):
+                item_changes.append({"field": "Date", "old": str(holiday.date), "new": new_date})
+            if new_name and new_name != holiday.name:
+                item_changes.append({"field": "Name", "old": holiday.name, "new": new_name})
+            if new_kind and new_kind != holiday.kind:
+                item_changes.append({"field": "Kind", "old": holiday.kind, "new": new_kind})
+
+            if item_changes:
+                changes.append({"row": row_num, "sku": str(holiday_id), "name": holiday.name, "changes": item_changes})
+            else:
+                skipped += 1
+
+        return Response({
+            "changes": changes, "skipped": skipped, "errors": errors,
+            "summary": f"{len(changes)} holidays to update, {skipped} unchanged, {len(errors)} errors.",
+        })
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-update",
+        permission_classes=[permissions.IsAdminUser],
+    )
+    def bulk_update(self, request):
+        """Upload an XLSX file to bulk-update holidays."""
+        import threading
+        import openpyxl
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response({"detail": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response({"detail": "Only .xlsx files are supported."}, status=status.HTTP_400_BAD_REQUEST)
+        if xlsx_file.size > 5 * 1024 * 1024:
+            return Response({"detail": "File too large. Maximum 5 MB."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response({"detail": "Could not parse the uploaded file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ws = wb.active
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response({"detail": "The file contains no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user_id = request.user.id
+        valid_kinds = {"regular", "special_non_working"}
+
+        def _process():
+            from datetime import date as date_type
+            try:
+                all_holidays = {h.id: h for h in Holiday.objects.filter(is_deleted=False)}
+                updated = []
+                skipped = []
+                errors = []
+
+                for row_num, row in enumerate(rows, 2):
+                    if len(row) < 4:
+                        errors.append({"row": row_num, "error": "Row has fewer than 4 columns."})
+                        continue
+
+                    try:
+                        holiday_id = int(row[0]) if row[0] is not None else None
+                    except (ValueError, TypeError):
+                        errors.append({"row": row_num, "error": f"Invalid ID: {row[0]}"})
+                        continue
+
+                    if not holiday_id:
+                        continue
+
+                    holiday = all_holidays.get(holiday_id)
+                    if not holiday:
+                        errors.append({"row": row_num, "sku": str(holiday_id), "error": "Holiday ID not found."})
+                        continue
+
+                    new_date = str(row[1] or "").strip()
+                    new_name = str(row[2] or "").strip()
+                    new_kind = str(row[3] or "").strip()
+
+                    if new_kind and new_kind not in valid_kinds:
+                        errors.append({"row": row_num, "sku": str(holiday_id), "error": f"Invalid kind: {new_kind}"})
+                        continue
+
+                    changed = False
+                    if new_date and new_date != str(holiday.date):
+                        try:
+                            holiday.date = date_type.fromisoformat(new_date)
+                            changed = True
+                        except ValueError:
+                            errors.append({"row": row_num, "sku": str(holiday_id), "error": f"Invalid date: {new_date}"})
+                            continue
+                    if new_name and new_name != holiday.name:
+                        holiday.name = new_name
+                        changed = True
+                    if new_kind and new_kind != holiday.kind:
+                        holiday.kind = new_kind
+                        changed = True
+
+                    if changed:
+                        updated.append(holiday)
+                    else:
+                        skipped.append(str(holiday_id))
+
+                with transaction.atomic():
+                    for h in updated:
+                        h.save()
+
+                detail = f"Updated {len(updated)} holidays, skipped {len(skipped)} unchanged, {len(errors)} errors."
+                _notify_holiday_bulk_update(user_id, {
+                    "updated": len(updated), "skipped": len(skipped),
+                    "errors": errors, "detail": detail,
+                })
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("Holiday bulk update failed")
+                _notify_holiday_bulk_update_failed(user_id)
+
+        threading.Thread(target=_process, daemon=True).start()
+        return Response(
+            {"detail": "Bulk update started. You will be notified when it's done."},
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+def _notify_holiday_bulk_update(user_id, result):
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {"type": "send_notification", "data": {
+                    "event": "export_ready", "export_type": "holiday_bulk_update",
+                    "title": "Holiday Bulk Update Complete", "message": result["detail"],
+                    "result": result,
+                }},
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send holiday_bulk_update via WebSocket")
+
+
+def _notify_holiday_bulk_update_failed(user_id):
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {"type": "send_notification", "data": {
+                    "event": "export_failed", "export_type": "holiday_bulk_update",
+                    "title": "Holiday Bulk Update Failed",
+                    "message": "Failed to process the bulk update. Please try again.",
+                }},
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send holiday_bulk_update_failed via WebSocket")
+
+
 class ManualDeductionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing manual deductions.

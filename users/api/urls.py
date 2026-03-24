@@ -25,5 +25,8 @@ urlpatterns = [
     ),
     path("settings/", views.SystemSettingsView.as_view(), name="system-settings"),
     path("maintenance/", views.ServerMaintenanceView.as_view(), name="server-maintenance"),
+    path("employees/bulk-template/", views.EmployeeBulkTemplateView.as_view(), name="employee-bulk-template"),
+    path("employees/bulk-preview/", views.EmployeeBulkPreviewView.as_view(), name="employee-bulk-preview"),
+    path("employees/bulk-update/", views.EmployeeBulkUpdateView.as_view(), name="employee-bulk-update"),
     path("", include(router.urls)),
 ]
