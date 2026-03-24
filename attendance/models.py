@@ -663,7 +663,18 @@ class DailyAttendance(models.Model):
 
         # Auto-close if enabled
         if settings and settings.auto_close_enabled and clock_in_local and not clock_out_local:
-            clock_out_local = shift_end_dt
+            # Check for half-day PM leave — close at cutoff instead of shift end
+            pm_leave = LeaveRequest.objects.filter(
+                employee=self.employee,
+                date=local_date,
+                status='APPROVED',
+                is_half_day=True,
+                shift_period='PM',
+            ).exists()
+            if pm_leave:
+                clock_out_local = afternoon_start_dt  # cutoff time (e.g., 1 PM)
+            else:
+                clock_out_local = shift_end_dt
             self.clock_out = clock_out_local
             self.auto_closed = True
 
@@ -848,6 +859,17 @@ class DailyAttendance(models.Model):
         # Minimum hours for full day after breaks: 8 paid hours
         min_paid_hours_for_full_day = Decimal("8.00")
         
+        # HALF DAY (approved leave) — checked BEFORE full day so auto-close
+        # can't accidentally promote a half-day leave to full day
+        if approved_leave and approved_leave.is_half_day:
+            # Check if they worked the appropriate shift
+            if paid_total_hours >= min_half_day_clock_hours and clock_out_local >= expected_end:
+                self.attendance_type = "HALF_DAY"
+                self.break_hours = break_hours
+                self.paid_hours = half_day_paid_hours
+                self._update_awol_tracking()
+                return
+
         # FULL DAY - Two scenarios qualify (regardless of late clock-in):
         # 1. Stayed until near shift end with tolerance (e.g., 8:25 AM - 5:30 PM or later)
         # 2. Worked 8+ paid hours after breaks (e.g., 8:00 AM - 6:00 PM = 10 hrs - 2 break = 8 paid)
@@ -861,18 +883,6 @@ class DailyAttendance(models.Model):
             self._update_awol_tracking()
             return
 
-        # HALF DAY - Two scenarios:
-        # 1. Approved half-day leave (worked the other half)
-        # 2. Manual half-day (worked ~4 hours, common on Sundays)
-        if approved_leave and approved_leave.is_half_day:
-            # Check if they worked the appropriate shift
-            if paid_total_hours >= min_half_day_clock_hours and clock_out_local >= expected_end:
-                self.attendance_type = "HALF_DAY"
-                self.break_hours = break_hours
-                self.paid_hours = half_day_paid_hours
-                self._update_awol_tracking()
-                return
-        
         # Manual half-day designation (no approved leave required)
         # If paid hours after break deduction are close to 4 hours, mark as HALF_DAY
         # Common scenarios: Sundays, half-day work schedules

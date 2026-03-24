@@ -803,6 +803,78 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED
         )
 
+    def partial_update(self, request, *args, **kwargs):
+        """
+        Update an approved leave request (admin only).
+        Handles balance adjustment and attendance record updates when
+        changing between full-day and half-day.
+        """
+        from decimal import Decimal
+
+        if request.user.role != 'admin':
+            return Response(
+                {'detail': 'Only admins can edit leave requests.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        instance = self.get_object()
+        old_is_half_day = instance.is_half_day
+        old_shift_period = instance.shift_period
+        old_days_count = instance.days_count
+
+        serializer = self.get_serializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        instance.refresh_from_db()
+        new_days_count = instance.days_count
+
+        # Adjust leave balance if days changed (e.g., full → half restores 0.5)
+        if old_days_count != new_days_count and instance.leave_type in ('SICK', 'EMERGENCY'):
+            year = (instance.start_date or instance.date).year
+            try:
+                leave_balance = LeaveBalance.objects.get(
+                    employee=instance.employee, year=year
+                )
+                diff = old_days_count - new_days_count
+                if diff > 0:
+                    leave_balance.restore_leave(instance.leave_type, diff)
+                elif diff < 0:
+                    if instance.leave_type == 'SICK':
+                        leave_balance.sick_leave_used += abs(diff)
+                    elif instance.leave_type == 'EMERGENCY':
+                        leave_balance.emergency_leave_used += abs(diff)
+                    leave_balance.save()
+            except LeaveBalance.DoesNotExist:
+                pass
+
+        # Update associated DailyAttendance if leave is approved
+        if instance.status == 'APPROVED' and (
+            old_is_half_day != instance.is_half_day
+            or old_shift_period != instance.shift_period
+        ):
+            for leave_date in instance._get_date_range():
+                attendance = DailyAttendance.objects.filter(
+                    employee=instance.employee,
+                    date=leave_date,
+                    is_deleted=False,
+                ).first()
+                if attendance:
+                    notes = (
+                        f'{instance.get_leave_type_display()} '
+                        f'({instance.get_shift_period_display()}) - {instance.reason}'
+                    )
+                    if attendance.clock_in:
+                        # Employee already clocked in — recompute metrics
+                        attendance.notes = notes
+                        attendance.save()  # triggers compute_attendance_metrics
+                    else:
+                        # No clock-in yet — update the LEAVE placeholder
+                        attendance.notes = notes
+                        attendance.save(update_fields=['notes', 'updated_at'])
+
+        return Response(self.get_serializer(instance).data)
+
     def perform_create(self, serializer):
         """Set the employee to the current user if not specified."""
         if self.request.user.role in ['admin']:
