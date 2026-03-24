@@ -1,3 +1,4 @@
+from django.core.cache import cache
 from django_filters.rest_framework import DjangoFilterBackend
 from installations.api.filters import (
     AirconModelFilter,
@@ -414,14 +415,36 @@ class WarrantyClaimViewSet(viewsets.ModelViewSet):
             "customer_notes": "Started happening last week"
         }
         """
-        serializer = WarrantyClaimCreateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        claim = serializer.save()
+        idempotency_key = request.headers.get("Idempotency-Key")
+        if not idempotency_key:
+            import hashlib, json
+            body_hash = hashlib.sha256(
+                json.dumps(request.data, sort_keys=True, default=str).encode()
+            ).hexdigest()[:16]
+            idempotency_key = f"{request.user.id}:{body_hash}"
 
-        return Response(
-            WarrantyClaimSerializer(claim).data,
-            status=status.HTTP_201_CREATED
-        )
+        cache_key = f"warranty_claim_create_idempotency:{idempotency_key}"
+
+        if cache.get(cache_key):
+            return Response(
+                {"detail": "Duplicate request detected. This warranty claim was already submitted."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        cache.set(cache_key, True, timeout=30)
+
+        try:
+            serializer = WarrantyClaimCreateSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            claim = serializer.save()
+
+            return Response(
+                WarrantyClaimSerializer(claim).data,
+                status=status.HTTP_201_CREATED
+            )
+        except Exception:
+            cache.delete(cache_key)
+            raise
 
     @action(detail=True, methods=["post"], url_path="approve")
     def approve_claim(self, request, pk=None):

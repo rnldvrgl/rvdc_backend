@@ -27,6 +27,7 @@ class TransactionType(models.TextChoices):
     SALE = "sale", _("Sale")
     REPLACEMENT = "replacement", _("Replacement")
     PULL_OUT = "pull_out", _("Pull Out")
+    SERVICE = "service", _("Service")
 
 
 class SalesTransaction(models.Model):

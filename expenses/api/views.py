@@ -10,6 +10,7 @@ Provides endpoints for:
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
@@ -162,6 +163,31 @@ class ExpenseViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = super().get_queryset().filter(is_deleted=False)
         return get_role_filtered_queryset(self.request, queryset)
+
+    def create(self, request, *args, **kwargs):
+        idempotency_key = request.headers.get("Idempotency-Key")
+        if not idempotency_key:
+            import hashlib, json
+            body_hash = hashlib.sha256(
+                json.dumps(request.data, sort_keys=True, default=str).encode()
+            ).hexdigest()[:16]
+            idempotency_key = f"{request.user.id}:{body_hash}"
+
+        cache_key = f"expense_create_idempotency:{idempotency_key}"
+
+        if cache.get(cache_key):
+            return Response(
+                {"detail": "Duplicate request detected. This expense was already submitted."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        cache.set(cache_key, True, timeout=30)
+
+        try:
+            return super().create(request, *args, **kwargs)
+        except Exception:
+            cache.delete(cache_key)
+            raise
 
     def perform_create(self, serializer):
         """Create expense with user tracking"""

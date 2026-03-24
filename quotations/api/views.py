@@ -1,6 +1,8 @@
+from django.core.cache import cache
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import filters, viewsets
+from rest_framework import filters, status, viewsets
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 
 from quotations.models import Quotation, QuotationTermsTemplate
 from utils.soft_delete import SoftDeleteViewSetMixin
@@ -52,6 +54,31 @@ class QuotationViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         return super().get_queryset().filter(is_deleted=False)
+
+    def create(self, request, *args, **kwargs):
+        idempotency_key = request.headers.get("Idempotency-Key")
+        if not idempotency_key:
+            import hashlib, json
+            body_hash = hashlib.sha256(
+                json.dumps(request.data, sort_keys=True, default=str).encode()
+            ).hexdigest()[:16]
+            idempotency_key = f"{request.user.id}:{body_hash}"
+
+        cache_key = f"quotation_create_idempotency:{idempotency_key}"
+
+        if cache.get(cache_key):
+            return Response(
+                {"detail": "Duplicate request detected. This quotation was already submitted."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        cache.set(cache_key, True, timeout=30)
+
+        try:
+            return super().create(request, *args, **kwargs)
+        except Exception:
+            cache.delete(cache_key)
+            raise
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)

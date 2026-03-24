@@ -17,7 +17,7 @@ from django.utils import timezone
 from expenses.models import Expense, ExpenseItem
 from inventory.models import Stall, Stock
 from rest_framework.exceptions import ValidationError
-from sales.models import SalesItem, SalesTransaction
+from sales.models import SalesItem, SalesTransaction, TransactionType
 
 
 def get_main_stall():
@@ -485,7 +485,8 @@ class ServiceCompletionHandler:
                         sub_sales = SalesTransaction.objects.create(
                             stall=sub_stall,
                             client=service.client,
-                            sales_clerk=user
+                            sales_clerk=user,
+                            transaction_type=TransactionType.SERVICE,
                         )
 
                         # Add all parts to the single transaction
@@ -576,6 +577,7 @@ class ServiceCompletionHandler:
                         stall=main_stall,
                         client=service.client,
                         sales_clerk=user,
+                        transaction_type=TransactionType.SERVICE,
                     )
                     
                     for appliance in service.appliances.all():
@@ -679,6 +681,7 @@ class ServiceCompletionHandler:
                             stall=sub_stall,
                             client=service.client,
                             sales_clerk=user,
+                            transaction_type=TransactionType.SERVICE,
                         )
 
                         for appliance in service.appliances.all():
@@ -740,6 +743,7 @@ class ServiceCompletionHandler:
             stall=main_stall,
             client=service.client,
             sales_clerk=user,
+            transaction_type=TransactionType.SERVICE,
         )
 
         # Add labor charges (only if not marked as free)
@@ -1337,6 +1341,7 @@ class ServicePaymentManager:
                 stall=service.stall or main_stall,
                 client=service.client,
                 sales_clerk=service_payments.first().received_by if service_payments.first().received_by else None,
+                transaction_type=TransactionType.SERVICE,
             )
             service.related_transaction = sales_transaction
             service.save(update_fields=["related_transaction"])
@@ -1411,6 +1416,7 @@ class ServicePaymentManager:
                     stall=sub_stall,
                     client=service.client,
                     sales_clerk=service_payments.first().received_by if service_payments.first().received_by else None,
+                    transaction_type=TransactionType.SERVICE,
                 )
                 
                 # Add all parts to the single sub stall transaction
@@ -1564,6 +1570,7 @@ class ServicePaymentManager:
                         stall=target_stall,
                         client=service.client,
                         sales_clerk=received_by,
+                        transaction_type=TransactionType.SERVICE,
                     )
                     service.related_transaction = sales_transaction
 
@@ -1642,6 +1649,7 @@ class ServicePaymentManager:
                             stall=sub_stall,
                             client=service.client,
                             sales_clerk=received_by,
+                            transaction_type=TransactionType.SERVICE,
                         )
 
                         # Add all parts to the single sub stall transaction
