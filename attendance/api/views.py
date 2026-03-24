@@ -827,6 +827,18 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         serializer.save()
 
         instance.refresh_from_db()
+
+        # Normalize: if is_half_day but shift_period still FULL, default to PM
+        if instance.is_half_day and instance.shift_period == 'FULL':
+            instance.shift_period = 'PM'
+            instance.save(update_fields=['shift_period'])
+            instance.refresh_from_db()
+        # Normalize: if not half-day, ensure shift_period is FULL
+        if not instance.is_half_day and instance.shift_period != 'FULL':
+            instance.shift_period = 'FULL'
+            instance.save(update_fields=['shift_period'])
+            instance.refresh_from_db()
+
         new_days_count = instance.days_count
 
         # Adjust leave balance if days changed (e.g., full → half restores 0.5)
