@@ -567,6 +567,252 @@ def build_inventory_workbook(requested):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  BIR 2307 WORKBOOK BUILDER
+# ═══════════════════════════════════════════════════════════════════
+
+BIR_2307_VALID_SHEETS = {
+    "daily_summary", "monthly_summary", "quarterly_summary", "yearly_summary",
+}
+
+
+def _get_bir_2307_rows(start, end):
+    """
+    Gather all receipted transactions for BIR 2307 filing.
+
+    Sources:
+    1. Services with manual_receipt_number — total = total_revenue (parts + labor combined)
+    2. Sub stall direct sales with manual_receipt_number (not linked to any service)
+
+    Returns list of dicts: {date, receipt_number, total_amount, source}
+    """
+    from inventory.models import Stall
+    from sales.models import SalesTransaction
+    from services.models import Service
+
+    rows = []
+
+    # 1. Services with receipt numbers
+    services = Service.objects.filter(
+        manual_receipt_number__isnull=False,
+        is_deleted=False,
+        created_at__date__gte=start,
+        created_at__date__lte=end,
+    ).exclude(manual_receipt_number="")
+
+    for svc in services:
+        rows.append({
+            "date": svc.created_at.date(),
+            "receipt_number": svc.manual_receipt_number,
+            "total_amount": svc.total_revenue or Decimal("0"),
+            "source": "Service",
+        })
+
+    # 2. Sub stall direct sales (with receipt numbers, not linked to a service)
+    service_txn_ids = set(
+        Service.objects.filter(
+            related_transaction__isnull=False,
+        ).values_list("related_transaction_id", flat=True)
+    ) | set(
+        Service.objects.filter(
+            related_sub_transaction__isnull=False,
+        ).values_list("related_sub_transaction_id", flat=True)
+    )
+
+    sub_stall_ids = list(
+        Stall.objects.filter(stall_type="sub", is_deleted=False)
+        .values_list("id", flat=True)
+    )
+
+    direct_sales = (
+        SalesTransaction.objects.filter(
+            manual_receipt_number__isnull=False,
+            is_deleted=False,
+            voided=False,
+            stall_id__in=sub_stall_ids,
+            created_at__date__gte=start,
+            created_at__date__lte=end,
+        )
+        .exclude(manual_receipt_number="")
+        .exclude(id__in=service_txn_ids)
+        .prefetch_related("items")
+    )
+
+    for txn in direct_sales:
+        rows.append({
+            "date": txn.created_at.date(),
+            "receipt_number": txn.manual_receipt_number,
+            "total_amount": txn.computed_total,
+            "source": "Direct Sale",
+        })
+
+    # Sort by date, then receipt number
+    rows.sort(key=lambda r: (r["date"], r["receipt_number"]))
+    return rows
+
+
+def build_bir_2307_workbook(start, end, requested):
+    """Build BIR 2307 report with daily/monthly/quarterly/yearly summary sheets."""
+
+    all_rows = _get_bir_2307_rows(start, end)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Summary"
+    ws.cell(row=1, column=1, value="RVDC BIR 2307 Sales Report").font = Font(
+        bold=True, size=16, color="2563EB"
+    )
+    ws.cell(
+        row=2, column=1,
+        value=f"Period: {start.strftime('%b %d, %Y')} — {end.strftime('%b %d, %Y')}",
+    )
+    ws.cell(row=2, column=1).font = Font(italic=True, color="666666")
+    ws.cell(
+        row=3, column=1,
+        value=f"Generated: {timezone.now().strftime('%B %d, %Y %I:%M %p')}",
+    )
+    ws.cell(row=3, column=1).font = Font(italic=True, color="666666")
+
+    total_count = len(all_rows)
+    total_amount = sum(float(r["total_amount"]) for r in all_rows)
+    service_count = sum(1 for r in all_rows if r["source"] == "Service")
+    direct_count = sum(1 for r in all_rows if r["source"] == "Direct Sale")
+
+    stats = [
+        ("Total Receipted Transactions", total_count),
+        ("Total Amount", f"₱{total_amount:,.2f}"),
+        ("", ""),
+        ("Service Transactions", service_count),
+        ("Direct Sales (Sub Stall)", direct_count),
+    ]
+    row = 5
+    ws.cell(row=row, column=1, value="Metric").font = HEADER_FONT
+    ws.cell(row=row, column=1).fill = HEADER_FILL
+    ws.cell(row=row, column=1).border = THIN_BORDER
+    ws.cell(row=row, column=2, value="Value").font = HEADER_FONT
+    ws.cell(row=row, column=2).fill = HEADER_FILL
+    ws.cell(row=row, column=2).border = THIN_BORDER
+    for label, value in stats:
+        row += 1
+        ws.cell(row=row, column=1, value=label).border = THIN_BORDER
+        ws.cell(row=row, column=2, value=value).border = THIN_BORDER
+    ws.column_dimensions["A"].width = 35
+    ws.column_dimensions["B"].width = 25
+
+    if "daily_summary" in requested:
+        ws_d = wb.create_sheet("Daily Summary")
+        daily_map = defaultdict(list)
+        for r in all_rows:
+            daily_map[r["date"]].append(r)
+        headers = ["Date", "Receipt #", "Source", "Total Amount"]
+        rows_data = []
+        for day in sorted(daily_map.keys()):
+            day_rows = daily_map[day]
+            for dr in day_rows:
+                rows_data.append([
+                    day.strftime("%Y-%m-%d"),
+                    dr["receipt_number"],
+                    dr["source"],
+                    float(dr["total_amount"]),
+                ])
+            # Day subtotal row
+            day_total = sum(float(dr["total_amount"]) for dr in day_rows)
+            rows_data.append(["", "", "SUBTOTAL", day_total])
+        last = _write_rows(ws_d, headers, rows_data)
+        # Format amounts
+        for ri in range(2, last + 1):
+            ws_d.cell(row=ri, column=4).number_format = "#,##0.00"
+            # Bold subtotal rows
+            if ws_d.cell(row=ri, column=3).value == "SUBTOTAL":
+                for ci in range(1, 5):
+                    ws_d.cell(row=ri, column=ci).font = Font(bold=True)
+                    ws_d.cell(row=ri, column=ci).fill = BLUE_FILL
+
+    if "monthly_summary" in requested:
+        ws_m = wb.create_sheet("Monthly Summary")
+        monthly_map = defaultdict(list)
+        for r in all_rows:
+            key = r["date"].strftime("%Y-%m")
+            monthly_map[key].append(r)
+        headers = ["Month", "Receipt #", "Source", "Total Amount"]
+        rows_data = []
+        for month in sorted(monthly_map.keys()):
+            month_rows = monthly_map[month]
+            for mr in month_rows:
+                rows_data.append([
+                    month,
+                    mr["receipt_number"],
+                    mr["source"],
+                    float(mr["total_amount"]),
+                ])
+            month_total = sum(float(mr["total_amount"]) for mr in month_rows)
+            rows_data.append(["", "", "SUBTOTAL", month_total])
+        last = _write_rows(ws_m, headers, rows_data)
+        for ri in range(2, last + 1):
+            ws_m.cell(row=ri, column=4).number_format = "#,##0.00"
+            if ws_m.cell(row=ri, column=3).value == "SUBTOTAL":
+                for ci in range(1, 5):
+                    ws_m.cell(row=ri, column=ci).font = Font(bold=True)
+                    ws_m.cell(row=ri, column=ci).fill = BLUE_FILL
+
+    if "quarterly_summary" in requested:
+        ws_q = wb.create_sheet("Quarterly Summary")
+        quarterly_map = defaultdict(list)
+        for r in all_rows:
+            q = (r["date"].month - 1) // 3 + 1
+            key = f"{r['date'].year} Q{q}"
+            quarterly_map[key].append(r)
+        headers = ["Quarter", "Receipt #", "Source", "Total Amount"]
+        rows_data = []
+        for quarter in sorted(quarterly_map.keys()):
+            q_rows = quarterly_map[quarter]
+            for qr in q_rows:
+                rows_data.append([
+                    quarter,
+                    qr["receipt_number"],
+                    qr["source"],
+                    float(qr["total_amount"]),
+                ])
+            q_total = sum(float(qr["total_amount"]) for qr in q_rows)
+            rows_data.append(["", "", "SUBTOTAL", q_total])
+        last = _write_rows(ws_q, headers, rows_data)
+        for ri in range(2, last + 1):
+            ws_q.cell(row=ri, column=4).number_format = "#,##0.00"
+            if ws_q.cell(row=ri, column=3).value == "SUBTOTAL":
+                for ci in range(1, 5):
+                    ws_q.cell(row=ri, column=ci).font = Font(bold=True)
+                    ws_q.cell(row=ri, column=ci).fill = BLUE_FILL
+
+    if "yearly_summary" in requested:
+        ws_y = wb.create_sheet("Yearly Summary")
+        yearly_map = defaultdict(list)
+        for r in all_rows:
+            key = str(r["date"].year)
+            yearly_map[key].append(r)
+        headers = ["Year", "Receipt #", "Source", "Total Amount"]
+        rows_data = []
+        for year in sorted(yearly_map.keys()):
+            y_rows = yearly_map[year]
+            for yr in y_rows:
+                rows_data.append([
+                    year,
+                    yr["receipt_number"],
+                    yr["source"],
+                    float(yr["total_amount"]),
+                ])
+            y_total = sum(float(yr["total_amount"]) for yr in y_rows)
+            rows_data.append(["", "", "SUBTOTAL", y_total])
+        last = _write_rows(ws_y, headers, rows_data)
+        for ri in range(2, last + 1):
+            ws_y.cell(row=ri, column=4).number_format = "#,##0.00"
+            if ws_y.cell(row=ri, column=3).value == "SUBTOTAL":
+                for ci in range(1, 5):
+                    ws_y.cell(row=ri, column=ci).font = Font(bold=True)
+                    ws_y.cell(row=ri, column=ci).fill = BLUE_FILL
+
+    return wb
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  SYNCHRONOUS EXPORT VIEWS (kept for backward compatibility)
 # ═══════════════════════════════════════════════════════════════════
 
@@ -641,6 +887,11 @@ EXPORT_TYPES = {
         "label": "Daily Sales Report",
         "valid_sheets": {"main_stall", "sub_stall"},
         "prefix": "daily_sales",
+    },
+    "bir_2307": {
+        "label": "BIR 2307 Sales Report",
+        "valid_sheets": BIR_2307_VALID_SHEETS,
+        "prefix": "bir_2307_report",
     },
 }
 
@@ -722,6 +973,11 @@ class BackgroundExportView(APIView):
                             _notify_export_ready(user_id, export_type, config["label"], token, filename)
                     else:
                         _notify_export_failed(user_id, export_type, config["label"])
+                elif export_type == "bir_2307":
+                    wb = build_bir_2307_workbook(start_date, end_date, requested)
+                    token, filename = _save_workbook(wb, config["prefix"])
+                    logger.info("Export %s generated by %s: %s", export_type, user_name, filename)
+                    _notify_export_ready(user_id, export_type, config["label"], token, filename)
                 else:
                     return
             except Exception:

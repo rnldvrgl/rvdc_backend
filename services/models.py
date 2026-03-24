@@ -226,6 +226,14 @@ class Service(models.Model):
         help_text="Reason for discount (e.g., 'Senior Citizen', 'Loyalty Discount')"
     )
     
+    # BIR 2307 receipt number (manually entered by clerk)
+    manual_receipt_number = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="Official Receipt number for BIR 2307 filing",
+    )
+
     # Complementary service tracking (free services: warranty, goodwill, etc.)
     is_complementary = models.BooleanField(
         default=False,
