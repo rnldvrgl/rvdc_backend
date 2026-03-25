@@ -74,8 +74,11 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             "id",
             "stall",
             "client",
+            "receipt_book",
             "manual_receipt_number",
             "system_receipt_number",
+            "document_type",
+            "with_2307",
             "order_discount",
             "subtotal",
             "computed_total",
@@ -99,6 +102,7 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             "total_paid",
             "payment_status",
             "system_receipt_number",
+            "document_type",
         ]
 
     def to_representation(self, instance):
@@ -107,6 +111,20 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             ClientSerializer(instance.client).data if instance.client else None
         )
         data["stall"] = StallSerializer(instance.stall).data if instance.stall else None
+        return data
+
+    def _derive_document_type(self, stall):
+        """Derive document_type from stall type."""
+        if stall and stall.stall_type == "main":
+            return "or"
+        return "si"
+
+    def validate(self, data):
+        stall = data.get("stall") or (self.instance.stall if self.instance else None)
+        if stall:
+            data["document_type"] = self._derive_document_type(stall)
+            if data["document_type"] == "si":
+                data["with_2307"] = False
         return data
 
     def create(self, validated_data):

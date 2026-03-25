@@ -585,6 +585,10 @@ BIR_2307_VALID_SHEETS = {"main_stall", "sub_stall"}
 
 ORANGE_FILL = PatternFill(start_color="FED7AA", end_color="FED7AA", fill_type="solid")
 
+# Default tax rates
+DEFAULT_EWT_RATE = Decimal("0.02")   # 2% EWT for services/contractors (Main Stall)
+DEFAULT_TAX_RATE = Decimal("0.03")   # 3% Percentage Tax for sales (Sub Stall, non-VAT)
+
 
 def _extract_numeric_receipt(receipt_str):
     """
@@ -601,48 +605,58 @@ def _extract_numeric_receipt(receipt_str):
 
 def _fill_receipt_gaps(rows):
     """
-    Given a list of {receipt_number, total_amount, date, source} dicts,
-    detect gaps in the numeric receipt sequence and insert placeholder rows
-    with total_amount=0 and source="MISSING" for each skipped number.
+    Given a list of {receipt_number, receipt_book, total_amount, date, source} dicts,
+    detect gaps in the numeric receipt sequence *per receipt book* and insert
+    placeholder rows with total_amount=0 and source="MISSING" for each skipped number.
     The receipt numbers are zero-padded to match the longest existing receipt.
     """
     if not rows:
         return rows
 
-    # Build map of numeric receipt -> row
-    numeric_map = {}
-    max_len = 0
+    # Group rows by receipt_book
+    from collections import defaultdict as _dd
+    book_groups = _dd(list)
     for r in rows:
-        num = _extract_numeric_receipt(r["receipt_number"])
-        if num is not None:
-            numeric_map[num] = r
-            max_len = max(max_len, len(str(r["receipt_number"]).strip()))
-
-    if len(numeric_map) < 2:
-        return rows
-
-    min_num = min(numeric_map.keys())
-    max_num = max(numeric_map.keys())
+        book_groups[r.get("receipt_book") or ""].append(r)
 
     filled = []
-    for n in range(min_num, max_num + 1):
-        if n in numeric_map:
-            filled.append(numeric_map[n])
-        else:
-            # Missing receipt — insert gap row
-            padded = str(n).zfill(max_len) if max_len > 0 else str(n)
-            filled.append({
-                "date": None,
-                "receipt_number": padded,
-                "total_amount": Decimal("0"),
-                "source": "MISSING",
-            })
+    for book_key in sorted(book_groups.keys(), key=lambda x: (x == "", x)):
+        book_rows = book_groups[book_key]
+        # Build map of numeric receipt -> row
+        numeric_map = {}
+        max_len = 0
+        for r in book_rows:
+            num = _extract_numeric_receipt(r["receipt_number"])
+            if num is not None:
+                numeric_map[num] = r
+                max_len = max(max_len, len(str(r["receipt_number"]).strip()))
+
+        if len(numeric_map) < 2:
+            filled.extend(book_rows)
+            continue
+
+        min_num = min(numeric_map.keys())
+        max_num = max(numeric_map.keys())
+
+        for n in range(min_num, max_num + 1):
+            if n in numeric_map:
+                filled.append(numeric_map[n])
+            else:
+                padded = str(n).zfill(max_len) if max_len > 0 else str(n)
+                filled.append({
+                    "date": None,
+                    "receipt_number": padded,
+                    "receipt_book": book_key or None,
+                    "total_amount": Decimal("0"),
+                    "source": "MISSING",
+                    "with_2307": False,
+                })
 
     return filled
 
 
 def _get_bir_2307_main_stall_rows(start, end):
-    """Services with manual_receipt_number (main stall 2307)."""
+    """Services with manual_receipt_number (main stall OR)."""
     from services.models import Service
 
     services = Service.objects.filter(
@@ -657,8 +671,10 @@ def _get_bir_2307_main_stall_rows(start, end):
         rows.append({
             "date": svc.created_at.date(),
             "receipt_number": svc.manual_receipt_number,
+            "receipt_book": getattr(svc, 'receipt_book', None) or None,
             "total_amount": svc.total_revenue or Decimal("0"),
             "source": "Service",
+            "with_2307": getattr(svc, 'with_2307', False),
         })
 
     return _fill_receipt_gaps(rows)
@@ -707,6 +723,7 @@ def _get_bir_2307_sub_stall_rows(start, end):
         rows.append({
             "date": _effective_date(txn),
             "receipt_number": txn.manual_receipt_number,
+            "receipt_book": getattr(txn, 'receipt_book', None) or None,
             "total_amount": txn.computed_total,
             "source": "Direct Sale",
         })
@@ -714,15 +731,36 @@ def _get_bir_2307_sub_stall_rows(start, end):
     return _fill_receipt_gaps(rows)
 
 
-def _write_bir_sheet(wb, title, rows, period_key_fn, period_label):
+def _write_bir_sheet(wb, title, rows, period_key_fn, period_label, include_2307_column=False, tax_rate=None, tax_label=None):
     """
-    Write a BIR 2307 sheet with Receipt # | Total Amount, grouped by period.
+    Write a BIR 2307 sheet with Receipt # | Book # | Total Amount, grouped by period.
     Inserts subtotals per period. Highlights MISSING receipt rows in orange.
+    If include_2307_column is True (main stall), adds 'With 2307' and tax columns,
+    applying tax only to 2307-flagged rows.
+    If tax_rate is provided without include_2307_column (sub stall), adds a tax column
+    applied to all non-MISSING rows.
     """
     ws = wb.create_sheet(title)
-    headers = [period_label, "Official Receipt #", "Total Amount"]
+    headers = [period_label, "Official Receipt #", "Book #", "Total Amount"]
+    has_tax_col = False
+    if include_2307_column:
+        rate = tax_rate or DEFAULT_EWT_RATE
+        rate_pct = f"{float(rate * 100):g}%"
+        headers.append("With 2307")
+        headers.append(tax_label or f"Tax Withheld ({rate_pct})")
+        has_tax_col = True
+    elif tax_rate:
+        rate = tax_rate
+        rate_pct = f"{float(rate * 100):g}%"
+        headers.append(tax_label or f"Tax ({rate_pct})")
+        has_tax_col = True
+    else:
+        rate = Decimal("0")
+
+    amount_col = 4  # column index for Total Amount
     rows_data = []
     missing_row_indices = []  # track which data rows are MISSING
+    with_2307_row_indices = []  # track which data rows have with_2307
 
     # Group by period
     period_map = defaultdict(list)
@@ -734,50 +772,98 @@ def _write_bir_sheet(wb, title, rows, period_key_fn, period_label):
     for period in sorted(period_map.keys()):
         period_rows = period_map[period]
         for pr in period_rows:
-            rows_data.append([
+            amount = float(pr["total_amount"])
+            row_data = [
                 period,
                 pr["receipt_number"],
-                float(pr["total_amount"]),
-            ])
-            if pr["source"] == "MISSING":
+                pr.get("receipt_book") or "",
+                amount,
+            ]
+            is_missing = pr["source"] == "MISSING"
+            if include_2307_column:
+                has_2307 = pr.get("with_2307", False)
+                row_data.append("Yes" if has_2307 else "No")
+                tax = float(Decimal(str(amount)) * rate) if has_2307 and not is_missing else 0.0
+                row_data.append(tax)
+                if has_2307 and not is_missing:
+                    with_2307_row_indices.append(data_row_idx)
+            elif has_tax_col:
+                tax = float(Decimal(str(amount)) * rate) if not is_missing else 0.0
+                row_data.append(tax)
+            rows_data.append(row_data)
+            if is_missing:
                 missing_row_indices.append(data_row_idx)
             data_row_idx += 1
         # Subtotal
         period_total = sum(float(pr["total_amount"]) for pr in period_rows)
-        rows_data.append(["", "SUBTOTAL", period_total])
+        subtotal_row = ["", "", "SUBTOTAL", period_total]
+        if include_2307_column:
+            subtotal_row.append("")
+            period_tax = sum(
+                float(Decimal(str(pr["total_amount"])) * rate)
+                for pr in period_rows
+                if pr.get("with_2307") and pr["source"] != "MISSING"
+            )
+            subtotal_row.append(period_tax)
+        elif has_tax_col:
+            period_tax = sum(
+                float(Decimal(str(pr["total_amount"])) * rate)
+                for pr in period_rows
+                if pr["source"] != "MISSING"
+            )
+            subtotal_row.append(period_tax)
+        rows_data.append(subtotal_row)
         data_row_idx += 1
 
+    col_count = len(headers)
     last = _write_rows(ws, headers, rows_data)
 
     # Format and highlight
+    tax_col_idx = col_count if has_tax_col else None
     for ri in range(2, last + 1):
-        ws.cell(row=ri, column=3).number_format = "#,##0.00"
+        ws.cell(row=ri, column=amount_col).number_format = "#,##0.00"
+        if tax_col_idx:
+            ws.cell(row=ri, column=tax_col_idx).number_format = "#,##0.00"
         # Bold subtotal rows
-        if ws.cell(row=ri, column=2).value == "SUBTOTAL":
-            for ci in range(1, 4):
+        if ws.cell(row=ri, column=3).value == "SUBTOTAL":
+            for ci in range(1, col_count + 1):
                 ws.cell(row=ri, column=ci).font = Font(bold=True)
                 ws.cell(row=ri, column=ci).fill = BLUE_FILL
 
-    # Highlight MISSING rows in orange (row index in rows_data -> Excel row = idx + 2)
+    # Highlight MISSING rows in orange
     for idx in missing_row_indices:
-        excel_row = idx + 2  # +1 for 1-based, +1 for header
-        for ci in range(1, 4):
+        excel_row = idx + 2
+        for ci in range(1, col_count + 1):
             ws.cell(row=excel_row, column=ci).fill = ORANGE_FILL
             ws.cell(row=excel_row, column=ci).font = Font(italic=True, color="9A3412")
 
+    # Highlight With 2307 rows in light blue
+    for idx in with_2307_row_indices:
+        excel_row = idx + 2
+        for ci in range(1, col_count + 1):
+            cell = ws.cell(row=excel_row, column=ci)
+            # Don't override MISSING highlight
+            if idx not in missing_row_indices:
+                cell.fill = BLUE_FILL
 
-def build_bir_2307_workbook(start, end, requested_sheets, stall_type):
+
+def build_bir_2307_workbook(start, end, requested_sheets, stall_type, ewt_rate=None, tax_rate=None, pre_system_amount=None, pre_system_receipts=None):
     """
     Build BIR 2307 report for a specific stall type.
     stall_type: "main" or "sub"
-    requested_sheets: subset of BIR_2307_VALID_SHEETS (ignored — we always build all period tabs)
+    ewt_rate: custom EWT rate for main stall (default 2%)
+    tax_rate: custom tax rate for sub stall (default 3% percentage tax)
+    pre_system_amount: total revenue from sales not recorded in the system
+    pre_system_receipts: receipt number range string (e.g. "0001-0045")
     """
     if stall_type == "main":
         all_rows = _get_bir_2307_main_stall_rows(start, end)
         stall_label = "Main Stall (Services)"
+        rate = ewt_rate or DEFAULT_EWT_RATE
     else:
         all_rows = _get_bir_2307_sub_stall_rows(start, end)
         stall_label = "Sub Stall (Direct Sales)"
+        rate = tax_rate or DEFAULT_TAX_RATE
 
     wb = Workbook()
     ws = wb.active
@@ -799,6 +885,8 @@ def build_bir_2307_workbook(start, end, requested_sheets, stall_type):
     actual_rows = [r for r in all_rows if r["source"] != "MISSING"]
     missing_count = sum(1 for r in all_rows if r["source"] == "MISSING")
     total_amount = sum(float(r["total_amount"]) for r in actual_rows)
+    is_main = stall_type == "main"
+    rate_pct = f"{float(rate * 100):g}%"
 
     stats = [
         ("Stall", stall_label),
@@ -806,6 +894,41 @@ def build_bir_2307_workbook(start, end, requested_sheets, stall_type):
         ("Total Amount", f"₱{total_amount:,.2f}"),
         ("Missing Receipt Numbers", missing_count),
     ]
+    # Pre-system adjustment
+    pre_amount = float(pre_system_amount) if pre_system_amount else 0
+    combined_amount = total_amount + pre_amount
+
+    if is_main:
+        with_2307_count = sum(1 for r in actual_rows if r.get("with_2307"))
+        without_2307_count = len(actual_rows) - with_2307_count
+        with_2307_amount = sum(float(r["total_amount"]) for r in actual_rows if r.get("with_2307"))
+        total_tax_withheld = float(Decimal(str(with_2307_amount)) * rate)
+        stats.extend([
+            ("With 2307", f"{with_2307_count} (₱{with_2307_amount:,.2f})"),
+            ("Without 2307", without_2307_count),
+            ("Tax Rate (EWT)", rate_pct),
+            (f"Estimated Tax Withheld ({rate_pct})", f"₱{total_tax_withheld:,.2f}"),
+        ])
+    else:
+        total_tax = float(Decimal(str(total_amount)) * rate)
+        stats.extend([
+            ("Tax Rate", rate_pct),
+            (f"Estimated Tax ({rate_pct})", f"₱{total_tax:,.2f}"),
+        ])
+
+    if pre_amount > 0:
+        pre_tax = float(Decimal(str(pre_amount)) * rate)
+        combined_tax = float(Decimal(str(combined_amount)) * rate)
+        stats.append(("", ""))  # blank separator row
+        stats.append(("── Pre-System Data ──", ""))
+        stats.append(("Pre-System Amount", f"₱{pre_amount:,.2f}"))
+        if pre_system_receipts:
+            stats.append(("Pre-System Receipts", pre_system_receipts))
+        stats.append((f"Pre-System Tax ({rate_pct})", f"₱{pre_tax:,.2f}"))
+        stats.append(("", ""))  # blank separator row
+        stats.append(("── Combined Totals ──", ""))
+        stats.append(("Combined Amount (System + Pre-System)", f"₱{combined_amount:,.2f}"))
+        stats.append((f"Combined Tax ({rate_pct})", f"₱{combined_tax:,.2f}"))
     row = 5
     ws.cell(row=row, column=1, value="Metric").font = HEADER_FONT
     ws.cell(row=row, column=1).fill = HEADER_FILL
@@ -830,6 +953,11 @@ def build_bir_2307_workbook(start, end, requested_sheets, stall_type):
     ws.cell(row=row, column=1, value="Orange rows = missing receipt numbers (gap in sequence)")
     ws.cell(row=row, column=1).font = Font(italic=True, color="9A3412")
     ws.cell(row=row, column=1).fill = ORANGE_FILL
+    if is_main:
+        row += 1
+        ws.cell(row=row, column=1, value="Blue rows = transactions with BIR Form 2307")
+        ws.cell(row=row, column=1).font = Font(italic=True, color="1E40AF")
+        ws.cell(row=row, column=1).fill = BLUE_FILL
 
     # Helper for period keys (MISSING rows have date=None, use receipt_number sorting only)
     def _daily_key(r):
@@ -853,10 +981,23 @@ def build_bir_2307_workbook(start, end, requested_sheets, stall_type):
             return str(r["date"].year)
         return "Unknown Year"
 
-    _write_bir_sheet(wb, "Daily Summary", all_rows, _daily_key, "Date")
-    _write_bir_sheet(wb, "Monthly Summary", all_rows, _monthly_key, "Month")
-    _write_bir_sheet(wb, "Quarterly Summary", all_rows, _quarterly_key, "Quarter")
-    _write_bir_sheet(wb, "Yearly Summary", all_rows, _yearly_key, "Year")
+    if is_main:
+        tax_label = f"Tax Withheld ({rate_pct})"
+    else:
+        tax_label = f"Tax ({rate_pct})"
+
+    sheet_kwargs = dict(
+        include_2307_column=is_main,
+        tax_rate=rate if not is_main else None,
+        tax_label=tax_label,
+    )
+    if is_main:
+        sheet_kwargs["tax_rate"] = rate
+
+    _write_bir_sheet(wb, "Daily Summary", all_rows, _daily_key, "Date", **sheet_kwargs)
+    _write_bir_sheet(wb, "Monthly Summary", all_rows, _monthly_key, "Month", **sheet_kwargs)
+    _write_bir_sheet(wb, "Quarterly Summary", all_rows, _quarterly_key, "Quarter", **sheet_kwargs)
+    _write_bir_sheet(wb, "Yearly Summary", all_rows, _yearly_key, "Year", **sheet_kwargs)
 
     return wb
 
@@ -985,6 +1126,32 @@ class BackgroundExportView(APIView):
         user_id = request.user.id
         user_name = request.user.get_full_name()
 
+        # Parse optional tax rates and pre-system data for BIR 2307 exports
+        ewt_rate = None
+        tax_rate = None
+        pre_system_amount = None
+        pre_system_receipts = None
+        if export_type == "bir_2307":
+            try:
+                raw_ewt = request.data.get("ewt_rate")
+                if raw_ewt is not None:
+                    ewt_rate = Decimal(str(raw_ewt)) / Decimal("100")
+            except Exception:
+                pass
+            try:
+                raw_tax = request.data.get("tax_rate")
+                if raw_tax is not None:
+                    tax_rate = Decimal(str(raw_tax)) / Decimal("100")
+            except Exception:
+                pass
+            try:
+                raw_pre = request.data.get("pre_system_amount")
+                if raw_pre is not None and str(raw_pre).strip():
+                    pre_system_amount = Decimal(str(raw_pre))
+            except Exception:
+                pass
+            pre_system_receipts = request.data.get("pre_system_receipts", "") or None
+
         def _generate():
             try:
                 if export_type == "inventory":
@@ -1030,7 +1197,12 @@ class BackgroundExportView(APIView):
                         stall_type = stall_map.get(sheet_key)
                         if not stall_type:
                             continue
-                        wb = build_bir_2307_workbook(start_date, end_date, requested, stall_type)
+                        wb = build_bir_2307_workbook(
+                            start_date, end_date, requested, stall_type,
+                            ewt_rate=ewt_rate, tax_rate=tax_rate,
+                            pre_system_amount=pre_system_amount,
+                            pre_system_receipts=pre_system_receipts,
+                        )
                         prefix = f"bir_2307_{stall_type}_stall"
                         token, filename = _save_workbook(wb, prefix)
                         generated.append((token, filename))
