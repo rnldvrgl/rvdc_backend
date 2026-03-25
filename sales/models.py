@@ -23,6 +23,11 @@ class PaymentStatus(models.TextChoices):
     VOIDED = "voided", _("Voided")
 
 
+class DocumentType(models.TextChoices):
+    OFFICIAL_RECEIPT = "or", _("Official Receipt")
+    SALES_INVOICE = "si", _("Sales Invoice")
+
+
 class TransactionType(models.TextChoices):
     SALE = "sale", _("Sale")
     REPLACEMENT = "replacement", _("Replacement")
@@ -43,6 +48,17 @@ class SalesTransaction(models.Model):
 
     manual_receipt_number = models.CharField(max_length=100, blank=True, null=True)
     system_receipt_number = models.UUIDField(default=uuid.uuid4, editable=False)
+
+    document_type = models.CharField(
+        max_length=2,
+        choices=DocumentType.choices,
+        default=DocumentType.SALES_INVOICE,
+        help_text="OR for Main Stall, SI for Sub Stall.",
+    )
+    with_2307 = models.BooleanField(
+        default=False,
+        help_text="Whether this transaction has an associated BIR Form 2307. Only valid for OR (Main Stall).",
+    )
 
     payment_status = models.CharField(
         max_length=10, choices=PaymentStatus.choices, default=PaymentStatus.UNPAID
@@ -86,10 +102,19 @@ class SalesTransaction(models.Model):
             models.Index(fields=["created_at"], name="sales_created_at_idx"),
             models.Index(fields=["stall", "created_at"], name="sales_stall_created_idx"),
             models.Index(fields=["is_deleted"], name="sales_is_deleted_idx"),
+            models.Index(fields=["document_type"], name="sales_doc_type_idx"),
+            models.Index(fields=["document_type", "with_2307"], name="sales_doc_type_2307_idx"),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=~models.Q(document_type="si", with_2307=True),
+                name="si_cannot_have_2307",
+            ),
         ]
 
     def __str__(self):
-        return f"Sale #{self.id} - OR {self.manual_receipt_number or 'N/A'}"
+        doc_label = "OR" if self.document_type == DocumentType.OFFICIAL_RECEIPT else "SI"
+        return f"Sale #{self.id} - {doc_label} {self.manual_receipt_number or 'N/A'}"
 
     @property
     def total_items(self):

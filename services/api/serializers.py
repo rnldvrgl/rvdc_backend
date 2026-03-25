@@ -1359,6 +1359,7 @@ class ServiceSerializer(serializers.ModelSerializer):
             "service_items_checked_at",
             # BIR 2307 receipt
             "manual_receipt_number",
+            "with_2307",
         ]
         read_only_fields = [
             "main_stall_revenue",

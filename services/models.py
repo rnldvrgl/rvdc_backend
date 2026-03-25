@@ -233,6 +233,10 @@ class Service(models.Model):
         null=True,
         help_text="Official Receipt number for BIR 2307 filing",
     )
+    with_2307 = models.BooleanField(
+        default=False,
+        help_text="Whether this service has an associated BIR Form 2307.",
+    )
 
     # Complementary service tracking (free services: warranty, goodwill, etc.)
     is_complementary = models.BooleanField(

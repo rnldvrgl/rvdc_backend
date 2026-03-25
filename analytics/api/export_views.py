@@ -636,13 +636,14 @@ def _fill_receipt_gaps(rows):
                 "receipt_number": padded,
                 "total_amount": Decimal("0"),
                 "source": "MISSING",
+                "with_2307": False,
             })
 
     return filled
 
 
 def _get_bir_2307_main_stall_rows(start, end):
-    """Services with manual_receipt_number (main stall 2307)."""
+    """Services with manual_receipt_number (main stall OR)."""
     from services.models import Service
 
     services = Service.objects.filter(
@@ -659,6 +660,7 @@ def _get_bir_2307_main_stall_rows(start, end):
             "receipt_number": svc.manual_receipt_number,
             "total_amount": svc.total_revenue or Decimal("0"),
             "source": "Service",
+            "with_2307": getattr(svc, 'with_2307', False),
         })
 
     return _fill_receipt_gaps(rows)
@@ -714,15 +716,19 @@ def _get_bir_2307_sub_stall_rows(start, end):
     return _fill_receipt_gaps(rows)
 
 
-def _write_bir_sheet(wb, title, rows, period_key_fn, period_label):
+def _write_bir_sheet(wb, title, rows, period_key_fn, period_label, include_2307_column=False):
     """
     Write a BIR 2307 sheet with Receipt # | Total Amount, grouped by period.
     Inserts subtotals per period. Highlights MISSING receipt rows in orange.
+    If include_2307_column is True, adds a 'With 2307' column and highlights those rows in blue.
     """
     ws = wb.create_sheet(title)
     headers = [period_label, "Official Receipt #", "Total Amount"]
+    if include_2307_column:
+        headers.append("With 2307")
     rows_data = []
     missing_row_indices = []  # track which data rows are MISSING
+    with_2307_row_indices = []  # track which data rows have with_2307
 
     # Group by period
     period_map = defaultdict(list)
@@ -734,19 +740,29 @@ def _write_bir_sheet(wb, title, rows, period_key_fn, period_label):
     for period in sorted(period_map.keys()):
         period_rows = period_map[period]
         for pr in period_rows:
-            rows_data.append([
+            row_data = [
                 period,
                 pr["receipt_number"],
                 float(pr["total_amount"]),
-            ])
+            ]
+            if include_2307_column:
+                has_2307 = pr.get("with_2307", False)
+                row_data.append("Yes" if has_2307 else "No")
+                if has_2307 and pr["source"] != "MISSING":
+                    with_2307_row_indices.append(data_row_idx)
+            rows_data.append(row_data)
             if pr["source"] == "MISSING":
                 missing_row_indices.append(data_row_idx)
             data_row_idx += 1
         # Subtotal
         period_total = sum(float(pr["total_amount"]) for pr in period_rows)
-        rows_data.append(["", "SUBTOTAL", period_total])
+        subtotal_row = ["", "SUBTOTAL", period_total]
+        if include_2307_column:
+            subtotal_row.append("")
+        rows_data.append(subtotal_row)
         data_row_idx += 1
 
+    col_count = len(headers)
     last = _write_rows(ws, headers, rows_data)
 
     # Format and highlight
@@ -754,16 +770,25 @@ def _write_bir_sheet(wb, title, rows, period_key_fn, period_label):
         ws.cell(row=ri, column=3).number_format = "#,##0.00"
         # Bold subtotal rows
         if ws.cell(row=ri, column=2).value == "SUBTOTAL":
-            for ci in range(1, 4):
+            for ci in range(1, col_count + 1):
                 ws.cell(row=ri, column=ci).font = Font(bold=True)
                 ws.cell(row=ri, column=ci).fill = BLUE_FILL
 
-    # Highlight MISSING rows in orange (row index in rows_data -> Excel row = idx + 2)
+    # Highlight MISSING rows in orange
     for idx in missing_row_indices:
-        excel_row = idx + 2  # +1 for 1-based, +1 for header
-        for ci in range(1, 4):
+        excel_row = idx + 2
+        for ci in range(1, col_count + 1):
             ws.cell(row=excel_row, column=ci).fill = ORANGE_FILL
             ws.cell(row=excel_row, column=ci).font = Font(italic=True, color="9A3412")
+
+    # Highlight With 2307 rows in light blue
+    for idx in with_2307_row_indices:
+        excel_row = idx + 2
+        for ci in range(1, col_count + 1):
+            cell = ws.cell(row=excel_row, column=ci)
+            # Don't override MISSING highlight
+            if idx not in missing_row_indices:
+                cell.fill = BLUE_FILL
 
 
 def build_bir_2307_workbook(start, end, requested_sheets, stall_type):
@@ -799,6 +824,7 @@ def build_bir_2307_workbook(start, end, requested_sheets, stall_type):
     actual_rows = [r for r in all_rows if r["source"] != "MISSING"]
     missing_count = sum(1 for r in all_rows if r["source"] == "MISSING")
     total_amount = sum(float(r["total_amount"]) for r in actual_rows)
+    is_main = stall_type == "main"
 
     stats = [
         ("Stall", stall_label),
@@ -806,6 +832,14 @@ def build_bir_2307_workbook(start, end, requested_sheets, stall_type):
         ("Total Amount", f"₱{total_amount:,.2f}"),
         ("Missing Receipt Numbers", missing_count),
     ]
+    if is_main:
+        with_2307_count = sum(1 for r in actual_rows if r.get("with_2307"))
+        without_2307_count = len(actual_rows) - with_2307_count
+        with_2307_amount = sum(float(r["total_amount"]) for r in actual_rows if r.get("with_2307"))
+        stats.extend([
+            ("With 2307", f"{with_2307_count} (₱{with_2307_amount:,.2f})"),
+            ("Without 2307", without_2307_count),
+        ])
     row = 5
     ws.cell(row=row, column=1, value="Metric").font = HEADER_FONT
     ws.cell(row=row, column=1).fill = HEADER_FILL
@@ -830,6 +864,11 @@ def build_bir_2307_workbook(start, end, requested_sheets, stall_type):
     ws.cell(row=row, column=1, value="Orange rows = missing receipt numbers (gap in sequence)")
     ws.cell(row=row, column=1).font = Font(italic=True, color="9A3412")
     ws.cell(row=row, column=1).fill = ORANGE_FILL
+    if is_main:
+        row += 1
+        ws.cell(row=row, column=1, value="Blue rows = transactions with BIR Form 2307")
+        ws.cell(row=row, column=1).font = Font(italic=True, color="1E40AF")
+        ws.cell(row=row, column=1).fill = BLUE_FILL
 
     # Helper for period keys (MISSING rows have date=None, use receipt_number sorting only)
     def _daily_key(r):
@@ -853,10 +892,10 @@ def build_bir_2307_workbook(start, end, requested_sheets, stall_type):
             return str(r["date"].year)
         return "Unknown Year"
 
-    _write_bir_sheet(wb, "Daily Summary", all_rows, _daily_key, "Date")
-    _write_bir_sheet(wb, "Monthly Summary", all_rows, _monthly_key, "Month")
-    _write_bir_sheet(wb, "Quarterly Summary", all_rows, _quarterly_key, "Quarter")
-    _write_bir_sheet(wb, "Yearly Summary", all_rows, _yearly_key, "Year")
+    _write_bir_sheet(wb, "Daily Summary", all_rows, _daily_key, "Date", include_2307_column=is_main)
+    _write_bir_sheet(wb, "Monthly Summary", all_rows, _monthly_key, "Month", include_2307_column=is_main)
+    _write_bir_sheet(wb, "Quarterly Summary", all_rows, _quarterly_key, "Quarter", include_2307_column=is_main)
+    _write_bir_sheet(wb, "Yearly Summary", all_rows, _yearly_key, "Year", include_2307_column=is_main)
 
     return wb
 
