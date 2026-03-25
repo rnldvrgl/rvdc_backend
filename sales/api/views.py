@@ -42,6 +42,7 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         "stall__name",
         "payment_status",
         "client__contact_number",
+        "manual_receipt_number",
     ]
     ordering_fields = "__all__"
 
@@ -109,6 +110,12 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 "options": lambda: [
                     {"label": "Sale", "value": "sale"},
                     {"label": "Replacement", "value": "replacement"},
+                ]
+            },
+            "has_receipt": {
+                "options": lambda: [
+                    {"label": "With Receipt #", "value": "with"},
+                    {"label": "Without Receipt #", "value": "without"},
                 ]
             },
         }
