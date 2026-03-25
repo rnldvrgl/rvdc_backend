@@ -7,7 +7,7 @@ from rest_framework.exceptions import NotFound
 from django_filters.rest_framework import DjangoFilterBackend
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
-from django.db.models import Q
+from django.db.models import Q, Sum, Count
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone as dj_timezone
 from django.utils.dateparse import parse_date
@@ -226,7 +226,32 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
 
+    @action(detail=False, methods=["get"], url_path="daily-summary")
+    def daily_summary(self, request):
+        """Return today's sales count and total amount for the current user's stall."""
+        today = dj_timezone.localdate()
+        qs = SalesTransaction.objects.filter(
+            is_deleted=False, voided=False
+        ).annotate(
+            effective_date=Coalesce("transaction_date", TruncDate("created_at"))
+        ).filter(effective_date=today)
 
+        user = request.user
+        if user.role == "admin":
+            pass
+        elif user.role in ("manager", "clerk") and getattr(user, "assigned_stall", None):
+            qs = qs.filter(stall=user.assigned_stall)
+        else:
+            qs = qs.none()
+
+        agg = qs.aggregate(
+            count=Count("id"),
+            total=Sum("computed_total"),
+        )
+        return Response({
+            "count": agg["count"] or 0,
+            "total": float(agg["total"] or 0),
+        })
 
     @action(detail=True, methods=["post"])
     def add_payment(self, request, pk=None):
