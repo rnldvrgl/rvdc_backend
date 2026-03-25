@@ -17,7 +17,7 @@ from django.utils import timezone
 from expenses.models import Expense, ExpenseItem
 from inventory.models import Stall, Stock
 from rest_framework.exceptions import ValidationError
-from sales.models import SalesItem, SalesTransaction, TransactionType
+from sales.models import SalesItem, SalesTransaction, TransactionType, DocumentType
 
 
 def get_main_stall():
@@ -487,6 +487,8 @@ class ServiceCompletionHandler:
                             client=service.client,
                             sales_clerk=user,
                             transaction_type=TransactionType.SERVICE,
+                            document_type=DocumentType.SALES_INVOICE,
+                            with_2307=False,
                         )
 
                         # Add all parts to the single transaction
@@ -578,6 +580,8 @@ class ServiceCompletionHandler:
                         client=service.client,
                         sales_clerk=user,
                         transaction_type=TransactionType.SERVICE,
+                        document_type=DocumentType.OFFICIAL_RECEIPT,
+                        with_2307=getattr(service, 'with_2307', False),
                     )
                     
                     for appliance in service.appliances.all():
@@ -682,6 +686,8 @@ class ServiceCompletionHandler:
                             client=service.client,
                             sales_clerk=user,
                             transaction_type=TransactionType.SERVICE,
+                            document_type=DocumentType.SALES_INVOICE,
+                            with_2307=False,
                         )
 
                         for appliance in service.appliances.all():
@@ -744,6 +750,8 @@ class ServiceCompletionHandler:
             client=service.client,
             sales_clerk=user,
             transaction_type=TransactionType.SERVICE,
+            document_type=DocumentType.OFFICIAL_RECEIPT,
+            with_2307=getattr(service, 'with_2307', False),
         )
 
         # Add labor charges (only if not marked as free)
@@ -1342,6 +1350,8 @@ class ServicePaymentManager:
                 client=service.client,
                 sales_clerk=service_payments.first().received_by if service_payments.first().received_by else None,
                 transaction_type=TransactionType.SERVICE,
+                document_type=DocumentType.OFFICIAL_RECEIPT,
+                with_2307=getattr(service, 'with_2307', False),
             )
             service.related_transaction = sales_transaction
             service.save(update_fields=["related_transaction"])
@@ -1417,6 +1427,8 @@ class ServicePaymentManager:
                     client=service.client,
                     sales_clerk=service_payments.first().received_by if service_payments.first().received_by else None,
                     transaction_type=TransactionType.SERVICE,
+                    document_type=DocumentType.SALES_INVOICE,
+                    with_2307=False,
                 )
                 
                 # Add all parts to the single sub stall transaction
@@ -1571,6 +1583,8 @@ class ServicePaymentManager:
                         client=service.client,
                         sales_clerk=received_by,
                         transaction_type=TransactionType.SERVICE,
+                        document_type=DocumentType.OFFICIAL_RECEIPT,
+                        with_2307=getattr(service, 'with_2307', False),
                     )
                     service.related_transaction = sales_transaction
 
@@ -1650,6 +1664,8 @@ class ServicePaymentManager:
                             client=service.client,
                             sales_clerk=received_by,
                             transaction_type=TransactionType.SERVICE,
+                            document_type=DocumentType.SALES_INVOICE,
+                            with_2307=False,
                         )
 
                         # Add all parts to the single sub stall transaction
