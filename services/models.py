@@ -227,6 +227,12 @@ class Service(models.Model):
     )
     
     # BIR 2307 receipt number (manually entered by clerk)
+    receipt_book = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text="Receipt book number (e.g. '1', '2'). Same OR # can exist in different books.",
+    )
     manual_receipt_number = models.CharField(
         max_length=100,
         blank=True,

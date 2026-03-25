@@ -74,6 +74,7 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
             "id",
             "stall",
             "client",
+            "receipt_book",
             "manual_receipt_number",
             "system_receipt_number",
             "document_type",

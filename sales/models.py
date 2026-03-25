@@ -46,6 +46,12 @@ class SalesTransaction(models.Model):
         related_name="sales_transactions",
     )
 
+    receipt_book = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text="Receipt book number (e.g. '1', '2'). Same SI/OR # can exist in different books.",
+    )
     manual_receipt_number = models.CharField(max_length=100, blank=True, null=True)
     system_receipt_number = models.UUIDField(default=uuid.uuid4, editable=False)
 

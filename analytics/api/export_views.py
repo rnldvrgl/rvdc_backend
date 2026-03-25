@@ -605,43 +605,52 @@ def _extract_numeric_receipt(receipt_str):
 
 def _fill_receipt_gaps(rows):
     """
-    Given a list of {receipt_number, total_amount, date, source} dicts,
-    detect gaps in the numeric receipt sequence and insert placeholder rows
-    with total_amount=0 and source="MISSING" for each skipped number.
+    Given a list of {receipt_number, receipt_book, total_amount, date, source} dicts,
+    detect gaps in the numeric receipt sequence *per receipt book* and insert
+    placeholder rows with total_amount=0 and source="MISSING" for each skipped number.
     The receipt numbers are zero-padded to match the longest existing receipt.
     """
     if not rows:
         return rows
 
-    # Build map of numeric receipt -> row
-    numeric_map = {}
-    max_len = 0
+    # Group rows by receipt_book
+    from collections import defaultdict as _dd
+    book_groups = _dd(list)
     for r in rows:
-        num = _extract_numeric_receipt(r["receipt_number"])
-        if num is not None:
-            numeric_map[num] = r
-            max_len = max(max_len, len(str(r["receipt_number"]).strip()))
-
-    if len(numeric_map) < 2:
-        return rows
-
-    min_num = min(numeric_map.keys())
-    max_num = max(numeric_map.keys())
+        book_groups[r.get("receipt_book") or ""].append(r)
 
     filled = []
-    for n in range(min_num, max_num + 1):
-        if n in numeric_map:
-            filled.append(numeric_map[n])
-        else:
-            # Missing receipt — insert gap row
-            padded = str(n).zfill(max_len) if max_len > 0 else str(n)
-            filled.append({
-                "date": None,
-                "receipt_number": padded,
-                "total_amount": Decimal("0"),
-                "source": "MISSING",
-                "with_2307": False,
-            })
+    for book_key in sorted(book_groups.keys(), key=lambda x: (x == "", x)):
+        book_rows = book_groups[book_key]
+        # Build map of numeric receipt -> row
+        numeric_map = {}
+        max_len = 0
+        for r in book_rows:
+            num = _extract_numeric_receipt(r["receipt_number"])
+            if num is not None:
+                numeric_map[num] = r
+                max_len = max(max_len, len(str(r["receipt_number"]).strip()))
+
+        if len(numeric_map) < 2:
+            filled.extend(book_rows)
+            continue
+
+        min_num = min(numeric_map.keys())
+        max_num = max(numeric_map.keys())
+
+        for n in range(min_num, max_num + 1):
+            if n in numeric_map:
+                filled.append(numeric_map[n])
+            else:
+                padded = str(n).zfill(max_len) if max_len > 0 else str(n)
+                filled.append({
+                    "date": None,
+                    "receipt_number": padded,
+                    "receipt_book": book_key or None,
+                    "total_amount": Decimal("0"),
+                    "source": "MISSING",
+                    "with_2307": False,
+                })
 
     return filled
 
@@ -662,6 +671,7 @@ def _get_bir_2307_main_stall_rows(start, end):
         rows.append({
             "date": svc.created_at.date(),
             "receipt_number": svc.manual_receipt_number,
+            "receipt_book": getattr(svc, 'receipt_book', None) or None,
             "total_amount": svc.total_revenue or Decimal("0"),
             "source": "Service",
             "with_2307": getattr(svc, 'with_2307', False),
@@ -713,6 +723,7 @@ def _get_bir_2307_sub_stall_rows(start, end):
         rows.append({
             "date": _effective_date(txn),
             "receipt_number": txn.manual_receipt_number,
+            "receipt_book": getattr(txn, 'receipt_book', None) or None,
             "total_amount": txn.computed_total,
             "source": "Direct Sale",
         })
@@ -722,7 +733,7 @@ def _get_bir_2307_sub_stall_rows(start, end):
 
 def _write_bir_sheet(wb, title, rows, period_key_fn, period_label, include_2307_column=False, tax_rate=None, tax_label=None):
     """
-    Write a BIR 2307 sheet with Receipt # | Total Amount, grouped by period.
+    Write a BIR 2307 sheet with Receipt # | Book # | Total Amount, grouped by period.
     Inserts subtotals per period. Highlights MISSING receipt rows in orange.
     If include_2307_column is True (main stall), adds 'With 2307' and tax columns,
     applying tax only to 2307-flagged rows.
@@ -730,7 +741,7 @@ def _write_bir_sheet(wb, title, rows, period_key_fn, period_label, include_2307_
     applied to all non-MISSING rows.
     """
     ws = wb.create_sheet(title)
-    headers = [period_label, "Official Receipt #", "Total Amount"]
+    headers = [period_label, "Official Receipt #", "Book #", "Total Amount"]
     has_tax_col = False
     if include_2307_column:
         rate = tax_rate or DEFAULT_EWT_RATE
@@ -746,6 +757,7 @@ def _write_bir_sheet(wb, title, rows, period_key_fn, period_label, include_2307_
     else:
         rate = Decimal("0")
 
+    amount_col = 4  # column index for Total Amount
     rows_data = []
     missing_row_indices = []  # track which data rows are MISSING
     with_2307_row_indices = []  # track which data rows have with_2307
@@ -764,6 +776,7 @@ def _write_bir_sheet(wb, title, rows, period_key_fn, period_label, include_2307_
             row_data = [
                 period,
                 pr["receipt_number"],
+                pr.get("receipt_book") or "",
                 amount,
             ]
             is_missing = pr["source"] == "MISSING"
@@ -783,7 +796,7 @@ def _write_bir_sheet(wb, title, rows, period_key_fn, period_label, include_2307_
             data_row_idx += 1
         # Subtotal
         period_total = sum(float(pr["total_amount"]) for pr in period_rows)
-        subtotal_row = ["", "SUBTOTAL", period_total]
+        subtotal_row = ["", "", "SUBTOTAL", period_total]
         if include_2307_column:
             subtotal_row.append("")
             period_tax = sum(
@@ -808,11 +821,11 @@ def _write_bir_sheet(wb, title, rows, period_key_fn, period_label, include_2307_
     # Format and highlight
     tax_col_idx = col_count if has_tax_col else None
     for ri in range(2, last + 1):
-        ws.cell(row=ri, column=3).number_format = "#,##0.00"
+        ws.cell(row=ri, column=amount_col).number_format = "#,##0.00"
         if tax_col_idx:
             ws.cell(row=ri, column=tax_col_idx).number_format = "#,##0.00"
         # Bold subtotal rows
-        if ws.cell(row=ri, column=2).value == "SUBTOTAL":
+        if ws.cell(row=ri, column=3).value == "SUBTOTAL":
             for ci in range(1, col_count + 1):
                 ws.cell(row=ri, column=ci).font = Font(bold=True)
                 ws.cell(row=ri, column=ci).fill = BLUE_FILL
