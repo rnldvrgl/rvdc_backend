@@ -30,6 +30,7 @@ services:
         volumes:
             - /srv/rvdc_backend/media:/app/media  # Map media files to host
             - /srv/rvdc_backend/staticfiles:/app/staticfiles  # Map static files to host
+            - /srv/rvdc_backend/backups:/app/backups  # Database backups
 
 volumes:
     postgres_data:

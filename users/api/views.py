@@ -461,6 +461,7 @@ class ServerMaintenanceView(APIView):
             "restart_containers", "container_logs",
             "run_command", "view_cron_log", "install_cron_jobs",
             "delete_chats",
+            "db_backup", "list_backups", "delete_backup",
         ]
         if action_type not in allowed_actions:
             return Response(
@@ -532,6 +533,75 @@ class ServerMaintenanceView(APIView):
                 return Response({
                     "success": False,
                     "action": "view_cron_log",
+                    "error": str(e)[:200],
+                })
+
+        # List database backups
+        if action_type == "list_backups":
+            import os
+            backups_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                "backups",
+            )
+            os.makedirs(backups_dir, exist_ok=True)
+            backups = []
+            for fname in sorted(os.listdir(backups_dir), reverse=True):
+                if fname.startswith("rvdc_backup_") and fname.endswith((".sql.gz", ".sql")):
+                    fpath = os.path.join(backups_dir, fname)
+                    try:
+                        stat = os.stat(fpath)
+                        backups.append({
+                            "filename": fname,
+                            "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                            "created_at": timezone.datetime.fromtimestamp(
+                                stat.st_mtime, tz=timezone.get_current_timezone()
+                            ).isoformat(),
+                        })
+                    except OSError:
+                        pass
+            return Response({
+                "success": True,
+                "action": "list_backups",
+                "backups": backups,
+            })
+
+        # Delete a specific backup
+        if action_type == "delete_backup":
+            import os
+            import re
+            filename = request.data.get("filename", "")
+            if not re.match(r'^rvdc_backup_\d{8}_\d{6}\.sql(\.gz)?$', filename):
+                return Response(
+                    {"error": "Invalid backup filename."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            backups_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                "backups",
+            )
+            fpath = os.path.join(backups_dir, filename)
+            # Ensure the resolved path is within backups_dir
+            if not os.path.realpath(fpath).startswith(os.path.realpath(backups_dir)):
+                return Response(
+                    {"error": "Invalid path."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not os.path.isfile(fpath):
+                return Response(
+                    {"error": "Backup file not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            try:
+                os.remove(fpath)
+                return Response({
+                    "success": True,
+                    "action": "delete_backup",
+                    "message": f"Deleted {filename}",
+                })
+            except OSError as e:
+                return Response({
+                    "success": False,
+                    "action": "delete_backup",
                     "error": str(e)[:200],
                 })
 
@@ -820,6 +890,77 @@ class ServerMaintenanceView(APIView):
                         "error": str(e)[:500],
                     })
 
+            # Create database backup
+            if action_type == "db_backup":
+                import os
+                import re
+                try:
+                    from django.conf import settings as django_settings
+                    db_conf = django_settings.DATABASES["default"]
+                    db_name = db_conf["NAME"]
+                    db_user = db_conf["USER"]
+
+                    backups_dir = os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "backups",
+                    )
+                    os.makedirs(backups_dir, exist_ok=True)
+
+                    timestamp = timezone.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"rvdc_backup_{timestamp}.sql.gz"
+                    backup_path = os.path.join(backups_dir, filename)
+
+                    # Find the db container name
+                    container_result = subprocess.run(
+                        ["docker", "ps", "--filter", "ancestor=postgres:16",
+                         "--format", "{{.Names}}"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    db_container = container_result.stdout.strip().split("\n")[0]
+                    if not db_container:
+                        db_container = "rvdc_backend-db-1"
+
+                    # Run pg_dump inside the db container, pipe through gzip
+                    dump_cmd = (
+                        f'docker exec {db_container} pg_dump -U {db_user} -d {db_name} '
+                        f'--no-owner --no-privileges'
+                    )
+                    # Validate db_user and db_name to prevent injection
+                    if not re.match(r'^[a-zA-Z0-9_]+$', db_user):
+                        raise ValueError("Invalid database user name")
+                    if not re.match(r'^[a-zA-Z0-9_]+$', db_name):
+                        raise ValueError("Invalid database name")
+
+                    dump_result = subprocess.run(
+                        [
+                            "docker", "exec", db_container,
+                            "pg_dump", "-U", db_user, "-d", db_name,
+                            "--no-owner", "--no-privileges",
+                        ],
+                        capture_output=True, timeout=600,
+                    )
+                    if dump_result.returncode != 0:
+                        error_msg = dump_result.stderr.decode("utf-8", errors="replace")[:500]
+                        raise RuntimeError(f"pg_dump failed: {error_msg}")
+
+                    # Compress the dump
+                    import gzip
+                    with gzip.open(backup_path, "wb") as f:
+                        f.write(dump_result.stdout)
+
+                    size_mb = round(os.path.getsize(backup_path) / (1024 * 1024), 2)
+                    results.append({
+                        "task": "db_backup",
+                        "success": True,
+                        "output": f"Backup created: {filename} ({size_mb} MB)",
+                    })
+                except Exception as e:
+                    results.append({
+                        "task": "db_backup",
+                        "success": False,
+                        "error": str(e)[:500],
+                    })
+
             all_success = all(r.get("success") for r in results)
             _logger.info(
                 "Server maintenance by %s: action=%s results=%s",
@@ -841,6 +982,7 @@ class ServerMaintenanceView(APIView):
                         "run_command": command_config["label"] if command_config else "Command",
                         "install_cron_jobs": "Install Cron Jobs",
                         "delete_chats": "Delete Chats",
+                        "db_backup": "Database Backup",
                     }
                     label = action_labels.get(action_type, action_type)
                     failed = [r for r in results if not r.get("success")]
@@ -881,6 +1023,7 @@ class ServerMaintenanceView(APIView):
             "run_command": command_config["label"] if command_config else "Command",
             "install_cron_jobs": "Install Cron Jobs",
             "delete_chats": "Delete Chats",
+            "db_backup": "Database Backup",
         }
         return Response({
             "accepted": True,
@@ -1138,6 +1281,49 @@ class ServerMaintenanceView(APIView):
             '# END RVDC Cron Jobs\n'
             '# ============================================================================\n'
         )
+
+
+# -----------------------------------------------------------------------
+# Database Backup Download
+# -----------------------------------------------------------------------
+
+class BackupDownloadView(APIView):
+    """Download a database backup file. Admin-only."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request, filename):
+        import os
+        import re
+        from django.http import FileResponse
+
+        if not re.match(r'^rvdc_backup_\d{8}_\d{6}\.sql(\.gz)?$', filename):
+            return Response(
+                {"error": "Invalid backup filename."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        backups_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "backups",
+        )
+        fpath = os.path.join(backups_dir, filename)
+
+        if not os.path.realpath(fpath).startswith(os.path.realpath(backups_dir)):
+            return Response(
+                {"error": "Invalid path."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not os.path.isfile(fpath):
+            return Response(
+                {"error": "Backup file not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        content_type = "application/gzip" if filename.endswith(".gz") else "application/sql"
+        response = FileResponse(open(fpath, "rb"), content_type=content_type)
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 # -----------------------------------------------------------------------
