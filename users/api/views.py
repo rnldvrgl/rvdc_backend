@@ -1,4 +1,4 @@
-from rest_framework import generics, permissions, filters, viewsets, status
+from rest_framework import generics, parsers, permissions, filters, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
@@ -1324,6 +1324,270 @@ class BackupDownloadView(APIView):
         response = FileResponse(open(fpath, "rb"), content_type=content_type)
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
+
+
+# -----------------------------------------------------------------------
+# Database Backup Upload & Restore
+# -----------------------------------------------------------------------
+
+class BackupUploadRestoreView(APIView):
+    """Upload a .sql.gz or .sql backup and restore the PostgreSQL database. Admin-only."""
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [parsers.MultiPartParser]
+
+    def post(self, request):
+        import gzip
+        import logging
+        import os
+        import re
+        import subprocess
+        import threading
+
+        logger = logging.getLogger(__name__)
+
+        # Require admin credentials
+        from django.contrib.auth import authenticate as auth_check
+        admin_username = request.data.get("admin_username", "")
+        admin_password = request.data.get("admin_password", "")
+        if not admin_username or not admin_password:
+            return Response(
+                {"error": "Admin credentials required for database restore."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        admin_user = auth_check(username=admin_username, password=admin_password)
+        if not admin_user or admin_user.role != "admin":
+            return Response(
+                {"error": "Invalid admin credentials."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        uploaded_file = request.FILES.get("file")
+        if not uploaded_file:
+            return Response(
+                {"error": "No file uploaded."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        filename = uploaded_file.name
+        if not filename.endswith((".sql.gz", ".sql")):
+            return Response(
+                {"error": "Only .sql or .sql.gz files are allowed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Limit file size to 500MB
+        if uploaded_file.size > 500 * 1024 * 1024:
+            return Response(
+                {"error": "File too large. Maximum 500MB."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Save uploaded file to backups dir
+        backups_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "backups",
+        )
+        os.makedirs(backups_dir, exist_ok=True)
+
+        # Sanitize: use a safe name
+        safe_name = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+        save_path = os.path.join(backups_dir, safe_name)
+        if not os.path.realpath(save_path).startswith(os.path.realpath(backups_dir)):
+            return Response(
+                {"error": "Invalid filename."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with open(save_path, "wb") as f:
+            for chunk in uploaded_file.chunks():
+                f.write(chunk)
+
+        user_id = request.user.id
+        user_name = request.user.get_full_name()
+
+        def _run_restore():
+            _logger = logging.getLogger(__name__)
+            results = []
+            try:
+                from datetime import datetime as _dt
+                from django.conf import settings as django_settings
+                db_conf = django_settings.DATABASES["default"]
+                db_name = db_conf["NAME"]
+                db_user = db_conf["USER"]
+
+                if not re.match(r'^[a-zA-Z0-9_]+$', db_user):
+                    raise ValueError("Invalid database user name")
+                if not re.match(r'^[a-zA-Z0-9_]+$', db_name):
+                    raise ValueError("Invalid database name")
+
+                # Find the db container
+                container_result = subprocess.run(
+                    ["docker", "ps", "--filter", "ancestor=postgres:16",
+                     "--format", "{{.Names}}"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                db_container = container_result.stdout.strip().split("\n")[0]
+                if not db_container:
+                    db_container = "rvdc_backend-db-1"
+
+                # --- Auto-backup before restore (safety net) ---
+                try:
+                    pre_restore_name = f"pre_restore_{_dt.now().strftime('%Y%m%d_%H%M%S')}.sql.gz"
+                    pre_restore_path = os.path.join(backups_dir, pre_restore_name)
+                    dump_result = subprocess.run(
+                        [
+                            "docker", "exec", db_container,
+                            "pg_dump", "-U", db_user, "-d", db_name,
+                            "--no-owner", "--no-privileges",
+                        ],
+                        capture_output=True, timeout=600,
+                    )
+                    if dump_result.returncode == 0:
+                        with gzip.open(pre_restore_path, "wb") as gz_f:
+                            gz_f.write(dump_result.stdout)
+                        _logger.info("Pre-restore backup created: %s", pre_restore_name)
+                    else:
+                        _logger.warning("Pre-restore backup failed, continuing anyway: %s",
+                                        dump_result.stderr[:300] if dump_result.stderr else "unknown")
+                except Exception as pre_err:
+                    _logger.warning("Pre-restore backup failed, continuing anyway: %s", pre_err)
+
+                # Decompress if .gz
+                if save_path.endswith(".gz"):
+                    sql_path = save_path[:-3]  # remove .gz
+                    with gzip.open(save_path, "rb") as gz_in:
+                        with open(sql_path, "wb") as sql_out:
+                            while True:
+                                chunk = gz_in.read(1024 * 1024)
+                                if not chunk:
+                                    break
+                                sql_out.write(chunk)
+                else:
+                    sql_path = save_path
+
+                # Copy SQL file into the container
+                copy_result = subprocess.run(
+                    ["docker", "cp", sql_path, f"{db_container}:/tmp/restore.sql"],
+                    capture_output=True, text=True, timeout=60,
+                )
+                if copy_result.returncode != 0:
+                    raise RuntimeError(f"Failed to copy file to container: {copy_result.stderr[:300]}")
+
+                # Drop and recreate the database, then restore
+                # First terminate existing connections
+                subprocess.run(
+                    [
+                        "docker", "exec", db_container,
+                        "psql", "-U", db_user, "-d", "postgres", "-c",
+                        f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{db_name}' AND pid <> pg_backend_pid();",
+                    ],
+                    capture_output=True, text=True, timeout=30,
+                )
+
+                # Drop database
+                drop_result = subprocess.run(
+                    [
+                        "docker", "exec", db_container,
+                        "psql", "-U", db_user, "-d", "postgres", "-c",
+                        f"DROP DATABASE IF EXISTS {db_name};",
+                    ],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if drop_result.returncode != 0:
+                    raise RuntimeError(f"Failed to drop database: {drop_result.stderr[:300]}")
+
+                # Create database
+                create_result = subprocess.run(
+                    [
+                        "docker", "exec", db_container,
+                        "psql", "-U", db_user, "-d", "postgres", "-c",
+                        f"CREATE DATABASE {db_name} OWNER {db_user};",
+                    ],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if create_result.returncode != 0:
+                    raise RuntimeError(f"Failed to create database: {create_result.stderr[:300]}")
+
+                # Restore from SQL
+                restore_result = subprocess.run(
+                    [
+                        "docker", "exec", db_container,
+                        "psql", "-U", db_user, "-d", db_name, "-f", "/tmp/restore.sql",
+                    ],
+                    capture_output=True, text=True, timeout=600,
+                )
+
+                # Cleanup temp file in container
+                subprocess.run(
+                    ["docker", "exec", db_container, "rm", "-f", "/tmp/restore.sql"],
+                    capture_output=True, text=True, timeout=10,
+                )
+
+                # Cleanup decompressed sql if we created one
+                if save_path.endswith(".gz") and os.path.isfile(sql_path):
+                    os.remove(sql_path)
+
+                if restore_result.returncode != 0:
+                    error_lines = restore_result.stderr.strip().split("\n")[-5:]
+                    raise RuntimeError(f"Restore errors: {''.join(error_lines)[:500]}")
+
+                results.append({
+                    "task": "restore_backup",
+                    "success": True,
+                    "output": f"Database restored from {filename}",
+                })
+            except Exception as e:
+                results.append({
+                    "task": "restore_backup",
+                    "success": False,
+                    "error": str(e)[:500],
+                })
+
+            all_success = all(r.get("success") for r in results)
+            _logger.info(
+                "Database restore by %s: file=%s results=%s",
+                user_name, filename, results,
+            )
+
+            try:
+                from asgiref.sync import async_to_sync
+                from channels.layers import get_channel_layer
+
+                channel_layer = get_channel_layer()
+                if channel_layer:
+                    if all_success:
+                        title = "Database Restore completed"
+                        message = f"Database restored from {filename}"
+                    else:
+                        title = "Database Restore failed"
+                        message = "; ".join(r.get("error", r["task"]) for r in results if not r.get("success"))
+
+                    async_to_sync(channel_layer.group_send)(
+                        f"notifications_{user_id}",
+                        {
+                            "type": "send_notification",
+                            "data": {
+                                "event": "maintenance_result",
+                                "success": all_success,
+                                "action": "restore_backup",
+                                "title": title,
+                                "message": message,
+                                "results": results,
+                            },
+                        },
+                    )
+            except Exception:
+                _logger.exception("Failed to send restore result via WebSocket")
+
+        thread = threading.Thread(target=_run_restore, daemon=True)
+        thread.start()
+
+        logger.info("Database restore started by %s from file %s", user_name, filename)
+        return Response({
+            "accepted": True,
+            "action": "restore_backup",
+            "message": f"Database restore from {filename} started. You'll be notified when it completes.",
+        }, status=status.HTTP_202_ACCEPTED)
 
 
 # -----------------------------------------------------------------------
