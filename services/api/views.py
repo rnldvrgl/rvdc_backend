@@ -85,6 +85,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
     serializer_class = ServiceSerializer
     permission_classes = [permissions.IsAuthenticated]
+    allow_hard_delete = True
     filter_backends = [
         DjangoFilterBackend,
         filters.SearchFilter,
@@ -92,7 +93,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     ]
 
     def get_permissions(self):
-        if self.action == "create":
+        if self.action in ("create", "hard_delete"):
             return [IsAdminOrManager()]
         return super().get_permissions()
     filterset_class = ServiceFilter
