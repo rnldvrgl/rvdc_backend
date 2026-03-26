@@ -570,7 +570,7 @@ class TechnicianAssignment(models.Model):
         related_name="technician_assignments",
     )
     technician = models.ForeignKey(
-        CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician", "is_active": True}, related_name="assignments"
+        CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician"}, related_name="assignments"
     )
 
     # role/type of assignment: repair, pickup (pull-out), delivery, etc.
