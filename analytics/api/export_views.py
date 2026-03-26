@@ -658,9 +658,11 @@ def _fill_receipt_gaps(rows):
 def _get_bir_2307_main_stall_rows(start, end):
     """Services with manual_receipt_number (main stall OR)."""
     from services.models import Service
+    from sales.models import DocumentType
 
     services = Service.objects.filter(
         manual_receipt_number__isnull=False,
+        document_type=DocumentType.OFFICIAL_RECEIPT,
         is_deleted=False,
         created_at__date__gte=start,
         created_at__date__lte=end,
@@ -683,7 +685,7 @@ def _get_bir_2307_main_stall_rows(start, end):
 def _get_bir_2307_sub_stall_rows(start, end):
     """Sub stall direct sales with manual_receipt_number (not linked to any service)."""
     from inventory.models import Stall
-    from sales.models import SalesTransaction
+    from sales.models import DocumentType, SalesTransaction
     from services.models import Service
 
     service_txn_ids = set(
@@ -727,6 +729,25 @@ def _get_bir_2307_sub_stall_rows(start, end):
             "total_amount": txn.computed_total,
             "source": "Direct Sale",
         })
+
+    service_si_rows = Service.objects.filter(
+        manual_receipt_number__isnull=False,
+        document_type=DocumentType.SALES_INVOICE,
+        is_deleted=False,
+        created_at__date__gte=start,
+        created_at__date__lte=end,
+    ).exclude(manual_receipt_number="").order_by("manual_receipt_number")
+
+    for svc in service_si_rows:
+        rows.append({
+            "date": svc.created_at.date(),
+            "receipt_number": svc.manual_receipt_number,
+            "receipt_book": getattr(svc, "receipt_book", None) or None,
+            "total_amount": svc.total_revenue or Decimal("0"),
+            "source": "Service",
+        })
+
+    rows.sort(key=lambda row: row["receipt_number"])
 
     return _fill_receipt_gaps(rows)
 

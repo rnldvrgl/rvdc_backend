@@ -5,6 +5,7 @@ from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from inventory.models import Item, Stock
+from sales.models import DocumentType
 from users.models import CustomUser
 from utils.enums import ApplianceStatus, ServiceMode, ServiceStatus, ServiceType
 
@@ -250,6 +251,12 @@ class Service(models.Model):
         blank=True,
         null=True,
         help_text="Receipt book number (e.g. '1', '2'). Same OR # can exist in different books.",
+    )
+    document_type = models.CharField(
+        max_length=2,
+        choices=DocumentType.choices,
+        default=DocumentType.OFFICIAL_RECEIPT,
+        help_text="Whether the manual receipt is an OR (main stall) or SI (sub stall).",
     )
     manual_receipt_number = models.CharField(
         max_length=100,

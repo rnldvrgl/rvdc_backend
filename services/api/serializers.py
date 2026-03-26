@@ -17,6 +17,7 @@ from installations.models import AirconUnit
 from inventory.models import Stall, Stock, StockRequest
 from receivables.models import ChequeCollection
 from rest_framework import serializers
+from sales.models import DocumentType
 from rest_framework.exceptions import ValidationError
 from services.business_logic import (
     PromoManager,
@@ -1365,6 +1366,7 @@ class ServiceSerializer(serializers.ModelSerializer):
             "service_items_checked_at",
             # BIR 2307 receipt
             "receipt_book",
+            "document_type",
             "manual_receipt_number",
             "with_2307",
             # Backdating
@@ -1412,6 +1414,15 @@ class ServiceSerializer(serializers.ModelSerializer):
             )
 
         return fields
+
+    def validate(self, attrs):
+        doc_type = attrs.get(
+            "document_type",
+            getattr(self.instance, "document_type", DocumentType.OFFICIAL_RECEIPT),
+        )
+        if doc_type == DocumentType.SALES_INVOICE:
+            attrs["with_2307"] = False
+        return attrs
 
     def get_payment_status(self, obj):
         """Return the DB payment status which accounts for refunds."""
