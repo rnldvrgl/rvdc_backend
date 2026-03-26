@@ -1981,13 +1981,11 @@ class ServiceSerializer(serializers.ModelSerializer):
 
         # HOME_SERVICE: Create 1 schedule for the appointment
         if service.service_mode == ServiceMode.HOME_SERVICE:
-            # Use appointment_datetime if provided, otherwise use current datetime
-            if appointment_datetime:
-                scheduled_date = appointment_datetime.date()
-                scheduled_time = appointment_datetime.time()
-            else:
-                scheduled_date = timezone.now().date()
-                scheduled_time = timezone.now().time()
+            if not appointment_datetime:
+                return  # No appointment yet — schedule can be created later
+
+            scheduled_date = appointment_datetime.date()
+            scheduled_time = appointment_datetime.time()
 
             schedule = Schedule.objects.create(
                 client=service.client,
