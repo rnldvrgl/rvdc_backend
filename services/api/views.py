@@ -384,6 +384,18 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             "payment_status": {"options": get_service_payment_status_options},
             "service_type": {"options": get_service_type_options},
             "service_mode": {"options": get_service_mode_options},
+            "has_receipt": {
+                "options": lambda: [
+                    {"label": "With Receipt", "value": "with"},
+                    {"label": "Without Receipt", "value": "without"},
+                ]
+            },
+            "receipt_type": {
+                "options": lambda: [
+                    {"label": "Official Receipt (OR)", "value": "or"},
+                    {"label": "Sales Invoice (SI)", "value": "si"},
+                ]
+            },
         }
 
         ordering_config = [

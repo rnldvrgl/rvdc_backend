@@ -1225,9 +1225,9 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             
         elif unit_type == 'second_hand':
             # Use manual entry data from appliance
-            if not appliance.brand or not appliance.model or not appliance.serial_number:
+            if not appliance.brand:
                 raise serializers.ValidationError({
-                    'aircon_installation_data': 'brand, model, and serial_number are required for second_hand units'
+                    'aircon_installation_data': 'brand is required for second_hand units'
                 })
             
             # Save custom unit price if provided
@@ -1237,7 +1237,7 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
                 appliance.save(update_fields=['unit_price'])
             
             # Add notes to service about second-hand unit
-            unit_info = f"Second-Hand Unit: {appliance.brand} {appliance.model}, SN: {appliance.serial_number}"
+            unit_info = f"Second-Hand Unit: {appliance.brand}"
             if service.notes:
                 service.notes = f"{service.notes}\n{unit_info}"
             else:
@@ -1749,18 +1749,16 @@ class ServiceSerializer(serializers.ModelSerializer):
         else:
             # Handle second-hand unit (manual entry) - not currently used in frontend
             brand = installation_data.get('brand')
-            model = installation_data.get('model')
-            serial_number = installation_data.get('serial_number')
             
-            if not all([brand, model, serial_number]):
+            if not brand:
                 raise ValidationError(
-                    "brand, model, and serial_number are required for second-hand installations"
+                    "brand is required for second-hand installations"
                 )
             
             # Create installation record
             installation = AirconInstallation.objects.create(
                 service=service,
-                notes=f"Second-Hand Unit: {brand} {model}, SN: {serial_number}"
+                notes=f"Second-Hand Unit: {brand}"
             )
             
             # Create service appliance for second-hand unit
@@ -1768,8 +1766,8 @@ class ServiceSerializer(serializers.ModelSerializer):
                 service=service,
                 appliance_type=None,  # Aircon installation
                 brand=brand,
-                model=model,
-                serial_number=serial_number,
+                model="",
+                serial_number="",
                 labor_fee=labor_fee,
             )
     
