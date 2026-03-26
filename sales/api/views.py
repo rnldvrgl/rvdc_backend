@@ -118,6 +118,12 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                     {"label": "Without Receipt #", "value": "without"},
                 ]
             },
+            "receipt_type": {
+                "options": lambda: [
+                    {"label": "Official Receipt (OR)", "value": "or"},
+                    {"label": "Sales Invoice (SI)", "value": "si"},
+                ]
+            },
         }
 
         ordering_config = [

@@ -17,6 +17,7 @@ from installations.models import AirconUnit
 from inventory.models import Stall, Stock, StockRequest
 from receivables.models import ChequeCollection
 from rest_framework import serializers
+from sales.models import DocumentType
 from rest_framework.exceptions import ValidationError
 from services.business_logic import (
     PromoManager,
@@ -33,6 +34,7 @@ from services.models import (
     ServiceAppliance,
     ServiceItemUsed,
     ServicePayment,
+    ServiceReceipt,
     ServiceRefund,
     TechnicianAssignment,
 )
@@ -46,6 +48,33 @@ class ApplianceTypeSerializer(serializers.ModelSerializer):
         model = ApplianceType
         fields = ["id", "name"]
         read_only_fields = ["id"]
+
+
+class ServiceReceiptSerializer(serializers.ModelSerializer):
+    """CRUD serializer for per-service receipts (supports multiple receipts per service)."""
+
+    class Meta:
+        model = ServiceReceipt
+        fields = [
+            "id",
+            "service",
+            "receipt_number",
+            "receipt_book",
+            "document_type",
+            "with_2307",
+            "amount",
+            "created_at",
+        ]
+        read_only_fields = ["id", "created_at"]
+
+    def validate(self, attrs):
+        doc_type = attrs.get(
+            "document_type",
+            getattr(self.instance, "document_type", DocumentType.OFFICIAL_RECEIPT),
+        )
+        if doc_type == DocumentType.SALES_INVOICE:
+            attrs["with_2307"] = False
+        return attrs
 
 
 class ApplianceItemUsedSerializer(serializers.ModelSerializer):
@@ -907,6 +936,9 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         help_text="Aircon installation details for creating installation records"
     )
 
+    # Aircon model name (read-only, for pre-order display)
+    aircon_model_name = serializers.SerializerMethodField()
+
     # Read-only computed fields
     assigned_technician_name = serializers.CharField(
         source="assigned_technician.get_full_name",
@@ -959,9 +991,14 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "is_unit_warranty_active",
             "discounted_labor_fee",
             "aircon_installation_data",
+            "unit_type",
+            "aircon_model",
+            "aircon_model_name",
             "items_used",
             "technician_assignments",
             "total_parts_cost",
+            "total_service_fee",
+            "auto_adjust_labor",
             "parts_needed_notes",
             "items_checked",
             "items_checked_by",
@@ -980,6 +1017,13 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "items_checked_by",
             "items_checked_at",
         ]
+
+    def get_aircon_model_name(self, obj):
+        """Return the aircon model display name for pre-order units."""
+        if obj.aircon_model:
+            brand_name = obj.aircon_model.brand.name if obj.aircon_model.brand else ''
+            return f"{brand_name} {obj.aircon_model.name}".strip()
+        return None
 
     def get_total_parts_cost(self, obj):
         """Calculate total cost of parts including discounts (excluding free items/quantities)."""
@@ -1074,7 +1118,7 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
 
         # Release old unit if switching away from it
         if old_unit and (
-            new_unit_type == 'second_hand'
+            new_unit_type in ('second_hand', 'pre_order')
             or (new_unit_type == 'brand_new' and new_unit_id and new_unit_id != old_unit.id)
         ):
             old_unit.installation_service = None
@@ -1114,13 +1158,15 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             appliance.brand = unit.model.brand.name if unit.model and unit.model.brand else ''
             appliance.model = unit.model.name if unit.model else ''
             appliance.serial_number = unit.serial_number
+            appliance.unit_type = 'brand_new'
+            appliance.aircon_model = None
             # Support unit_price override for brand_new units
             unit_price = install_data.get('unit_price')
             if unit_price is not None:
                 appliance.unit_price = Decimal(str(unit_price))
             else:
                 appliance.unit_price = None  # brand_new uses model selling price
-            appliance.save(update_fields=['brand', 'model', 'serial_number', 'unit_price'])
+            appliance.save(update_fields=['brand', 'model', 'serial_number', 'unit_price', 'unit_type', 'aircon_model'])
 
             # Recalculate revenue
             RevenueCalculator.calculate_service_revenue(service, save=True)
@@ -1132,7 +1178,46 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
                 appliance.unit_price = Decimal(str(unit_price))
             else:
                 appliance.unit_price = None
-            appliance.save(update_fields=['unit_price'])
+            appliance.unit_type = 'second_hand'
+            appliance.aircon_model = None
+            appliance.save(update_fields=['unit_price', 'unit_type', 'aircon_model'])
+
+            # Recalculate revenue
+            RevenueCalculator.calculate_service_revenue(service, save=True)
+
+        elif new_unit_type == 'pre_order':
+            # Pre-order: select a model (not a specific unit)
+            from installations.models import AirconModel
+
+            model_id = install_data.get('model_id')
+            if not model_id:
+                raise serializers.ValidationError({
+                    'aircon_installation_data': 'model_id is required for pre_order units'
+                })
+
+            try:
+                aircon_model = AirconModel.objects.select_related('brand').get(id=model_id)
+            except AirconModel.DoesNotExist:
+                raise serializers.ValidationError({
+                    'aircon_installation_data': f'Aircon model {model_id} not found'
+                })
+
+            appliance.brand = aircon_model.brand.name if aircon_model.brand else ''
+            appliance.model = aircon_model.name
+            appliance.serial_number = ''
+            appliance.unit_type = 'pre_order'
+            appliance.aircon_model = aircon_model
+
+            unit_price = install_data.get('unit_price')
+            if unit_price is not None:
+                appliance.unit_price = Decimal(str(unit_price))
+            else:
+                appliance.unit_price = aircon_model.selling_price
+
+            appliance.save(update_fields=[
+                'brand', 'model', 'serial_number', 'unit_price',
+                'unit_type', 'aircon_model',
+            ])
 
             # Recalculate revenue
             RevenueCalculator.calculate_service_revenue(service, save=True)
@@ -1181,22 +1266,24 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             appliance.brand = unit.model.brand.name if unit.model and unit.model.brand else ''
             appliance.model = unit.model.name if unit.model else ''
             appliance.serial_number = unit.serial_number
+            appliance.unit_type = 'brand_new'
+            appliance.aircon_model = None
             # Support unit_price override for brand_new units
             unit_price = install_data.get('unit_price')
             if unit_price is not None:
                 appliance.unit_price = Decimal(str(unit_price))
             else:
                 appliance.unit_price = None  # brand_new uses model selling price
-            appliance.save(update_fields=['brand', 'model', 'serial_number', 'unit_price'])
+            appliance.save(update_fields=['brand', 'model', 'serial_number', 'unit_price', 'unit_type', 'aircon_model'])
             
             # Recalculate service revenue to include unit price
             RevenueCalculator.calculate_service_revenue(service, save=True)
             
         elif unit_type == 'second_hand':
             # Use manual entry data from appliance
-            if not appliance.brand or not appliance.model or not appliance.serial_number:
+            if not appliance.brand:
                 raise serializers.ValidationError({
-                    'aircon_installation_data': 'brand, model, and serial_number are required for second_hand units'
+                    'aircon_installation_data': 'brand is required for second_hand units'
                 })
             
             # Save custom unit price if provided
@@ -1205,8 +1292,60 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
                 appliance.unit_price = Decimal(str(unit_price))
                 appliance.save(update_fields=['unit_price'])
             
+            # Store unit_type
+            appliance.unit_type = 'second_hand'
+            appliance.aircon_model = None
+            appliance.save(update_fields=['unit_price', 'unit_type', 'aircon_model'])
+            
             # Add notes to service about second-hand unit
-            unit_info = f"Second-Hand Unit: {appliance.brand} {appliance.model}, SN: {appliance.serial_number}"
+            unit_info = f"Second-Hand Unit: {appliance.brand}"
+            if service.notes:
+                service.notes = f"{service.notes}\n{unit_info}"
+            else:
+                service.notes = unit_info
+            service.save(update_fields=['notes', 'updated_at'])
+            
+            # Recalculate service revenue to include unit price
+            RevenueCalculator.calculate_service_revenue(service, save=True)
+
+        elif unit_type == 'pre_order':
+            # Pre-order: select a model (not a specific unit) for pricing
+            from installations.models import AirconModel
+            
+            model_id = install_data.get('model_id')
+            if not model_id:
+                raise serializers.ValidationError({
+                    'aircon_installation_data': 'model_id is required for pre_order units'
+                })
+            
+            try:
+                aircon_model = AirconModel.objects.select_related('brand').get(id=model_id)
+            except AirconModel.DoesNotExist:
+                raise serializers.ValidationError({
+                    'aircon_installation_data': f'Aircon model {model_id} not found'
+                })
+            
+            # Set appliance details from the model
+            appliance.brand = aircon_model.brand.name if aircon_model.brand else ''
+            appliance.model = aircon_model.name
+            appliance.serial_number = ''  # No serial number yet
+            appliance.unit_type = 'pre_order'
+            appliance.aircon_model = aircon_model
+            
+            # Set unit_price from override or model's selling price
+            unit_price = install_data.get('unit_price')
+            if unit_price is not None:
+                appliance.unit_price = Decimal(str(unit_price))
+            else:
+                appliance.unit_price = aircon_model.selling_price
+            
+            appliance.save(update_fields=[
+                'brand', 'model', 'serial_number', 'unit_price',
+                'unit_type', 'aircon_model',
+            ])
+            
+            # Add notes to service
+            unit_info = f"Pre-Order Unit: {aircon_model.brand.name if aircon_model.brand else ''} {aircon_model.name}"
             if service.notes:
                 service.notes = f"{service.notes}\n{unit_info}"
             else:
@@ -1243,6 +1382,7 @@ class ServiceSerializer(serializers.ModelSerializer):
     """
 
     appliances = ServiceApplianceSerializer(many=True, required=False)
+    receipts = ServiceReceiptSerializer(many=True, read_only=True)
     payments = serializers.SerializerMethodField()
     refunds = serializers.SerializerMethodField()
     installation_units = serializers.SerializerMethodField()
@@ -1252,12 +1392,23 @@ class ServiceSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True,
     )
+    discount_applied_by_name = serializers.CharField(
+        source="discount_applied_by.get_full_name",
+        read_only=True,
+        allow_null=True,
+    )
 
     # Write-only fields for datetime inputs from frontend
     appointment_datetime = serializers.DateTimeField(write_only=True, required=False, allow_null=True)
+    reinstall_appointment_datetime = serializers.DateTimeField(write_only=True, required=False, allow_null=True)
     pickup_date = serializers.DateTimeField(required=False, allow_null=True)
     delivery_date = serializers.DateTimeField(required=False, allow_null=True)
     received_at = serializers.DateTimeField(required=False, allow_null=True)
+    create_reinstall = serializers.BooleanField(write_only=True, required=False, default=False)
+    reinstall_same_address = serializers.BooleanField(write_only=True, required=False, default=True)
+    reinstall_override_address = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
+    reinstall_override_contact_person = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
+    reinstall_override_contact_number = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
     
     # Aircon installation fields (write-only)
     aircon_installation_data = serializers.DictField(write_only=True, required=False, allow_null=True,
@@ -1310,9 +1461,10 @@ class ServiceSerializer(serializers.ModelSerializer):
             "stall_name",
             "service_type",
             "service_mode",
+            "service_leg",
+            "linked_parent_service",
             "related_transaction",
             "related_sub_transaction",
-            "description",
             "override_address",
             "override_contact_person",
             "override_contact_number",
@@ -1320,9 +1472,13 @@ class ServiceSerializer(serializers.ModelSerializer):
             "delivery_date",
             "received_at",
             "appointment_datetime",
+            "reinstall_appointment_datetime",
+            "create_reinstall",
+            "reinstall_same_address",
+            "reinstall_override_address",
+            "reinstall_override_contact_person",
+            "reinstall_override_contact_number",
             "status",
-            "remarks",
-            "notes",
             "created_at",
             "updated_at",
             "main_stall_revenue",
@@ -1343,6 +1499,8 @@ class ServiceSerializer(serializers.ModelSerializer):
             "service_discount_amount",
             "service_discount_percentage",
             "discount_reason",
+            "discount_applied_by_name",
+            "discount_applied_at",
             "aircon_installation_data",
             "installation_units",
             "appliances",
@@ -1357,10 +1515,10 @@ class ServiceSerializer(serializers.ModelSerializer):
             "service_items_checked_by",
             "service_items_checked_by_name",
             "service_items_checked_at",
-            # BIR 2307 receipt
-            "receipt_book",
-            "manual_receipt_number",
-            "with_2307",
+            # BIR receipts (multiple receipts per service)
+            "receipts",
+            # Backdating
+            "transaction_date",
         ]
         read_only_fields = [
             "main_stall_revenue",
@@ -1404,6 +1562,15 @@ class ServiceSerializer(serializers.ModelSerializer):
             )
 
         return fields
+
+    def validate(self, attrs):
+        doc_type = attrs.get(
+            "document_type",
+            getattr(self.instance, "document_type", DocumentType.OFFICIAL_RECEIPT),
+        )
+        if doc_type == DocumentType.SALES_INVOICE:
+            attrs["with_2307"] = False
+        return attrs
 
     def get_payment_status(self, obj):
         """Return the DB payment status which accounts for refunds."""
@@ -1470,6 +1637,14 @@ class ServiceSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         """Validate service data."""
+        create_reinstall = data.get("create_reinstall", False)
+        if create_reinstall and data.get("service_type") != "dismantle":
+            raise ValidationError("Auto-create reinstall is only available for dismantle services.")
+
+        if create_reinstall and not data.get("reinstall_same_address", True):
+            if not data.get("reinstall_override_address"):
+                raise ValidationError("Reinstall address is required when 'same address' is disabled.")
+
         # Auto-assign Main stall - services always go to Main stall
         main_stall = get_main_stall()
         if not main_stall:
@@ -1488,7 +1663,18 @@ class ServiceSerializer(serializers.ModelSerializer):
         appliances_data = validated_data.pop("appliances", [])
         technician_assignments_data = validated_data.pop("technician_assignments", [])
         appointment_datetime = validated_data.pop("appointment_datetime", None)
+        reinstall_appointment_datetime = validated_data.pop("reinstall_appointment_datetime", None)
         aircon_installation_data = validated_data.pop("aircon_installation_data", None)
+        create_reinstall = validated_data.pop("create_reinstall", False)
+        reinstall_same_address = validated_data.pop("reinstall_same_address", True)
+        reinstall_override_address = validated_data.pop("reinstall_override_address", None)
+        reinstall_override_contact_person = validated_data.pop("reinstall_override_contact_person", None)
+        reinstall_override_contact_number = validated_data.pop("reinstall_override_contact_number", None)
+
+        if validated_data.get("service_type") == "dismantle" and create_reinstall:
+            validated_data["service_leg"] = Service.ServiceLeg.DISMANTLE
+        else:
+            validated_data["service_leg"] = Service.ServiceLeg.SINGLE
 
         with transaction.atomic():
             service = Service.objects.create(**validated_data)
@@ -1549,6 +1735,51 @@ class ServiceSerializer(serializers.ModelSerializer):
 
             # Calculate initial revenue (no transactions yet)
             RevenueCalculator.calculate_service_revenue(service, save=True)
+
+            # Auto-create linked reinstall service for dismantle workflow
+            if service.service_type == "dismantle" and create_reinstall:
+                from utils.enums import ServiceStatus as SvcStatus
+                reinstall_service = Service.objects.create(
+                    client=service.client,
+                    stall=service.stall,
+                    service_type="installation",
+                    service_mode=service.service_mode,
+                    service_leg=Service.ServiceLeg.REINSTALL,
+                    linked_parent_service=service,
+                    status=SvcStatus.IN_PROGRESS,
+                    override_address=(
+                        service.override_address
+                        if reinstall_same_address
+                        else (reinstall_override_address or service.override_address)
+                    ),
+                    override_contact_person=(
+                        service.override_contact_person
+                        if reinstall_same_address
+                        else (reinstall_override_contact_person or service.override_contact_person)
+                    ),
+                    override_contact_number=(
+                        service.override_contact_number
+                        if reinstall_same_address
+                        else (reinstall_override_contact_number or service.override_contact_number)
+                    ),
+                    remarks=f"Auto-created reinstall for dismantle service #{service.id}",
+                )
+
+                unique_tech_ids = list(set(technician_ids))
+                for tech_id in unique_tech_ids:
+                    TechnicianAssignment.objects.create(
+                        service=reinstall_service,
+                        technician_id=tech_id,
+                        assignment_type="repair",
+                        note=f"Auto-linked from dismantle service #{service.id}",
+                    )
+
+                self._create_schedules_for_service(
+                    reinstall_service,
+                    unique_tech_ids,
+                    reinstall_appointment_datetime,
+                )
+                RevenueCalculator.calculate_service_revenue(reinstall_service, save=True)
 
         # Fetch service with related objects for proper serialization
         service = Service.objects.select_related('client', 'stall').prefetch_related(
@@ -1704,18 +1935,16 @@ class ServiceSerializer(serializers.ModelSerializer):
         else:
             # Handle second-hand unit (manual entry) - not currently used in frontend
             brand = installation_data.get('brand')
-            model = installation_data.get('model')
-            serial_number = installation_data.get('serial_number')
             
-            if not all([brand, model, serial_number]):
+            if not brand:
                 raise ValidationError(
-                    "brand, model, and serial_number are required for second-hand installations"
+                    "brand is required for second-hand installations"
                 )
             
             # Create installation record
             installation = AirconInstallation.objects.create(
                 service=service,
-                notes=f"Second-Hand Unit: {brand} {model}, SN: {serial_number}"
+                notes=f"Second-Hand Unit: {brand}"
             )
             
             # Create service appliance for second-hand unit
@@ -1723,8 +1952,8 @@ class ServiceSerializer(serializers.ModelSerializer):
                 service=service,
                 appliance_type=None,  # Aircon installation
                 brand=brand,
-                model=model,
-                serial_number=serial_number,
+                model="",
+                serial_number="",
                 labor_fee=labor_fee,
             )
     
@@ -1752,13 +1981,11 @@ class ServiceSerializer(serializers.ModelSerializer):
 
         # HOME_SERVICE: Create 1 schedule for the appointment
         if service.service_mode == ServiceMode.HOME_SERVICE:
-            # Use appointment_datetime if provided, otherwise use current datetime
-            if appointment_datetime:
-                scheduled_date = appointment_datetime.date()
-                scheduled_time = appointment_datetime.time()
-            else:
-                scheduled_date = timezone.now().date()
-                scheduled_time = timezone.now().time()
+            if not appointment_datetime:
+                return  # No appointment yet — schedule can be created later
+
+            scheduled_date = appointment_datetime.date()
+            scheduled_time = appointment_datetime.time()
 
             schedule = Schedule.objects.create(
                 client=service.client,
@@ -2176,6 +2403,12 @@ class CreateServicePaymentSerializer(serializers.Serializer):
     payment_type = serializers.ChoiceField(choices=PaymentType.choices)
     amount = serializers.DecimalField(max_digits=10, decimal_places=2)
     notes = serializers.CharField(required=False, allow_blank=True, default="")
+    payment_date = serializers.DateTimeField(
+        required=False,
+        allow_null=True,
+        default=None,
+        help_text="Override payment date for backdating. If not provided and service has transaction_date, payment is auto-backdated.",
+    )
     cheque_collection = serializers.PrimaryKeyRelatedField(
         queryset=ChequeCollection.objects.all(),
         required=False,
@@ -2242,6 +2475,7 @@ class CreateServicePaymentSerializer(serializers.Serializer):
             received_by=user,
             notes=self.validated_data.get("notes", ""),
             cheque_collection=self.validated_data.get("cheque_collection"),
+            payment_date=self.validated_data.get("payment_date"),
         )
 
         return payment

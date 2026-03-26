@@ -262,6 +262,18 @@ class RevenueCalculator:
         main_revenue = Decimal('0.00')
         sub_revenue = Decimal('0.00')
 
+        # Auto-adjust labor fees for appliances with auto_adjust_labor enabled
+        for appliance in service.appliances.all():
+            if appliance.auto_adjust_labor and appliance.total_service_fee is not None:
+                parts_cost = sum(
+                    (item.line_total for item in appliance.items_used.all()),
+                    Decimal('0.00'),
+                )
+                new_labor = max(appliance.total_service_fee - parts_cost, Decimal('0.00'))
+                if new_labor != appliance.labor_fee:
+                    appliance.labor_fee = new_labor
+                    appliance.save(update_fields=['labor_fee'])
+
         # Pre-build set of installation unit serial numbers
         # so we don't double-count brand_new unit prices
         installation_unit_serials = set()
@@ -1475,7 +1487,7 @@ class ServicePaymentManager:
         return sales_transaction
 
     @staticmethod
-    def create_payment(service, payment_type, amount, received_by=None, notes="", cheque_collection=None):
+    def create_payment(service, payment_type, amount, received_by=None, notes="", cheque_collection=None, payment_date=None):
         """
         Create a payment for a service.
 
@@ -1486,6 +1498,9 @@ class ServicePaymentManager:
             received_by: User who received the payment (optional)
             notes: Additional notes (optional)
             cheque_collection: ChequeCollection instance (optional, for cheque payments)
+            payment_date: Explicit payment date override (optional). If not provided
+                          and service has transaction_date, payment is backdated to noon
+                          of that date for correct remittance attribution.
 
         Returns:
             ServicePayment instance
@@ -1500,6 +1515,14 @@ class ServicePaymentManager:
         if amount <= 0:
             raise ValidationError("Payment amount must be greater than zero.")
 
+        # Determine effective payment_date
+        if payment_date is None and service.transaction_date:
+            from datetime import datetime, time as dt_time
+            from django.utils import timezone as dj_timezone
+            payment_date = dj_timezone.make_aware(
+                datetime.combine(service.transaction_date, dt_time(12, 0))
+            )
+
         # Create payment — lock service row to prevent concurrent overpayment
         with transaction.atomic():
             from services.models import Service as ServiceModel
@@ -1513,7 +1536,7 @@ class ServicePaymentManager:
                     f"Total revenue: ₱{service.total_revenue}, Already paid: ₱{service.total_paid}"
                 )
 
-            payment = ServicePayment.objects.create(
+            payment_kwargs = dict(
                 service=service,
                 payment_type=payment_type,
                 amount=amount,
@@ -1521,6 +1544,10 @@ class ServicePaymentManager:
                 notes=notes,
                 cheque_collection=cheque_collection,
             )
+            if payment_date is not None:
+                payment_kwargs["payment_date"] = payment_date
+
+            payment = ServicePayment.objects.create(**payment_kwargs)
             # Payment status is automatically updated by the model's save() method
 
             # Create or update sales transactions
@@ -1793,17 +1820,23 @@ class ServicePaymentManager:
             )
 
             if m_share > 0 and sales_transaction:
-                SalesPayment.objects.create(
+                sp_kwargs = dict(
                     transaction=sales_transaction,
                     payment_type=payment_type,
                     amount=m_share,
                 )
+                if payment_date is not None:
+                    sp_kwargs["payment_date"] = payment_date
+                SalesPayment.objects.create(**sp_kwargs)
             if s_share > 0 and sub_sales_tx:
-                SalesPayment.objects.create(
+                sp_kwargs = dict(
                     transaction=sub_sales_tx,
                     payment_type=payment_type,
                     amount=s_share,
                 )
+                if payment_date is not None:
+                    sp_kwargs["payment_date"] = payment_date
+                SalesPayment.objects.create(**sp_kwargs)
 
         return payment
 

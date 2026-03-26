@@ -411,7 +411,7 @@ class AirconInstallationHandler:
                 service_mode=ServiceMode.HOME_SERVICE,
                 scheduled_date=scheduled_date,
                 scheduled_time=scheduled_time,
-                status=ServiceStatus.PENDING,
+                status=ServiceStatus.IN_PROGRESS,
                 description=f"Installation for Aircon Unit: {unit.model} (SN: {unit.serial_number})",
                 notes=f"Unit: {unit.serial_number}, Model: {unit.model}",
             )
@@ -940,7 +940,7 @@ class WarrantyServiceHandler:
             'stall': main_stall,
             'service_type': service_type,
             'service_mode': service_kwargs.pop('service_mode', ServiceMode.HOME_SERVICE),
-            'status': ServiceStatus.PENDING,
+            'status': ServiceStatus.IN_PROGRESS,
             'description': f"WARRANTY CLAIM #{claim.id}: {claim.issue_description}",
             'notes': f"Warranty claim for unit {claim.unit.serial_number}\n{claim.customer_notes}",
         }
@@ -1081,7 +1081,7 @@ class FreeCleaningManager:
             'stall': main_stall,
             'service_type': ServiceType.CLEANING,
             'service_mode': service_kwargs.pop('service_mode', ServiceMode.HOME_SERVICE),
-            'status': ServiceStatus.PENDING,
+            'status': ServiceStatus.IN_PROGRESS,
             'description': f"FREE CLEANING for {unit.model} (SN: {unit.serial_number})",
             'notes': f"Free cleaning redemption for warranty unit\nSerial Number: {unit.serial_number}",
         }
@@ -1213,7 +1213,7 @@ class FreeCleaningManager:
             'stall': main_stall,
             'service_type': ServiceType.CLEANING,
             'service_mode': ServiceMode.HOME_SERVICE,
-            'status': ServiceStatus.PENDING,
+            'status': ServiceStatus.IN_PROGRESS,
             'description': f"FREE CLEANING - {len(units)} unit(s)",
             'notes': "Free cleaning redemption\n" + "\n".join(
                 f"- {detail}" for detail in unit_details

@@ -5,6 +5,7 @@ from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from inventory.models import Item, Stock
+from sales.models import DocumentType
 from users.models import CustomUser
 from utils.enums import ApplianceStatus, ServiceMode, ServiceStatus, ServiceType
 
@@ -95,6 +96,11 @@ class ApplianceType(models.Model):
 # Service
 # ----------------------------------
 class Service(models.Model):
+    class ServiceLeg(models.TextChoices):
+        SINGLE = "single", _("Single")
+        DISMANTLE = "dismantle", _("Dismantle")
+        REINSTALL = "reinstall", _("Reinstall")
+
     client = models.ForeignKey(
         Client, on_delete=models.PROTECT, related_name="services"
     )
@@ -111,6 +117,20 @@ class Service(models.Model):
     )
     service_type = models.CharField(max_length=30, choices=ServiceType.choices)
     service_mode = models.CharField(max_length=30, choices=ServiceMode.choices)
+    service_leg = models.CharField(
+        max_length=20,
+        choices=ServiceLeg.choices,
+        default=ServiceLeg.SINGLE,
+        help_text="Leg classification for linked dismantle/reinstall flow.",
+    )
+    linked_parent_service = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="linked_followup_services",
+        help_text="Parent service when this record is an auto-linked follow-up (e.g. reinstall).",
+    )
     related_transaction = models.ForeignKey(
         "sales.SalesTransaction", null=True, blank=True, on_delete=models.SET_NULL
     )
@@ -151,6 +171,11 @@ class Service(models.Model):
     )
     remarks = models.TextField(blank=True)
     notes = models.TextField(blank=True, null=True)
+    transaction_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="The date this service occurred. When set, payments are backdated to this date for remittance purposes.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -225,6 +250,19 @@ class Service(models.Model):
         blank=True,
         help_text="Reason for discount (e.g., 'Senior Citizen', 'Loyalty Discount')"
     )
+    discount_applied_by = models.ForeignKey(
+        CustomUser,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="discounts_applied",
+        help_text="User who applied the discount",
+    )
+    discount_applied_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the discount was applied",
+    )
     
     # BIR 2307 receipt number (manually entered by clerk)
     receipt_book = models.CharField(
@@ -232,6 +270,12 @@ class Service(models.Model):
         blank=True,
         null=True,
         help_text="Receipt book number (e.g. '1', '2'). Same OR # can exist in different books.",
+    )
+    document_type = models.CharField(
+        max_length=2,
+        choices=DocumentType.choices,
+        default=DocumentType.OFFICIAL_RECEIPT,
+        help_text="Whether the manual receipt is an OR (main stall) or SI (sub stall).",
     )
     manual_receipt_number = models.CharField(
         max_length=100,
@@ -538,6 +582,57 @@ class ServiceRefund(models.Model):
 
 
 # ----------------------------------
+# Service Receipt
+# ----------------------------------
+class ServiceReceipt(models.Model):
+    """Tracks one or more receipts issued for a service (supports partial payments)."""
+
+    service = models.ForeignKey(
+        Service, on_delete=models.CASCADE, related_name="receipts"
+    )
+    receipt_number = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="Official Receipt or Sales Invoice number.",
+    )
+    receipt_book = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text="Receipt book number, used to disambiguate duplicate receipt numbers across books.",
+    )
+    document_type = models.CharField(
+        max_length=2,
+        choices=DocumentType.choices,
+        default=DocumentType.OFFICIAL_RECEIPT,
+        help_text="OR (main stall) or SI (sub stall).",
+    )
+    with_2307 = models.BooleanField(
+        default=False,
+        help_text="Whether this receipt has an attached BIR Form 2307 (OR only).",
+    )
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Amount covered by this receipt (optional, for partial-payment tracking).",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        verbose_name = "Service Receipt"
+        verbose_name_plural = "Service Receipts"
+
+    def __str__(self):
+        doc = self.get_document_type_display()
+        return f"{doc} #{self.receipt_number or '—'} (Service #{self.service_id})"
+
+
+# ----------------------------------
 # Technician Assignment
 # ----------------------------------
 class TechnicianAssignment(models.Model):
@@ -552,7 +647,7 @@ class TechnicianAssignment(models.Model):
         related_name="technician_assignments",
     )
     technician = models.ForeignKey(
-        CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician"}
+        CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician"}, related_name="assignments"
     )
 
     # role/type of assignment: repair, pickup (pull-out), delivery, etc.
@@ -614,6 +709,18 @@ class ServiceAppliance(models.Model):
     labor_is_free = models.BooleanField(
         default=False, help_text="Mark labor for this appliance as free."
     )
+    # Auto-adjust labor: when enabled, labor_fee = total_service_fee - parts cost
+    total_service_fee = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Total quoted fee (labor + parts combined). When auto_adjust_labor is on, labor_fee is auto-computed as total_service_fee minus parts cost.",
+    )
+    auto_adjust_labor = models.BooleanField(
+        default=False,
+        help_text="When enabled, labor_fee is automatically adjusted so that labor_fee + parts = total_service_fee.",
+    )
     # Unit price for second-hand or custom-priced units
     unit_price = models.DecimalField(
         max_digits=10,
@@ -621,6 +728,27 @@ class ServiceAppliance(models.Model):
         null=True,
         blank=True,
         help_text="Custom unit price (used for second-hand units or overrides)"
+    )
+    # Unit type tracking for installation services
+    UNIT_TYPE_CHOICES = [
+        ("brand_new", "Brand New"),
+        ("second_hand", "Second Hand"),
+        ("pre_order", "Pre-Order"),
+    ]
+    unit_type = models.CharField(
+        max_length=20,
+        choices=UNIT_TYPE_CHOICES,
+        default="",
+        blank=True,
+        help_text="Type of unit: brand_new (from inventory), second_hand (manual entry), or pre_order (not yet in stock).",
+    )
+    aircon_model = models.ForeignKey(
+        "installations.AirconModel",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pre_order_appliances",
+        help_text="Reference to the aircon model for pre-order units. Used to assign the actual unit when it arrives.",
     )
     # Promo support - track original amount before discount
     labor_original_amount = models.DecimalField(

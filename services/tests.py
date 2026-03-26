@@ -411,7 +411,7 @@ class ServiceWorkflowTest(StallSetupMixin, TransactionTestCase):
 
         # Create service
         service = Service.objects.create(
-            client=self.client_obj, stall=self.main_stall, status=ServiceStatus.PENDING
+            client=self.client_obj, stall=self.main_stall, status=ServiceStatus.IN_PROGRESS
         )
         appliance = ServiceAppliance.objects.create(
             service=service, appliance_type=self.appliance_type, labor_fee=500
@@ -483,7 +483,7 @@ class ServiceWorkflowTest(StallSetupMixin, TransactionTestCase):
         service = Service.objects.create(
             client=self.client_obj,
             stall=self.main_stall,
-            status=ServiceStatus.PENDING,
+            status=ServiceStatus.IN_PROGRESS,
         )
         appliance = ServiceAppliance.objects.create(
             service=service, appliance_type=self.appliance_type
@@ -573,7 +573,7 @@ class HelperFunctionTest(StallSetupMixin, TestCase):
     def test_cancel_service_shortcut(self):
         """Test cancel_service shortcut function."""
         service = Service.objects.create(
-            client=self.client_obj, stall=self.main_stall, status=ServiceStatus.PENDING
+            client=self.client_obj, stall=self.main_stall, status=ServiceStatus.IN_PROGRESS
         )
 
         result = cancel_service(service, reason="Test cancel", user=self.user)
@@ -917,7 +917,7 @@ class ServicePaymentManagerTest(StallSetupMixin, TransactionTestCase):
         service = Service.objects.create(
             client=self.client_obj,
             stall=self.main_stall,
-            status=ServiceStatus.PENDING,
+            status=ServiceStatus.IN_PROGRESS,
         )
         appliance = ServiceAppliance.objects.create(
             service=service, appliance_type=self.appliance_type, labor_fee=500

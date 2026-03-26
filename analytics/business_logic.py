@@ -722,6 +722,7 @@ class EmployeePerformanceAnalytics:
             TechnicianAssignment.objects.filter(
                 service__created_at__date__gte=start_date,
                 service__created_at__date__lte=end_date,
+                technician__is_deleted=False,
             )
             .values("technician__id", "technician__first_name", "technician__last_name")
             .annotate(
