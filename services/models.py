@@ -230,6 +230,19 @@ class Service(models.Model):
         blank=True,
         help_text="Reason for discount (e.g., 'Senior Citizen', 'Loyalty Discount')"
     )
+    discount_applied_by = models.ForeignKey(
+        CustomUser,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="discounts_applied",
+        help_text="User who applied the discount",
+    )
+    discount_applied_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the discount was applied",
+    )
     
     # BIR 2307 receipt number (manually entered by clerk)
     receipt_book = models.CharField(

@@ -1254,6 +1254,11 @@ class ServiceSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True,
     )
+    discount_applied_by_name = serializers.CharField(
+        source="discount_applied_by.get_full_name",
+        read_only=True,
+        allow_null=True,
+    )
 
     # Write-only fields for datetime inputs from frontend
     appointment_datetime = serializers.DateTimeField(write_only=True, required=False, allow_null=True)
@@ -1314,7 +1319,6 @@ class ServiceSerializer(serializers.ModelSerializer):
             "service_mode",
             "related_transaction",
             "related_sub_transaction",
-            "description",
             "override_address",
             "override_contact_person",
             "override_contact_number",
@@ -1323,8 +1327,6 @@ class ServiceSerializer(serializers.ModelSerializer):
             "received_at",
             "appointment_datetime",
             "status",
-            "remarks",
-            "notes",
             "created_at",
             "updated_at",
             "main_stall_revenue",
@@ -1345,6 +1347,8 @@ class ServiceSerializer(serializers.ModelSerializer):
             "service_discount_amount",
             "service_discount_percentage",
             "discount_reason",
+            "discount_applied_by_name",
+            "discount_applied_at",
             "aircon_installation_data",
             "installation_units",
             "appliances",

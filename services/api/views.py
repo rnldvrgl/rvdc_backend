@@ -9,6 +9,7 @@ Features:
 """
 
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import permissions, status, viewsets, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -127,9 +128,24 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         """Cascade appliance status and auto-reset service items_checked if notes changed."""
         old_status = serializer.instance.status
         old_notes = serializer.instance.service_parts_needed_notes or ""
+        old_discount = serializer.instance.service_discount_amount or 0
         service = serializer.save()
         new_status = service.status
         new_notes = service.service_parts_needed_notes or ""
+        new_discount = service.service_discount_amount or 0
+
+        # Track discount audit info
+        if new_discount != old_discount:
+            if new_discount > 0:
+                service.discount_applied_by = self.request.user
+                service.discount_applied_at = timezone.now()
+            else:
+                service.discount_applied_by = None
+                service.discount_applied_at = None
+            service.save(
+                update_fields=["discount_applied_by", "discount_applied_at"],
+                skip_validation=True,
+            )
 
         if old_status != new_status and new_status == "in_progress":
             pass  # Appliance statuses are simplified (pending/completed/cancelled), no cascade needed
