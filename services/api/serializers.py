@@ -962,6 +962,8 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "items_used",
             "technician_assignments",
             "total_parts_cost",
+            "total_service_fee",
+            "auto_adjust_labor",
             "parts_needed_notes",
             "items_checked",
             "items_checked_by",
@@ -1361,6 +1363,8 @@ class ServiceSerializer(serializers.ModelSerializer):
             "receipt_book",
             "manual_receipt_number",
             "with_2307",
+            # Backdating
+            "transaction_date",
         ]
         read_only_fields = [
             "main_stall_revenue",
@@ -2176,6 +2180,12 @@ class CreateServicePaymentSerializer(serializers.Serializer):
     payment_type = serializers.ChoiceField(choices=PaymentType.choices)
     amount = serializers.DecimalField(max_digits=10, decimal_places=2)
     notes = serializers.CharField(required=False, allow_blank=True, default="")
+    payment_date = serializers.DateTimeField(
+        required=False,
+        allow_null=True,
+        default=None,
+        help_text="Override payment date for backdating. If not provided and service has transaction_date, payment is auto-backdated.",
+    )
     cheque_collection = serializers.PrimaryKeyRelatedField(
         queryset=ChequeCollection.objects.all(),
         required=False,
@@ -2242,6 +2252,7 @@ class CreateServicePaymentSerializer(serializers.Serializer):
             received_by=user,
             notes=self.validated_data.get("notes", ""),
             cheque_collection=self.validated_data.get("cheque_collection"),
+            payment_date=self.validated_data.get("payment_date"),
         )
 
         return payment

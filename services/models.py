@@ -151,6 +151,11 @@ class Service(models.Model):
     )
     remarks = models.TextField(blank=True)
     notes = models.TextField(blank=True, null=True)
+    transaction_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="The date this service occurred. When set, payments are backdated to this date for remittance purposes.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -552,7 +557,7 @@ class TechnicianAssignment(models.Model):
         related_name="technician_assignments",
     )
     technician = models.ForeignKey(
-        CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician"}
+        CustomUser, on_delete=models.CASCADE, limit_choices_to={"role": "technician", "is_active": True}, related_name="assignments"
     )
 
     # role/type of assignment: repair, pickup (pull-out), delivery, etc.
@@ -613,6 +618,18 @@ class ServiceAppliance(models.Model):
     labor_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     labor_is_free = models.BooleanField(
         default=False, help_text="Mark labor for this appliance as free."
+    )
+    # Auto-adjust labor: when enabled, labor_fee = total_service_fee - parts cost
+    total_service_fee = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Total quoted fee (labor + parts combined). When auto_adjust_labor is on, labor_fee is auto-computed as total_service_fee minus parts cost.",
+    )
+    auto_adjust_labor = models.BooleanField(
+        default=False,
+        help_text="When enabled, labor_fee is automatically adjusted so that labor_fee + parts = total_service_fee.",
     )
     # Unit price for second-hand or custom-priced units
     unit_price = models.DecimalField(
