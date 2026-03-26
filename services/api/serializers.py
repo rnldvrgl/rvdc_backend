@@ -34,6 +34,7 @@ from services.models import (
     ServiceAppliance,
     ServiceItemUsed,
     ServicePayment,
+    ServiceReceipt,
     ServiceRefund,
     TechnicianAssignment,
 )
@@ -47,6 +48,33 @@ class ApplianceTypeSerializer(serializers.ModelSerializer):
         model = ApplianceType
         fields = ["id", "name"]
         read_only_fields = ["id"]
+
+
+class ServiceReceiptSerializer(serializers.ModelSerializer):
+    """CRUD serializer for per-service receipts (supports multiple receipts per service)."""
+
+    class Meta:
+        model = ServiceReceipt
+        fields = [
+            "id",
+            "service",
+            "receipt_number",
+            "receipt_book",
+            "document_type",
+            "with_2307",
+            "amount",
+            "created_at",
+        ]
+        read_only_fields = ["id", "created_at"]
+
+    def validate(self, attrs):
+        doc_type = attrs.get(
+            "document_type",
+            getattr(self.instance, "document_type", DocumentType.OFFICIAL_RECEIPT),
+        )
+        if doc_type == DocumentType.SALES_INVOICE:
+            attrs["with_2307"] = False
+        return attrs
 
 
 class ApplianceItemUsedSerializer(serializers.ModelSerializer):
@@ -1246,6 +1274,7 @@ class ServiceSerializer(serializers.ModelSerializer):
     """
 
     appliances = ServiceApplianceSerializer(many=True, required=False)
+    receipts = ServiceReceiptSerializer(many=True, read_only=True)
     payments = serializers.SerializerMethodField()
     refunds = serializers.SerializerMethodField()
     installation_units = serializers.SerializerMethodField()
@@ -1364,11 +1393,8 @@ class ServiceSerializer(serializers.ModelSerializer):
             "service_items_checked_by",
             "service_items_checked_by_name",
             "service_items_checked_at",
-            # BIR 2307 receipt
-            "receipt_book",
-            "document_type",
-            "manual_receipt_number",
-            "with_2307",
+            # BIR receipts (multiple receipts per service)
+            "receipts",
             # Backdating
             "transaction_date",
         ]

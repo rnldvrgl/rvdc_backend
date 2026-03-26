@@ -24,6 +24,7 @@ from services.api.serializers import (
     ServiceCancellationSerializer,
     ServiceCompletionSerializer,
     ServicePaymentSerializer,
+    ServiceReceiptSerializer,
     ServiceRefundRequestSerializer,
     ServiceReopenSerializer,
     ServiceSerializer,
@@ -37,6 +38,7 @@ from services.models import (
     Service,
     ServiceAppliance,
     ServiceItemUsed,
+    ServiceReceipt,
     TechnicianAssignment,
 )
 from utils.filters.options import (
@@ -1196,3 +1198,24 @@ class ApplianceTypeViewSet(viewsets.ModelViewSet):
     search_fields = ["name"]
     ordering_fields = ["name", "id"]
     ordering = ["name"]
+
+
+# --------------------------
+# Service Receipt ViewSet
+# --------------------------
+class ServiceReceiptViewSet(viewsets.ModelViewSet):
+    """
+    CRUD for receipts associated with a service.
+    A service may have multiple receipts (partial payments).
+    """
+
+    serializer_class = ServiceReceiptSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = ServiceReceipt.objects.select_related("service")
+        service_id = self.request.query_params.get("service")
+        if service_id:
+            qs = qs.filter(service_id=service_id)
+        return qs

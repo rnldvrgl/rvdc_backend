@@ -563,6 +563,57 @@ class ServiceRefund(models.Model):
 
 
 # ----------------------------------
+# Service Receipt
+# ----------------------------------
+class ServiceReceipt(models.Model):
+    """Tracks one or more receipts issued for a service (supports partial payments)."""
+
+    service = models.ForeignKey(
+        Service, on_delete=models.CASCADE, related_name="receipts"
+    )
+    receipt_number = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="Official Receipt or Sales Invoice number.",
+    )
+    receipt_book = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text="Receipt book number, used to disambiguate duplicate receipt numbers across books.",
+    )
+    document_type = models.CharField(
+        max_length=2,
+        choices=DocumentType.choices,
+        default=DocumentType.OFFICIAL_RECEIPT,
+        help_text="OR (main stall) or SI (sub stall).",
+    )
+    with_2307 = models.BooleanField(
+        default=False,
+        help_text="Whether this receipt has an attached BIR Form 2307 (OR only).",
+    )
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Amount covered by this receipt (optional, for partial-payment tracking).",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        verbose_name = "Service Receipt"
+        verbose_name_plural = "Service Receipts"
+
+    def __str__(self):
+        doc = self.get_document_type_display()
+        return f"{doc} #{self.receipt_number or '—'} (Service #{self.service_id})"
+
+
+# ----------------------------------
 # Technician Assignment
 # ----------------------------------
 class TechnicianAssignment(models.Model):
