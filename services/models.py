@@ -729,6 +729,27 @@ class ServiceAppliance(models.Model):
         blank=True,
         help_text="Custom unit price (used for second-hand units or overrides)"
     )
+    # Unit type tracking for installation services
+    UNIT_TYPE_CHOICES = [
+        ("brand_new", "Brand New"),
+        ("second_hand", "Second Hand"),
+        ("pre_order", "Pre-Order"),
+    ]
+    unit_type = models.CharField(
+        max_length=20,
+        choices=UNIT_TYPE_CHOICES,
+        default="",
+        blank=True,
+        help_text="Type of unit: brand_new (from inventory), second_hand (manual entry), or pre_order (not yet in stock).",
+    )
+    aircon_model = models.ForeignKey(
+        "installations.AirconModel",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pre_order_appliances",
+        help_text="Reference to the aircon model for pre-order units. Used to assign the actual unit when it arrives.",
+    )
     # Promo support - track original amount before discount
     labor_original_amount = models.DecimalField(
         max_digits=10,

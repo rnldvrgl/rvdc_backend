@@ -936,6 +936,9 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         help_text="Aircon installation details for creating installation records"
     )
 
+    # Aircon model name (read-only, for pre-order display)
+    aircon_model_name = serializers.SerializerMethodField()
+
     # Read-only computed fields
     assigned_technician_name = serializers.CharField(
         source="assigned_technician.get_full_name",
@@ -988,6 +991,9 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "is_unit_warranty_active",
             "discounted_labor_fee",
             "aircon_installation_data",
+            "unit_type",
+            "aircon_model",
+            "aircon_model_name",
             "items_used",
             "technician_assignments",
             "total_parts_cost",
@@ -1011,6 +1017,13 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "items_checked_by",
             "items_checked_at",
         ]
+
+    def get_aircon_model_name(self, obj):
+        """Return the aircon model display name for pre-order units."""
+        if obj.aircon_model:
+            brand_name = obj.aircon_model.brand.name if obj.aircon_model.brand else ''
+            return f"{brand_name} {obj.aircon_model.name}".strip()
+        return None
 
     def get_total_parts_cost(self, obj):
         """Calculate total cost of parts including discounts (excluding free items/quantities)."""
@@ -1105,7 +1118,7 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
 
         # Release old unit if switching away from it
         if old_unit and (
-            new_unit_type == 'second_hand'
+            new_unit_type in ('second_hand', 'pre_order')
             or (new_unit_type == 'brand_new' and new_unit_id and new_unit_id != old_unit.id)
         ):
             old_unit.installation_service = None
@@ -1145,13 +1158,15 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             appliance.brand = unit.model.brand.name if unit.model and unit.model.brand else ''
             appliance.model = unit.model.name if unit.model else ''
             appliance.serial_number = unit.serial_number
+            appliance.unit_type = 'brand_new'
+            appliance.aircon_model = None
             # Support unit_price override for brand_new units
             unit_price = install_data.get('unit_price')
             if unit_price is not None:
                 appliance.unit_price = Decimal(str(unit_price))
             else:
                 appliance.unit_price = None  # brand_new uses model selling price
-            appliance.save(update_fields=['brand', 'model', 'serial_number', 'unit_price'])
+            appliance.save(update_fields=['brand', 'model', 'serial_number', 'unit_price', 'unit_type', 'aircon_model'])
 
             # Recalculate revenue
             RevenueCalculator.calculate_service_revenue(service, save=True)
@@ -1163,7 +1178,46 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
                 appliance.unit_price = Decimal(str(unit_price))
             else:
                 appliance.unit_price = None
-            appliance.save(update_fields=['unit_price'])
+            appliance.unit_type = 'second_hand'
+            appliance.aircon_model = None
+            appliance.save(update_fields=['unit_price', 'unit_type', 'aircon_model'])
+
+            # Recalculate revenue
+            RevenueCalculator.calculate_service_revenue(service, save=True)
+
+        elif new_unit_type == 'pre_order':
+            # Pre-order: select a model (not a specific unit)
+            from installations.models import AirconModel
+
+            model_id = install_data.get('model_id')
+            if not model_id:
+                raise serializers.ValidationError({
+                    'aircon_installation_data': 'model_id is required for pre_order units'
+                })
+
+            try:
+                aircon_model = AirconModel.objects.select_related('brand').get(id=model_id)
+            except AirconModel.DoesNotExist:
+                raise serializers.ValidationError({
+                    'aircon_installation_data': f'Aircon model {model_id} not found'
+                })
+
+            appliance.brand = aircon_model.brand.name if aircon_model.brand else ''
+            appliance.model = aircon_model.name
+            appliance.serial_number = ''
+            appliance.unit_type = 'pre_order'
+            appliance.aircon_model = aircon_model
+
+            unit_price = install_data.get('unit_price')
+            if unit_price is not None:
+                appliance.unit_price = Decimal(str(unit_price))
+            else:
+                appliance.unit_price = aircon_model.selling_price
+
+            appliance.save(update_fields=[
+                'brand', 'model', 'serial_number', 'unit_price',
+                'unit_type', 'aircon_model',
+            ])
 
             # Recalculate revenue
             RevenueCalculator.calculate_service_revenue(service, save=True)
@@ -1212,13 +1266,15 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             appliance.brand = unit.model.brand.name if unit.model and unit.model.brand else ''
             appliance.model = unit.model.name if unit.model else ''
             appliance.serial_number = unit.serial_number
+            appliance.unit_type = 'brand_new'
+            appliance.aircon_model = None
             # Support unit_price override for brand_new units
             unit_price = install_data.get('unit_price')
             if unit_price is not None:
                 appliance.unit_price = Decimal(str(unit_price))
             else:
                 appliance.unit_price = None  # brand_new uses model selling price
-            appliance.save(update_fields=['brand', 'model', 'serial_number', 'unit_price'])
+            appliance.save(update_fields=['brand', 'model', 'serial_number', 'unit_price', 'unit_type', 'aircon_model'])
             
             # Recalculate service revenue to include unit price
             RevenueCalculator.calculate_service_revenue(service, save=True)
@@ -1236,8 +1292,60 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
                 appliance.unit_price = Decimal(str(unit_price))
                 appliance.save(update_fields=['unit_price'])
             
+            # Store unit_type
+            appliance.unit_type = 'second_hand'
+            appliance.aircon_model = None
+            appliance.save(update_fields=['unit_price', 'unit_type', 'aircon_model'])
+            
             # Add notes to service about second-hand unit
             unit_info = f"Second-Hand Unit: {appliance.brand}"
+            if service.notes:
+                service.notes = f"{service.notes}\n{unit_info}"
+            else:
+                service.notes = unit_info
+            service.save(update_fields=['notes', 'updated_at'])
+            
+            # Recalculate service revenue to include unit price
+            RevenueCalculator.calculate_service_revenue(service, save=True)
+
+        elif unit_type == 'pre_order':
+            # Pre-order: select a model (not a specific unit) for pricing
+            from installations.models import AirconModel
+            
+            model_id = install_data.get('model_id')
+            if not model_id:
+                raise serializers.ValidationError({
+                    'aircon_installation_data': 'model_id is required for pre_order units'
+                })
+            
+            try:
+                aircon_model = AirconModel.objects.select_related('brand').get(id=model_id)
+            except AirconModel.DoesNotExist:
+                raise serializers.ValidationError({
+                    'aircon_installation_data': f'Aircon model {model_id} not found'
+                })
+            
+            # Set appliance details from the model
+            appliance.brand = aircon_model.brand.name if aircon_model.brand else ''
+            appliance.model = aircon_model.name
+            appliance.serial_number = ''  # No serial number yet
+            appliance.unit_type = 'pre_order'
+            appliance.aircon_model = aircon_model
+            
+            # Set unit_price from override or model's selling price
+            unit_price = install_data.get('unit_price')
+            if unit_price is not None:
+                appliance.unit_price = Decimal(str(unit_price))
+            else:
+                appliance.unit_price = aircon_model.selling_price
+            
+            appliance.save(update_fields=[
+                'brand', 'model', 'serial_number', 'unit_price',
+                'unit_type', 'aircon_model',
+            ])
+            
+            # Add notes to service
+            unit_info = f"Pre-Order Unit: {aircon_model.brand.name if aircon_model.brand else ''} {aircon_model.name}"
             if service.notes:
                 service.notes = f"{service.notes}\n{unit_info}"
             else:
