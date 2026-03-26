@@ -36,9 +36,7 @@ class ServiceType(models.TextChoices):
 
 
 class ServiceStatus(models.TextChoices):
-    PENDING = "pending", _("Pending")
     IN_PROGRESS = "in_progress", _("In Progress")
-    ON_HOLD = "on_hold", _("On Hold (Waiting for Parts)")
     COMPLETED = "completed", _("Completed")
     CANCELLED = "cancelled", _("Cancelled")
 

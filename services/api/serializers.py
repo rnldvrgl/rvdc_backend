@@ -1637,7 +1637,7 @@ class ServiceSerializer(serializers.ModelSerializer):
                     service_mode=service.service_mode,
                     service_leg=Service.ServiceLeg.REINSTALL,
                     linked_parent_service=service,
-                    status="pending",
+                    status=ServiceStatus.IN_PROGRESS,
                     override_address=(
                         service.override_address
                         if reinstall_same_address
