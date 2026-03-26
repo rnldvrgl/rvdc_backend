@@ -96,6 +96,11 @@ class ApplianceType(models.Model):
 # Service
 # ----------------------------------
 class Service(models.Model):
+    class ServiceLeg(models.TextChoices):
+        SINGLE = "single", _("Single")
+        DISMANTLE = "dismantle", _("Dismantle")
+        REINSTALL = "reinstall", _("Reinstall")
+
     client = models.ForeignKey(
         Client, on_delete=models.PROTECT, related_name="services"
     )
@@ -112,6 +117,20 @@ class Service(models.Model):
     )
     service_type = models.CharField(max_length=30, choices=ServiceType.choices)
     service_mode = models.CharField(max_length=30, choices=ServiceMode.choices)
+    service_leg = models.CharField(
+        max_length=20,
+        choices=ServiceLeg.choices,
+        default=ServiceLeg.SINGLE,
+        help_text="Leg classification for linked dismantle/reinstall flow.",
+    )
+    linked_parent_service = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="linked_followup_services",
+        help_text="Parent service when this record is an auto-linked follow-up (e.g. reinstall).",
+    )
     related_transaction = models.ForeignKey(
         "sales.SalesTransaction", null=True, blank=True, on_delete=models.SET_NULL
     )

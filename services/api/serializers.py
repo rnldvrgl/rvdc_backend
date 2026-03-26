@@ -1292,9 +1292,15 @@ class ServiceSerializer(serializers.ModelSerializer):
 
     # Write-only fields for datetime inputs from frontend
     appointment_datetime = serializers.DateTimeField(write_only=True, required=False, allow_null=True)
+    reinstall_appointment_datetime = serializers.DateTimeField(write_only=True, required=False, allow_null=True)
     pickup_date = serializers.DateTimeField(required=False, allow_null=True)
     delivery_date = serializers.DateTimeField(required=False, allow_null=True)
     received_at = serializers.DateTimeField(required=False, allow_null=True)
+    create_reinstall = serializers.BooleanField(write_only=True, required=False, default=False)
+    reinstall_same_address = serializers.BooleanField(write_only=True, required=False, default=True)
+    reinstall_override_address = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
+    reinstall_override_contact_person = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
+    reinstall_override_contact_number = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
     
     # Aircon installation fields (write-only)
     aircon_installation_data = serializers.DictField(write_only=True, required=False, allow_null=True,
@@ -1347,6 +1353,8 @@ class ServiceSerializer(serializers.ModelSerializer):
             "stall_name",
             "service_type",
             "service_mode",
+            "service_leg",
+            "linked_parent_service",
             "related_transaction",
             "related_sub_transaction",
             "override_address",
@@ -1356,6 +1364,12 @@ class ServiceSerializer(serializers.ModelSerializer):
             "delivery_date",
             "received_at",
             "appointment_datetime",
+            "reinstall_appointment_datetime",
+            "create_reinstall",
+            "reinstall_same_address",
+            "reinstall_override_address",
+            "reinstall_override_contact_person",
+            "reinstall_override_contact_number",
             "status",
             "created_at",
             "updated_at",
@@ -1515,6 +1529,14 @@ class ServiceSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         """Validate service data."""
+        create_reinstall = data.get("create_reinstall", False)
+        if create_reinstall and data.get("service_type") != "dismantle":
+            raise ValidationError("Auto-create reinstall is only available for dismantle services.")
+
+        if create_reinstall and not data.get("reinstall_same_address", True):
+            if not data.get("reinstall_override_address"):
+                raise ValidationError("Reinstall address is required when 'same address' is disabled.")
+
         # Auto-assign Main stall - services always go to Main stall
         main_stall = get_main_stall()
         if not main_stall:
@@ -1533,7 +1555,18 @@ class ServiceSerializer(serializers.ModelSerializer):
         appliances_data = validated_data.pop("appliances", [])
         technician_assignments_data = validated_data.pop("technician_assignments", [])
         appointment_datetime = validated_data.pop("appointment_datetime", None)
+        reinstall_appointment_datetime = validated_data.pop("reinstall_appointment_datetime", None)
         aircon_installation_data = validated_data.pop("aircon_installation_data", None)
+        create_reinstall = validated_data.pop("create_reinstall", False)
+        reinstall_same_address = validated_data.pop("reinstall_same_address", True)
+        reinstall_override_address = validated_data.pop("reinstall_override_address", None)
+        reinstall_override_contact_person = validated_data.pop("reinstall_override_contact_person", None)
+        reinstall_override_contact_number = validated_data.pop("reinstall_override_contact_number", None)
+
+        if validated_data.get("service_type") == "dismantle" and create_reinstall:
+            validated_data["service_leg"] = Service.ServiceLeg.DISMANTLE
+        else:
+            validated_data["service_leg"] = Service.ServiceLeg.SINGLE
 
         with transaction.atomic():
             service = Service.objects.create(**validated_data)
@@ -1594,6 +1627,50 @@ class ServiceSerializer(serializers.ModelSerializer):
 
             # Calculate initial revenue (no transactions yet)
             RevenueCalculator.calculate_service_revenue(service, save=True)
+
+            # Auto-create linked reinstall service for dismantle workflow
+            if service.service_type == "dismantle" and create_reinstall:
+                reinstall_service = Service.objects.create(
+                    client=service.client,
+                    stall=service.stall,
+                    service_type="installation",
+                    service_mode=service.service_mode,
+                    service_leg=Service.ServiceLeg.REINSTALL,
+                    linked_parent_service=service,
+                    status="pending",
+                    override_address=(
+                        service.override_address
+                        if reinstall_same_address
+                        else (reinstall_override_address or service.override_address)
+                    ),
+                    override_contact_person=(
+                        service.override_contact_person
+                        if reinstall_same_address
+                        else (reinstall_override_contact_person or service.override_contact_person)
+                    ),
+                    override_contact_number=(
+                        service.override_contact_number
+                        if reinstall_same_address
+                        else (reinstall_override_contact_number or service.override_contact_number)
+                    ),
+                    remarks=f"Auto-created reinstall for dismantle service #{service.id}",
+                )
+
+                unique_tech_ids = list(set(technician_ids))
+                for tech_id in unique_tech_ids:
+                    TechnicianAssignment.objects.create(
+                        service=reinstall_service,
+                        technician_id=tech_id,
+                        assignment_type="repair",
+                        note=f"Auto-linked from dismantle service #{service.id}",
+                    )
+
+                self._create_schedules_for_service(
+                    reinstall_service,
+                    unique_tech_ids,
+                    reinstall_appointment_datetime,
+                )
+                RevenueCalculator.calculate_service_revenue(reinstall_service, save=True)
 
         # Fetch service with related objects for proper serialization
         service = Service.objects.select_related('client', 'stall').prefetch_related(
