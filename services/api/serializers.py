@@ -1630,6 +1630,7 @@ class ServiceSerializer(serializers.ModelSerializer):
 
             # Auto-create linked reinstall service for dismantle workflow
             if service.service_type == "dismantle" and create_reinstall:
+                from utils.enums import ServiceStatus as SvcStatus
                 reinstall_service = Service.objects.create(
                     client=service.client,
                     stall=service.stall,
@@ -1637,7 +1638,7 @@ class ServiceSerializer(serializers.ModelSerializer):
                     service_mode=service.service_mode,
                     service_leg=Service.ServiceLeg.REINSTALL,
                     linked_parent_service=service,
-                    status=ServiceStatus.IN_PROGRESS,
+                    status=SvcStatus.IN_PROGRESS,
                     override_address=(
                         service.override_address
                         if reinstall_same_address
