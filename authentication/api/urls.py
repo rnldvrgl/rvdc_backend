@@ -1,8 +1,15 @@
 from django.urls import path
-from authentication.api.views import LoginView, RegisterView, LogoutView, VerifyAdminView
+from authentication.api.views import (
+    DeviceAwareTokenRefreshView,
+    LoginView,
+    LogoutView,
+    RegisterView,
+    SessionListView,
+    SessionRevokeView,
+    VerifyAdminView,
+)
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
-    TokenRefreshView,
 )
 
 app_name = "auth"
@@ -13,6 +20,8 @@ urlpatterns = [
     path("register/", RegisterView.as_view(), name="register"),
     path("logout/", LogoutView.as_view(), name="logout"),
     path("token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
-    path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    path("token/refresh/", DeviceAwareTokenRefreshView.as_view(), name="token_refresh"),
     path("verify-admin/", VerifyAdminView.as_view(), name="verify_admin"),
+    path("sessions/", SessionListView.as_view(), name="session_list"),
+    path("sessions/<int:session_id>/revoke/", SessionRevokeView.as_view(), name="session_revoke"),
 ]

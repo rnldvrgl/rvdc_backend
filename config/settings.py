@@ -183,6 +183,10 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
 }
 
+# Session policy (refresh-token based).
+# 0 means unlimited concurrent sessions per user (multi-device allowed).
+AUTH_MAX_ACTIVE_SESSIONS = config("AUTH_MAX_ACTIVE_SESSIONS", default=0, cast=int)
+
 # ------------------------------------------------------------------------------
 # CORS
 # ------------------------------------------------------------------------------
@@ -198,6 +202,7 @@ CORS_ALLOW_HEADERS = [
     "idempotency-key",
     "origin",
     "user-agent",
+    "x-device-id",
     "x-csrftoken",
     "x-requested-with",
 ]
