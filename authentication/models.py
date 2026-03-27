@@ -9,6 +9,7 @@ class AuthSession(models.Model):
 		related_name="auth_sessions",
 	)
 	refresh_jti = models.CharField(max_length=64, unique=True)
+	access_jti = models.CharField(max_length=64, blank=True, default="", db_index=True)
 	device_id = models.CharField(max_length=128, blank=True, default="")
 	device_label = models.CharField(max_length=255, blank=True, default="Unknown device")
 	user_agent = models.TextField(blank=True, default="")

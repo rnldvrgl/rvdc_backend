@@ -57,7 +57,13 @@ def _get_jti_and_exp(refresh_token: str):
 
 
 @transaction.atomic
-def upsert_login_session(user, refresh_token: str, request, device_id: str = "") -> AuthSession:
+def upsert_login_session(
+    user,
+    refresh_token: str,
+    request,
+    device_id: str = "",
+    access_jti: str = "",
+) -> AuthSession:
     jti, expires_at, _ = _get_jti_and_exp(refresh_token)
 
     user_agent = request.META.get("HTTP_USER_AGENT", "") if request else ""
@@ -79,6 +85,7 @@ def upsert_login_session(user, refresh_token: str, request, device_id: str = "")
         session = AuthSession(user=user)
 
     session.refresh_jti = jti
+    session.access_jti = access_jti
     session.device_id = device_id or session.device_id
     session.device_label = device_label
     session.user_agent = user_agent
@@ -99,6 +106,7 @@ def rotate_session_refresh(
     new_refresh_token: str,
     request,
     device_id: str = "",
+    new_access_jti: str = "",
 ) -> Optional[AuthSession]:
     old_jti, _, user_id = _get_jti_and_exp(old_refresh_token)
     new_jti, new_expires_at, _ = _get_jti_and_exp(new_refresh_token)
@@ -123,6 +131,7 @@ def rotate_session_refresh(
     ip_address = _extract_client_ip(request)
 
     session.refresh_jti = new_jti
+    session.access_jti = new_access_jti
     session.device_id = device_id or session.device_id
     session.device_label = _build_device_label(user_agent, session.device_label)
     session.user_agent = user_agent or session.user_agent

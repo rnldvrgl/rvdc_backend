@@ -10,7 +10,7 @@ from authentication.session_tracking import (
     rotate_session_refresh,
     upsert_login_session,
 )
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.token_blacklist.models import (
@@ -88,11 +88,17 @@ class LoginSerializer(serializers.Serializer):
         enforce_active_session_limit(user, tokens["refresh"])
 
         request = self.context.get("request")
+        try:
+            access_jti = str(AccessToken(tokens["access"])["jti"])
+        except Exception:
+            access_jti = ""
+
         upsert_login_session(
             user,
             tokens["refresh"],
             request=request,
             device_id=data.get("device_id", ""),
+            access_jti=access_jti,
         )
 
         user_data = UserSerializer(user, context=self.context).data
@@ -191,11 +197,17 @@ class DeviceAwareTokenRefreshSerializer(TokenRefreshSerializer):
         new_refresh = data.get("refresh") or old_refresh
 
         try:
+            new_access_jti = str(AccessToken(data.get("access", ""))["jti"])
+        except Exception:
+            new_access_jti = ""
+
+        try:
             rotate_session_refresh(
                 old_refresh_token=old_refresh,
                 new_refresh_token=new_refresh,
                 request=request,
                 device_id=device_id,
+                new_access_jti=new_access_jti,
             )
         except Exception:
             # Session tracking should not block token refresh.
