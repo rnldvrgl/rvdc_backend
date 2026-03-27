@@ -14,6 +14,16 @@ from authentication.session_tracking import revoke_session_by_id
 from django.contrib.auth import authenticate
 
 
+class IsAdmin(permissions.BasePermission):
+    """Permission class to check if user is admin."""
+    def has_permission(self, request, view):
+        return (
+            request.user
+            and request.user.is_authenticated
+            and request.user.role == "admin"
+        )
+
+
 class LoginView(APIView):
     def post(self, request, format=None):
         serializer = LoginSerializer(data=request.data, context={"request": request})
@@ -107,6 +117,54 @@ class SessionRevokeView(APIView):
             return Response(
                 {"detail": "Session not found."},
                 status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response({"detail": "Session revoked."}, status=status.HTTP_200_OK)
+
+
+class AdminSessionListView(APIView):
+    """Admin-only endpoint to list all active sessions across all users."""
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        include_revoked = (
+            str(request.query_params.get("include_revoked", "false")).lower()
+            == "true"
+        )
+
+        sessions = AuthSession.objects.select_related("user").all()
+        if not include_revoked:
+            sessions = sessions.filter(is_active=True)
+
+        # Optionally filter by user_id
+        user_id = request.query_params.get("user_id")
+        if user_id:
+            sessions = sessions.filter(user_id=user_id)
+
+        # Order by most recent last_seen_at
+        sessions = sessions.order_by("-last_seen_at")
+
+        serializer = AuthSessionSerializer(sessions, many=True, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class AdminSessionRevokeView(APIView):
+    """Admin-only endpoint to revoke any session."""
+    permission_classes = [IsAdmin]
+
+    def post(self, request, session_id: int):
+        session = AuthSession.objects.filter(id=session_id).first()
+        if not session:
+            return Response(
+                {"detail": "Session not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        revoked = revoke_session_by_id(session_id=session_id, user=session.user)
+        if not revoked:
+            return Response(
+                {"detail": "Failed to revoke session."},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         return Response({"detail": "Session revoked."}, status=status.HTTP_200_OK)
