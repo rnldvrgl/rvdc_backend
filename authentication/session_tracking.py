@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone as dt_timezone
 from typing import Optional
 
 from django.db import transaction
@@ -48,7 +48,7 @@ def _get_jti_and_exp(refresh_token: str):
     jti = str(token.get("jti"))
     exp = token.get("exp")
     expires_at = (
-        datetime.fromtimestamp(exp, tz=timezone.utc)
+        datetime.fromtimestamp(exp, tz=dt_timezone.utc)
         if isinstance(exp, (int, float))
         else None
     )
