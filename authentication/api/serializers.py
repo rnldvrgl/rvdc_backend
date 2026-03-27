@@ -206,11 +206,13 @@ class DeviceAwareTokenRefreshSerializer(TokenRefreshSerializer):
 
 class AuthSessionSerializer(serializers.ModelSerializer):
     is_current_device = serializers.SerializerMethodField()
+    user = serializers.SerializerMethodField()
 
     class Meta:
         model = AuthSession
         fields = [
             "id",
+            "user",
             "device_id",
             "device_label",
             "ip_address",
@@ -226,3 +228,13 @@ class AuthSessionSerializer(serializers.ModelSerializer):
     def get_is_current_device(self, obj):
         current_device_id = self.context.get("device_id", "")
         return bool(current_device_id and obj.device_id == current_device_id)
+
+    def get_user(self, obj):
+        user = obj.user
+        return {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+        }
