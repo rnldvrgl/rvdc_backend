@@ -23,10 +23,9 @@ class ActiveUserJWTAuthentication(JWTAuthentication):
         # Check if the session tied to this access token has been revoked.
         access_jti = str(validated_token.get("jti", ""))
         if access_jti:
-            session = AuthSession.objects.filter(
-                access_jti=access_jti, user=user
-            ).first()
-            if session is not None and not session.is_active:
+            session = AuthSession.objects.filter(access_jti=access_jti, user=user).first()
+            # No matching active session for this access token means it was revoked/rotated.
+            if session is None or not session.is_active:
                 raise AuthenticationFailed("Session has been revoked.")
 
         return user

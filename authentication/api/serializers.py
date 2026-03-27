@@ -6,6 +6,7 @@ from utils.tokens import get_tokens_for_user
 from users.models import CustomUser
 from authentication.models import AuthSession
 from authentication.session_tracking import (
+    revoke_active_session_for_device,
     revoke_session_by_refresh,
     rotate_session_refresh,
     upsert_login_session,
@@ -177,11 +178,25 @@ class LogoutSerializer(serializers.Serializer):
         return attrs
 
     def save(self, **kwargs):
+        request = self.context.get("request")
+        device_id = ""
+        if request:
+            device_id = request.headers.get("X-Device-ID", "")
+
         try:
-            token = RefreshToken(self.token)
-            token.blacklist()
+            refresh_token = RefreshToken(self.token)
+            refresh_token.blacklist()
             revoke_session_by_refresh(self.token)
         except TokenError as e:
+            # Fallback: refresh token may be stale/rotated on client.
+            # Revoke by authenticated user + current device ID when possible.
+            if (
+                request
+                and getattr(request.user, "is_authenticated", False)
+                and revoke_active_session_for_device(user=request.user, device_id=device_id)
+            ):
+                return
+
             raise serializers.ValidationError({"refresh": "Invalid or expired token."})
 
 

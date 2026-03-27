@@ -153,9 +153,41 @@ def revoke_session_by_refresh(refresh_token: str) -> None:
         return
 
     session.is_active = False
+    session.access_jti = ""
     session.revoked_at = timezone.now()
     session.last_seen_at = timezone.now()
-    session.save(update_fields=["is_active", "revoked_at", "last_seen_at"])
+    session.save(update_fields=["is_active", "access_jti", "revoked_at", "last_seen_at"])
+
+    outstanding = OutstandingToken.objects.filter(jti=session.refresh_jti).first()
+    if outstanding:
+        BlacklistedToken.objects.get_or_create(token=outstanding)
+
+
+@transaction.atomic
+def revoke_active_session_for_device(*, user, device_id: str) -> bool:
+    if not device_id:
+        return False
+
+    session = (
+        AuthSession.objects.select_for_update()
+        .filter(user=user, device_id=device_id, is_active=True)
+        .order_by("-last_seen_at")
+        .first()
+    )
+    if not session:
+        return False
+
+    session.is_active = False
+    session.access_jti = ""
+    session.revoked_at = timezone.now()
+    session.last_seen_at = timezone.now()
+    session.save(update_fields=["is_active", "access_jti", "revoked_at", "last_seen_at"])
+
+    outstanding = OutstandingToken.objects.filter(jti=session.refresh_jti).first()
+    if outstanding:
+        BlacklistedToken.objects.get_or_create(token=outstanding)
+
+    return True
 
 
 @transaction.atomic
@@ -169,9 +201,10 @@ def revoke_session_by_id(*, session_id: int, user) -> bool:
         return False
 
     session.is_active = False
+    session.access_jti = ""
     session.revoked_at = timezone.now()
     session.last_seen_at = timezone.now()
-    session.save(update_fields=["is_active", "revoked_at", "last_seen_at"])
+    session.save(update_fields=["is_active", "access_jti", "revoked_at", "last_seen_at"])
 
     outstanding = OutstandingToken.objects.filter(jti=session.refresh_jti).first()
     if outstanding:
