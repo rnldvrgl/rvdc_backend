@@ -1,15 +1,65 @@
 from rest_framework import serializers
+from django.conf import settings
 from django.contrib.auth import authenticate
+from django.utils import timezone
 from utils.tokens import get_tokens_for_user
 from users.models import CustomUser
+from authentication.models import AuthSession
+from authentication.session_tracking import (
+    revoke_session_by_refresh,
+    rotate_session_refresh,
+    upsert_login_session,
+)
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.token_blacklist.models import (
+    BlacklistedToken,
+    OutstandingToken,
+)
 from users.api.serializers import UserSerializer
+
+
+def enforce_active_session_limit(user, current_refresh_token: str) -> None:
+    """Blacklist oldest active refresh tokens above configured per-user limit."""
+    max_sessions = getattr(settings, "AUTH_MAX_ACTIVE_SESSIONS", 0)
+    if max_sessions <= 0:
+        return
+
+    try:
+        current_jti = RefreshToken(current_refresh_token)["jti"]
+    except Exception:
+        current_jti = None
+
+    active_tokens = OutstandingToken.objects.filter(
+        user=user,
+        blacklistedtoken__isnull=True,
+    )
+
+    if current_jti:
+        active_tokens = active_tokens.exclude(jti=current_jti)
+
+    # Keep one slot for the token issued in this login event.
+    keep_other_tokens = max(max_sessions - 1, 0)
+    tokens_to_blacklist = active_tokens.order_by("-created_at")[keep_other_tokens:]
+
+    for outstanding in tokens_to_blacklist:
+        try:
+            BlacklistedToken.objects.get_or_create(token=outstanding)
+            AuthSession.objects.filter(refresh_jti=outstanding.jti).update(
+                is_active=False,
+                revoked_at=timezone.now(),
+                last_seen_at=timezone.now(),
+            )
+        except Exception:
+            # Best-effort to avoid blocking login on cleanup issues.
+            continue
 
 
 class LoginSerializer(serializers.Serializer):
     username = serializers.CharField()
     password = serializers.CharField(write_only=True)
+    device_id = serializers.CharField(required=False, allow_blank=True, max_length=128)
 
     def validate(self, data):
         user = authenticate(
@@ -35,6 +85,15 @@ class LoginSerializer(serializers.Serializer):
             raise serializers.ValidationError("Account is no longer active.")
 
         tokens = get_tokens_for_user(user)
+        enforce_active_session_limit(user, tokens["refresh"])
+
+        request = self.context.get("request")
+        upsert_login_session(
+            user,
+            tokens["refresh"],
+            request=request,
+            device_id=data.get("device_id", ""),
+        )
 
         user_data = UserSerializer(user, context=self.context).data
 
@@ -115,5 +174,55 @@ class LogoutSerializer(serializers.Serializer):
         try:
             token = RefreshToken(self.token)
             token.blacklist()
+            revoke_session_by_refresh(self.token)
         except TokenError as e:
             raise serializers.ValidationError({"refresh": "Invalid or expired token."})
+
+
+class DeviceAwareTokenRefreshSerializer(TokenRefreshSerializer):
+    device_id = serializers.CharField(required=False, allow_blank=True, max_length=128)
+
+    def validate(self, attrs):
+        device_id = attrs.get("device_id", "")
+        old_refresh = attrs.get("refresh", "")
+        data = super().validate(attrs)
+
+        request = self.context.get("request")
+        new_refresh = data.get("refresh") or old_refresh
+
+        try:
+            rotate_session_refresh(
+                old_refresh_token=old_refresh,
+                new_refresh_token=new_refresh,
+                request=request,
+                device_id=device_id,
+            )
+        except Exception:
+            # Session tracking should not block token refresh.
+            pass
+
+        return data
+
+
+class AuthSessionSerializer(serializers.ModelSerializer):
+    is_current_device = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AuthSession
+        fields = [
+            "id",
+            "device_id",
+            "device_label",
+            "ip_address",
+            "user_agent",
+            "is_active",
+            "is_current_device",
+            "created_at",
+            "last_seen_at",
+            "expires_at",
+            "revoked_at",
+        ]
+
+    def get_is_current_device(self, obj):
+        current_device_id = self.context.get("device_id", "")
+        return bool(current_device_id and obj.device_id == current_device_id)
