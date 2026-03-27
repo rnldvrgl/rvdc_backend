@@ -329,7 +329,7 @@ class RevenueCalculator:
 
         main_revenue = max(main_revenue - service_discount, Decimal('0.00'))
         total_revenue = main_revenue + sub_revenue
-        
+
         # Round all revenue values to 2 decimal places to prevent validation errors
         main_revenue = main_revenue.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         sub_revenue = sub_revenue.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
@@ -399,7 +399,7 @@ class ServiceCompletionHandler:
 
                 # Collect all charged parts for a single sub stall transaction
                 parts_to_sell = []
-                
+
                 # Process each appliance item used
                 for appliance in service.appliances.all():
                     for item_used in appliance.items_used.all():
@@ -424,13 +424,13 @@ class ServiceCompletionHandler:
                             })
 
                     # Also include custom items (no stock, but billable)
-                    for item_used in appliance.items_used.filter(item__isnull=True).exclude(custom_description=''):
+                    for item_used in appliance.items_used.filter(item__isnull=True, custom_price__isnull=False):
                         if not item_used.is_free and item_used.line_total > 0:
                             charged_qty = item_used.quantity - item_used.free_quantity
                             if charged_qty > 0:
                                 parts_to_sell.append({
                                     'item': None,
-                                    'description': item_used.custom_description,
+                                    'description': 'Custom Item',
                                     'quantity': charged_qty,
                                     'unit_price': item_used.discounted_price,
                                 })
@@ -444,7 +444,7 @@ class ServiceCompletionHandler:
                             if charged_qty > 0:
                                 parts_to_sell.append({
                                     'item': None,
-                                    'description': item_used.custom_description,
+                                    'description': 'Custom Item',
                                     'quantity': charged_qty,
                                     'unit_price': item_used.discounted_price,
                                 })
@@ -532,14 +532,14 @@ class ServiceCompletionHandler:
             service.appliances.exclude(
                 status=ApplianceStatus.COMPLETED
             ).update(status=ApplianceStatus.COMPLETED)
-            
+
             # Activate warranties for all appliances when service is completed
             from datetime import date
             completion_date = date.today()
             for appliance in service.appliances.all():
                 if appliance.labor_warranty_months > 0 or appliance.unit_warranty_months > 0:
                     appliance.activate_warranties(start_date=completion_date)
-            
+
             # For installation services, set warranty_start_date and mark as sold on all aircon units
             from utils.enums import ServiceType
             if service.service_type == ServiceType.INSTALLATION:
@@ -564,17 +564,17 @@ class ServiceCompletionHandler:
             # Skip if related_transaction exists (payments made upfront) or service is fully complementary
             main_receipt = None
             sub_receipt = None
-            
+
             if create_receipt and service.client and (has_appliances or has_service_items) and not service.related_transaction and not service.is_complementary:
                 main_stall = get_main_stall()
                 sub_stall = get_sub_stall()
-                
+
                 # Check if there's any paid labor
                 has_paid_labor = any(
                     appl.discounted_labor_fee > 0 and not appl.labor_is_free
                     for appl in service.appliances.all()
                 )
-                
+
                 # Check if there's any paid parts (appliance-level + service-level)
                 has_paid_parts = any(
                     item_used.line_total > 0 and not item_used.is_free
@@ -584,7 +584,7 @@ class ServiceCompletionHandler:
                     item_used.line_total > 0 and not item_used.is_free
                     for item_used in service.service_items.all()
                 )
-                
+
                 # Create Main stall transaction for labor if any paid labor exists
                 if has_paid_labor:
                     main_receipt = SalesTransaction.objects.create(
@@ -595,7 +595,7 @@ class ServiceCompletionHandler:
                         document_type=DocumentType.OFFICIAL_RECEIPT,
                         with_2307=getattr(service, 'with_2307', False),
                     )
-                    
+
                     for appliance in service.appliances.all():
                         labor_charge = appliance.discounted_labor_fee
                         if labor_charge > 0 and not appliance.labor_is_free:
@@ -606,7 +606,7 @@ class ServiceCompletionHandler:
                                 quantity=1,
                                 final_price_per_unit=labor_charge,
                             )
-                    
+
                     # Add aircon unit prices for installation services (Main stall revenue)
                     if service.service_type == 'installation':
                         for unit in service.installation_units.all():
@@ -627,7 +627,7 @@ class ServiceCompletionHandler:
                                         quantity=1,
                                         final_price_per_unit=unit_final_price,
                                     )
-                    
+
                     # Link main receipt to service
                     service.related_transaction = main_receipt
                     service.save(update_fields=['related_transaction'])
@@ -712,7 +712,7 @@ class ServiceCompletionHandler:
                                     SalesItem.objects.create(
                                         transaction=sub_receipt,
                                         item=item_used.item,
-                                        description=item_used.custom_description if item_used.is_custom_item else '',
+                                        description='',
                                         quantity=charged_qty,
                                         final_price_per_unit=item_used.discounted_price,
                                     )
@@ -727,7 +727,7 @@ class ServiceCompletionHandler:
                                 SalesItem.objects.create(
                                     transaction=sub_receipt,
                                     item=item_used.item,
-                                    description=item_used.custom_description if item_used.is_custom_item else '',
+                                    description='',
                                     quantity=charged_qty,
                                     final_price_per_unit=item_used.discounted_price,
                                 )
@@ -738,7 +738,7 @@ class ServiceCompletionHandler:
                     elif not service.related_sub_transaction_id:
                         service.related_sub_transaction = existing_sub_transaction
                         service.save(update_fields=['related_sub_transaction'])
-            
+
             return {
                 'service_id': service.id,
                 'status': 'completed',
@@ -777,7 +777,7 @@ class ServiceCompletionHandler:
                     quantity=1,
                     final_price_per_unit=labor_charge,
                 )
-        
+
         # Add aircon unit prices for installation services (Main stall revenue)
         if service.service_type == 'installation':
             for unit in service.installation_units.all():
@@ -810,7 +810,7 @@ class ServiceCompletionHandler:
                     SalesItem.objects.create(
                         transaction=receipt,
                         item=item_used.item,
-                        description=item_used.custom_description if item_used.is_custom_item else '',
+                        description='',
                         quantity=charged_qty,
                         final_price_per_unit=item_used.discounted_price,
                     )
@@ -825,7 +825,7 @@ class ServiceCompletionHandler:
                 SalesItem.objects.create(
                     transaction=receipt,
                     item=item_used.item,
-                    description=item_used.custom_description if item_used.is_custom_item else '',
+                    description='',
                     quantity=charged_qty,
                     final_price_per_unit=item_used.discounted_price,
                 )
@@ -885,7 +885,7 @@ class ServiceCancellationHandler:
                             quantity=item_used.quantity,
                             stall_stock=item_used.stall_stock
                         )
-                        item_name = item_used.item.name if item_used.item else item_used.custom_description
+                        item_name = item_used.item.name if item_used.item else 'Custom Item'
                         released_items.append({
                             'item': item_name,
                             'quantity': item_used.quantity,
@@ -903,7 +903,7 @@ class ServiceCancellationHandler:
                         quantity=item_used.quantity,
                         stall_stock=item_used.stall_stock
                     )
-                    item_name = item_used.item.name if item_used.item else item_used.custom_description
+                    item_name = item_used.item.name if item_used.item else 'Custom Item'
                     released_items.append({
                         'item': item_name,
                         'quantity': item_used.quantity,
@@ -1021,7 +1021,7 @@ class ServiceReopenHandler:
                     stock.quantity += qty
                     stock.save(update_fields=['quantity', 'updated_at'])
 
-                    item_name = item_used.item.name if item_used.item else item_used.custom_description
+                    item_name = item_used.item.name if item_used.item else 'Custom Item'
                     restored_items.append({
                         'item': item_name,
                         'quantity': float(qty),
@@ -1039,7 +1039,7 @@ class ServiceReopenHandler:
                 stock.quantity += qty
                 stock.save(update_fields=['quantity', 'updated_at'])
 
-                item_name = item_used.item.name if item_used.item else item_used.custom_description
+                item_name = item_used.item.name if item_used.item else 'Custom Item'
                 restored_items.append({
                     'item': item_name,
                     'quantity': float(qty),
@@ -1129,7 +1129,7 @@ class ServiceReopenHandler:
                             quantity=item_used.quantity,
                             stall_stock=item_used.stall_stock,
                         )
-                        item_name = item_used.item.name if item_used.item else item_used.custom_description
+                        item_name = item_used.item.name if item_used.item else 'Custom Item'
                         re_reserved.append({
                             'item': item_name,
                             'quantity': float(item_used.quantity),
@@ -1148,7 +1148,7 @@ class ServiceReopenHandler:
                         quantity=item_used.quantity,
                         stall_stock=item_used.stall_stock,
                     )
-                    item_name = item_used.item.name if item_used.item else item_used.custom_description
+                    item_name = item_used.item.name if item_used.item else 'Custom Item'
                     re_reserved.append({
                         'item': item_name,
                         'quantity': float(item_used.quantity),
@@ -1225,33 +1225,33 @@ class ServicePaymentManager:
         """
         Sync sales transaction items with current service charges.
         Updates line items when labor fees or unit prices change.
-        
+
         Includes:
         - Labor fees (discounted) for each appliance
         - Aircon unit prices for installation services (brand-new & second-hand)
-        
+
         Note: Parts are NOT synced here - they have separate sub stall transactions.
-        
+
         Args:
             service: Service instance with related_transaction
         """
         from sales.models import SalesItem
-        
+
         if not service.related_transaction:
             return
-            
+
         sales_transaction = service.related_transaction
-        
+
         # Clear existing items and recreate
         sales_transaction.items.all().delete()
-        
+
         # Pre-build set of installation unit serial numbers
         installation_unit_serials = set()
         if service.service_type == 'installation':
             installation_unit_serials = set(
                 service.installation_units.values_list('serial_number', flat=True)
             )
-        
+
         # Add labor fees for each appliance (use discounted fee)
         for appliance in service.appliances.all():
             labor_charge = appliance.discounted_labor_fee or Decimal('0.00')
@@ -1274,7 +1274,7 @@ class ServicePaymentManager:
                     quantity=1,
                     final_price_per_unit=appliance.unit_price,
                 )
-        
+
         # Add aircon unit prices for installation services (Main stall revenue)
         if service.service_type == 'installation':
             for unit in service.installation_units.all():
@@ -1295,7 +1295,7 @@ class ServicePaymentManager:
                             quantity=1,
                             final_price_per_unit=unit_final_price,
                         )
-        
+
         # Apply service-level discount to Main stall items only
         service_discount = Decimal('0.00')
         main_subtotal = sales_transaction.subtotal or Decimal('0.00')
@@ -1337,25 +1337,25 @@ class ServicePaymentManager:
         """
         Recreate sales transaction from existing service payments.
         Use this when a sales transaction is deleted but service payments exist.
-        
+
         Args:
             service: Service instance
-            
+
         Returns:
             Created SalesTransaction or None
         """
         from sales.models import SalesItem, SalesPayment, SalesTransaction
-        
+
         # Check if service has payments but no transaction
         service_payments = service.payments.all()
         if not service_payments.exists():
             return None
-        
+
         with transaction.atomic():
             # Get system stalls
             main_stall = get_main_stall()
             sub_stall = get_sub_stall()
-            
+
             # Create new main stall sales transaction for labor fees
             sales_transaction = SalesTransaction.objects.create(
                 stall=service.stall or main_stall,
@@ -1367,7 +1367,7 @@ class ServicePaymentManager:
             )
             service.related_transaction = sales_transaction
             service.save(update_fields=["related_transaction"])
-            
+
             # Create sales items for labor fees (main stall)
             for appliance in service.appliances.all():
                 labor_charge = appliance.discounted_labor_fee or Decimal('0.00')
@@ -1381,7 +1381,7 @@ class ServicePaymentManager:
                         quantity=1,
                         final_price_per_unit=labor_charge,
                     )
-            
+
             # Add aircon unit prices for installation services (Main stall revenue)
             if service.service_type == 'installation':
                 for unit in service.installation_units.all():
@@ -1402,7 +1402,7 @@ class ServicePaymentManager:
                                 quantity=1,
                                 final_price_per_unit=unit_price,
                             )
-            
+
             # Collect all parts from all appliances + service-level items
             parts_to_add = []
             for appliance in service.appliances.all():
@@ -1413,7 +1413,7 @@ class ServicePaymentManager:
                     if charged_qty > 0:
                         parts_to_add.append({
                             'item': item_used.item,
-                            'description': item_used.item.name if item_used.item else item_used.custom_description,
+                            'description': item_used.item.name if item_used.item else 'Custom Item',
                             'quantity': charged_qty,
                             'price': item_used.discounted_price,
                         })
@@ -1426,11 +1426,11 @@ class ServicePaymentManager:
                 if charged_qty > 0:
                     parts_to_add.append({
                         'item': item_used.item,
-                        'description': item_used.item.name if item_used.item else item_used.custom_description,
+                        'description': item_used.item.name if item_used.item else 'Custom Item',
                         'quantity': charged_qty,
                         'price': item_used.discounted_price,
                     })
-            
+
             # Create ONE sub stall transaction for ALL parts (if any)
             sub_sales_transaction = None
             if parts_to_add:
@@ -1442,7 +1442,7 @@ class ServicePaymentManager:
                     document_type=DocumentType.SALES_INVOICE,
                     with_2307=False,
                 )
-                
+
                 # Add all parts to the single sub stall transaction
                 for part in parts_to_add:
                     SalesItem.objects.create(
@@ -1483,7 +1483,7 @@ class ServicePaymentManager:
                     )
                 main_filled += m_share
                 sub_filled += s_share
-        
+
         return sales_transaction
 
     @staticmethod
@@ -1565,7 +1565,7 @@ class ServicePaymentManager:
                     # Transaction was deleted, clear the reference
                     service.related_transaction = None
                     sales_transaction = None
-            
+
             # Get system stalls
             main_stall = get_main_stall()
             sub_stall = get_sub_stall()
@@ -1643,7 +1643,7 @@ class ServicePaymentManager:
                         if charged_qty > 0:
                             parts_to_add.append({
                                 'item': item_used.item,
-                                'description': item_used.item.name if item_used.item else item_used.custom_description,
+                                'description': item_used.item.name if item_used.item else 'Custom Item',
                                 'quantity': charged_qty,
                                 'price': item_used.discounted_price,
                             })
@@ -1656,7 +1656,7 @@ class ServicePaymentManager:
                     if charged_qty > 0:
                         parts_to_add.append({
                             'item': item_used.item,
-                            'description': item_used.item.name if item_used.item else item_used.custom_description,
+                            'description': item_used.item.name if item_used.item else 'Custom Item',
                             'quantity': charged_qty,
                             'price': item_used.discounted_price,
                         })
@@ -1955,13 +1955,13 @@ class ServicePaymentManager:
         return ServiceCancellationHandler.cancel_service(
             service=service, reason=reason
         )
-    
+
     @staticmethod
     def refund_service(service, refund_amount, reason="", refund_type="full", refund_method="cash", processed_by=None):
         """
         Process refund for a COMPLETED service where parts are already used.
         Parts are NOT returned to stock.
-        
+
         Args:
             service: Service instance (must be completed)
             refund_amount: Amount to refund (Decimal)
@@ -1969,33 +1969,33 @@ class ServicePaymentManager:
             refund_type: "full" or "partial"
             refund_method: "cash", "gcash", or "bank_transfer"
             processed_by: User processing the refund (optional)
-        
+
         Returns:
             dict with refund details
-        
+
         Raises:
             ValidationError: If service is not completed or refund invalid
         """
         from django.utils import timezone
         from services.models import ServiceRefund, ServiceStatus
-        
+
         # Only allow refunds for completed services
         if service.status != ServiceStatus.COMPLETED:
             raise ValidationError(
                 "Can only process refunds for completed services. "
                 "Use cancel_service() for incomplete services."
             )
-        
+
         # Validate refund amount
         refund_amount = Decimal(str(refund_amount))
         if refund_amount <= 0:
             raise ValidationError("Refund amount must be greater than zero")
-        
+
         if refund_amount > service.total_paid:
             raise ValidationError(
                 f"Refund amount (₱{refund_amount}) cannot exceed total paid (₱{service.total_paid})"
             )
-        
+
         with transaction.atomic():
             # Create refund record
             refund = ServiceRefund.objects.create(
@@ -2006,18 +2006,18 @@ class ServicePaymentManager:
                 refund_method=refund_method,
                 processed_by=processed_by,
             )
-            
+
             # Update service refund tracking
             service.total_refunded = (service.total_refunded or 0) + refund_amount
             service.last_refund_date = timezone.now()
             service.save(update_fields=['total_refunded', 'last_refund_date'])
-            
+
             # Update payment status to reflect refund
             service.update_payment_status()
-            
+
             # DO NOT return parts to stock (already used)
             # DO NOT void sales transactions (costs already incurred)
-            
+
             return {
                 'refund_id': refund.id,
                 'service_id': service.id,

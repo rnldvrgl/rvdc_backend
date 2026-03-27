@@ -56,11 +56,6 @@ class BaseItemUsed(models.Model):
         help_text="Set when item was added with insufficient stock. Null means no stock request needed.",
     )
     # Custom item fields — used when item is not in inventory
-    custom_description = models.CharField(
-        max_length=200,
-        blank=True,
-        help_text="Description for custom items not in inventory.",
-    )
     custom_price = models.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -74,7 +69,7 @@ class BaseItemUsed(models.Model):
 
     @property
     def is_custom_item(self):
-        return self.item is None and bool(self.custom_description)
+        return self.item is None and self.custom_price is not None
 
 
 # ----------------------------------
@@ -218,7 +213,7 @@ class Service(models.Model):
         null=True,
         help_text="When service was cancelled"
     )
-    
+
     # Refund tracking (for completed services)
     total_refunded = models.DecimalField(
         max_digits=10,
@@ -231,7 +226,7 @@ class Service(models.Model):
         null=True,
         help_text="Date of most recent refund"
     )
-    
+
     # Service-level discounts
     service_discount_amount = models.DecimalField(
         max_digits=10,
@@ -263,7 +258,7 @@ class Service(models.Model):
         blank=True,
         help_text="When the discount was applied",
     )
-    
+
     # BIR 2307 receipt number (manually entered by clerk)
     receipt_book = models.CharField(
         max_length=50,
@@ -395,12 +390,12 @@ class Service(models.Model):
         """Remaining balance for this service, accounting for refunds."""
         net_paid = self.total_paid - (self.total_refunded or 0)
         return max(self.total_revenue - net_paid, 0)
-    
+
     @property
     def net_revenue(self):
         """Revenue after refunds"""
         return self.total_paid - (self.total_refunded or 0)
-    
+
     @property
     def has_refunds(self):
         """Check if service has any refunds"""
@@ -452,13 +447,13 @@ class Service(models.Model):
 
         # Sync payment status to related transactions
         from sales.models import SalesTransaction as SalesTx
-        
+
         transactions_to_update = []
         if self.related_transaction_id:
             transactions_to_update.append(self.related_transaction_id)
         if self.related_sub_transaction_id:
             transactions_to_update.append(self.related_sub_transaction_id)
-        
+
         if transactions_to_update:
             SalesTx.objects.filter(id__in=transactions_to_update).update(
                 payment_status=self.payment_status
@@ -526,12 +521,12 @@ class ServicePayment(models.Model):
 # ----------------------------------
 class ServiceRefund(models.Model):
     """Track refunds for completed services"""
-    
+
     REFUND_TYPE_CHOICES = [
         ('full', 'Full Refund'),
         ('partial', 'Partial Refund'),
     ]
-    
+
     service = models.ForeignKey(
         Service,
         on_delete=models.CASCADE,
@@ -556,7 +551,7 @@ class ServiceRefund(models.Model):
         blank=True,
         related_name="refunds_processed"
     )
-    
+
     # Financial tracking
     refund_method = models.CharField(
         max_length=20,
@@ -567,16 +562,16 @@ class ServiceRefund(models.Model):
         ],
         default='cash'
     )
-    
+
     notes = models.TextField(blank=True)
-    
+
     created_at = models.DateTimeField(auto_now_add=True)
-    
+
     class Meta:
         ordering = ['-refund_date']
         verbose_name = "Service Refund"
         verbose_name_plural = "Service Refunds"
-    
+
     def __str__(self):
         return f"Refund #{self.id} - Service #{self.service.id} - ₱{self.refund_amount}"
 
@@ -694,7 +689,7 @@ class ServiceAppliance(models.Model):
     status = models.CharField(
         max_length=20, choices=ApplianceStatus.choices, default=ApplianceStatus.PENDING
     )
-    
+
     # Technician assignment
     assigned_technician = models.ForeignKey(
         CustomUser,
@@ -704,7 +699,7 @@ class ServiceAppliance(models.Model):
         related_name="assigned_appliances",
         help_text="Technician assigned to work on this appliance"
     )
-    
+
     labor_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     labor_is_free = models.BooleanField(
         default=False, help_text="Mark labor for this appliance as free."
@@ -758,7 +753,7 @@ class ServiceAppliance(models.Model):
         blank=True,
         help_text="Original labor fee before promo discount (e.g., free installation)",
     )
-    
+
     # Labor discounts
     labor_discount_amount = models.DecimalField(
         max_digits=10,
@@ -777,7 +772,7 @@ class ServiceAppliance(models.Model):
         blank=True,
         help_text="Reason for labor discount"
     )
-    
+
     # Warranty information
     labor_warranty_months = models.PositiveIntegerField(
         default=0,
@@ -806,7 +801,7 @@ class ServiceAppliance(models.Model):
         blank=True,
         help_text="Date when unit warranty expires"
     )
-    
+
     # Items review tracking
     parts_needed_notes = models.TextField(
         blank=True,
@@ -829,23 +824,23 @@ class ServiceAppliance(models.Model):
         blank=True,
         help_text="When items were confirmed"
     )
-    
+
     @property
     def discounted_labor_fee(self):
         """Labor fee after item-level discount"""
         if self.labor_is_free:
             return Decimal('0.00')
-        
+
         fee = Decimal(str(self.labor_fee))
-        
+
         # Apply fixed discount
         fee = max(fee - Decimal(str(self.labor_discount_amount)), Decimal('0'))
-        
+
         # Apply percentage discount
         if self.labor_discount_percentage > 0:
             discount_decimal = Decimal(str(self.labor_discount_percentage)) / Decimal('100')
             fee = fee * (Decimal('1') - discount_decimal)
-        
+
         # Round to 2 decimal places
         return max(fee.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP), Decimal('0.00'))
 
@@ -856,26 +851,26 @@ class ServiceAppliance(models.Model):
         """
         from datetime import date
         from dateutil.relativedelta import relativedelta
-        
+
         if start_date is None:
             start_date = date.today()
-        
+
         self.warranty_start_date = start_date
-        
+
         # Calculate labor warranty end date
         if self.labor_warranty_months > 0:
             self.labor_warranty_end_date = start_date + relativedelta(months=self.labor_warranty_months)
         else:
             self.labor_warranty_end_date = None
-        
+
         # Calculate unit warranty end date
         if self.unit_warranty_months > 0:
             self.unit_warranty_end_date = start_date + relativedelta(months=self.unit_warranty_months)
         else:
             self.unit_warranty_end_date = None
-        
+
         self.save(update_fields=['warranty_start_date', 'labor_warranty_end_date', 'unit_warranty_end_date'])
-    
+
     @property
     def is_labor_warranty_active(self):
         """Check if labor warranty is currently active"""
@@ -883,7 +878,7 @@ class ServiceAppliance(models.Model):
         if not self.warranty_start_date or not self.labor_warranty_end_date:
             return False
         return self.warranty_start_date <= date.today() <= self.labor_warranty_end_date
-    
+
     @property
     def is_unit_warranty_active(self):
         """Check if unit warranty is currently active"""
@@ -941,7 +936,7 @@ class ApplianceItemUsed(BaseItemUsed):
         blank=True,
         help_text="Name of applied promotion (e.g., 'Free 10ft Copper Tube Promo')",
     )
-    
+
     # Item-level discounts
     discount_amount = models.DecimalField(
         max_digits=10,
@@ -960,14 +955,14 @@ class ApplianceItemUsed(BaseItemUsed):
         blank=True,
         help_text="Reason for item discount"
     )
-    
+
     # Cancellation tracking (only for cancelled services)
     is_cancelled = models.BooleanField(
         default=False,
         help_text="True if service was cancelled and part returned to stock"
     )
     cancelled_at = models.DateTimeField(blank=True, null=True)
-    
+
     @property
     def discounted_price(self):
         """Calculate price per unit after discount"""
@@ -977,18 +972,18 @@ class ApplianceItemUsed(BaseItemUsed):
             base_price = Decimal(str(self.item.retail_price))
         else:
             return Decimal('0.00')
-        
+
         # Apply fixed discount first
         price = max(base_price - Decimal(str(self.discount_amount)), Decimal('0'))
-        
+
         # Then apply percentage discount
         if self.discount_percentage > 0:
             discount_decimal = Decimal(str(self.discount_percentage)) / Decimal('100')
             price = price * (Decimal('1') - discount_decimal)
-        
+
         # Round to 2 decimal places
         return max(price.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP), Decimal('0.00'))
-    
+
     @property
     def line_total(self):
         """Total for this line item after discounts"""
@@ -1017,7 +1012,7 @@ class ApplianceItemUsed(BaseItemUsed):
 class ServiceItemUsed(BaseItemUsed):
     """
     Items used at the service level, not tied to any appliance.
-    
+
     Used for pre-installation work like chipping (copper pipe, insulation tube,
     etc.) where the AC unit hasn't been added yet, or general materials that
     don't belong to a specific appliance.
@@ -1104,6 +1099,3 @@ class ServiceItemUsed(BaseItemUsed):
 
     def __str__(self):
         return f"{self.item} x{self.quantity} (service #{self.service_id})"
-
-
-
