@@ -31,6 +31,28 @@ class DailyAttendanceSerializer(serializers.ModelSerializer):
     attendance_type_display = serializers.CharField(source='get_attendance_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
 
+    def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+        instance = getattr(self, 'instance', None)
+
+        attendance_type = attrs.get(
+            'attendance_type',
+            instance.attendance_type if instance else 'PENDING',
+        )
+        clock_in = attrs.get('clock_in', instance.clock_in if instance else None)
+        clock_out = attrs.get('clock_out', instance.clock_out if instance else None)
+
+        if clock_in and clock_out and clock_out <= clock_in:
+            raise serializers.ValidationError({
+                'clock_out': 'Clock-out time must be after clock-in time.'
+            })
+
+        if attendance_type in ['LEAVE', 'ABSENT', 'SHOP_CLOSED'] and (clock_in or clock_out):
+            raise serializers.ValidationError(
+                'LEAVE, ABSENT, and SHOP_CLOSED attendance types cannot have clock-in or clock-out values.'
+            )
+
+        return attrs
+
     class Meta:
         model = DailyAttendance
         fields = [
@@ -70,7 +92,6 @@ class DailyAttendanceSerializer(serializers.ModelSerializer):
             'total_hours',
             'break_hours',
             'paid_hours',
-            'attendance_type',
             'consecutive_absences',
             'is_awol',
             'is_late',

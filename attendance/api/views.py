@@ -62,28 +62,74 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         queryset = DailyAttendance.objects.filter(is_deleted=False)
+        query_params = self.request.query_params
+
+        date_from = (
+            query_params.get('date_from')
+            or query_params.get('date_after')
+            or query_params.get('start_date')
+        )
+        date_to = (
+            query_params.get('date_to')
+            or query_params.get('date_before')
+            or query_params.get('end_date')
+        )
+        exact_date = query_params.get('date')
+        status_filter = query_params.get('status')
+        attendance_type = query_params.get('attendance_type')
+        search = query_params.get('search')
+        ordering = query_params.get('ordering')
 
         # Only admin can see all attendance
         if user.role == 'admin':
-            # Optional filters
-            employee_id = self.request.query_params.get('employee_id')
-            status_filter = self.request.query_params.get('status')
-            date_from = self.request.query_params.get('date_from')
-            date_to = self.request.query_params.get('date_to')
+            employee_id = query_params.get('employee_id')
 
             if employee_id:
                 queryset = queryset.filter(employee_id=employee_id)
-            if status_filter:
-                queryset = queryset.filter(status=status_filter)
-            if date_from:
-                queryset = queryset.filter(date__gte=date_from)
-            if date_to:
-                queryset = queryset.filter(date__lte=date_to)
         else:
             # All non-admin users can only see their own attendance
             queryset = queryset.filter(employee=user)
 
-        return queryset.select_related('employee', 'approved_by').order_by('-date')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        if attendance_type:
+            queryset = queryset.filter(attendance_type=attendance_type)
+        if exact_date:
+            queryset = queryset.filter(date=exact_date)
+        if date_from:
+            queryset = queryset.filter(date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(date__lte=date_to)
+        if search:
+            queryset = queryset.filter(
+                models.Q(employee__first_name__icontains=search)
+                | models.Q(employee__last_name__icontains=search)
+                | models.Q(employee__username__icontains=search)
+                | models.Q(notes__icontains=search)
+            )
+
+        allowed_ordering = {
+            'date',
+            '-date',
+            'created_at',
+            '-created_at',
+            'employee__first_name',
+            '-employee__first_name',
+            'status',
+            '-status',
+            'attendance_type',
+            '-attendance_type',
+        }
+        ordering_fields = [
+            field.strip()
+            for field in (ordering or '').split(',')
+            if field.strip() in allowed_ordering
+        ]
+
+        if not ordering_fields:
+            ordering_fields = ['-date', 'employee']
+
+        return queryset.select_related('employee', 'approved_by').order_by(*ordering_fields)
 
     def create(self, request, *args, **kwargs):
         """Only admin can create attendance records."""
@@ -102,6 +148,15 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN
             )
         return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        """Only admin can partially update attendance records."""
+        if request.user.role != 'admin':
+            return Response(
+                {'detail': 'Only admin can update attendance records.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        return super().partial_update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
         """Soft delete: Only admin can delete."""
