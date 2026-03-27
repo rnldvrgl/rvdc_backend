@@ -202,6 +202,7 @@ CORS_ALLOW_HEADERS = [
     "idempotency-key",
     "origin",
     "user-agent",
+    "x-device-id",
     "x-csrftoken",
     "x-requested-with",
 ]
