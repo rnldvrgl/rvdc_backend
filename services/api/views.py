@@ -20,6 +20,7 @@ from services.api.serializers import (
     ApplianceTypeSerializer,
     ServiceItemUsedSerializer,
     CreateServicePaymentSerializer,
+    JobOrderTemplatePrintSerializer,
     ServiceApplianceSerializer,
     ServiceCancellationSerializer,
     ServiceCompletionSerializer,
@@ -35,6 +36,7 @@ from services.business_logic import RevenueCalculator, ServicePaymentManager
 from services.models import (
     ApplianceItemUsed,
     ApplianceType,
+    JobOrderTemplatePrint,
     Service,
     ServiceAppliance,
     ServiceItemUsed,
@@ -124,7 +126,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 "schedules",
             )
         )
-        
+
         return filter_by_date_range(self.request, qs)
 
     def perform_update(self, serializer):
@@ -907,12 +909,12 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
                 "expense",
             )
         )
-        
+
         # Filter by appliance if provided
         appliance_id = self.request.query_params.get('appliance')
         if appliance_id:
             queryset = queryset.filter(appliance_id=appliance_id)
-        
+
         return queryset
 
     def perform_create(self, serializer):
@@ -974,16 +976,16 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
         # Store service and appliance reference before deletion
         service = instance.appliance.service
         appliance = instance.appliance
-        
+
         result = super().destroy(request, *args, **kwargs)
-        
+
         # Recalculate revenue and sync sales items after deletion
         from services.business_logic import RevenueCalculator, ServicePaymentManager
         RevenueCalculator.calculate_service_revenue(service, save=True)
         ServicePaymentManager.sync_sales_items(service)
         # Auto-reset items_checked on the appliance
         self._reset_items_checked(appliance)
-        
+
         return result
 
     def _reset_items_checked(self, appliance):
@@ -1232,3 +1234,36 @@ class ServiceReceiptViewSet(viewsets.ModelViewSet):
         if service_id:
             qs = qs.filter(service_id=service_id)
         return qs
+
+
+class JobOrderTemplatePrintViewSet(viewsets.ModelViewSet):
+    """Tracks printed job order template batches."""
+
+    serializer_class = JobOrderTemplatePrintSerializer
+    permission_classes = [IsAdminOrManager]
+    http_method_names = ["get", "post", "head", "options"]
+
+    def get_queryset(self):
+        return JobOrderTemplatePrint.objects.select_related("printed_by")
+
+    def perform_create(self, serializer):
+        instance = serializer.save(printed_by=self.request.user)
+        # Push WS event so other connected users see the update
+        from analytics.ws_utils import push_dashboard_event
+
+        push_dashboard_event(
+            "jo_template_printed",
+            {
+                "start_number": instance.start_number,
+                "end_number": instance.end_number,
+                "printed_by": instance.printed_by.get_full_name(),
+                "printed_at": instance.printed_at.isoformat(),
+            },
+        )
+
+    @action(detail=False, methods=["get"])
+    def next_number(self, request):
+        """Returns the suggested next starting job order number."""
+        latest = JobOrderTemplatePrint.objects.order_by("-end_number").first()
+        next_num = (latest.end_number + 1) if latest else 1
+        return Response({"next_number": next_num})
