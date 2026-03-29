@@ -7,6 +7,7 @@ from services.api.views import (
     ServiceReceiptViewSet,
     TechnicianAssignmentViewSet,
     ApplianceTypeViewSet,
+    JobOrderTemplatePrintViewSet,
 )
 
 router = DefaultRouter()
@@ -23,5 +24,10 @@ router.register(
     basename="technician-assignment",
 )
 router.register(r"appliance-types", ApplianceTypeViewSet, basename="appliance-type")
+router.register(
+    r"jo-template-prints",
+    JobOrderTemplatePrintViewSet,
+    basename="jo-template-print",
+)
 
 urlpatterns = router.urls

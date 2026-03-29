@@ -1099,3 +1099,26 @@ class ServiceItemUsed(BaseItemUsed):
 
     def __str__(self):
         return f"{self.item} x{self.quantity} (service #{self.service_id})"
+
+
+# ----------------------------------
+# Job Order Template Print Log
+# ----------------------------------
+class JobOrderTemplatePrint(models.Model):
+    """Tracks batches of printed job order template numbers."""
+    start_number = models.PositiveIntegerField()
+    end_number = models.PositiveIntegerField()
+    printed_by = models.ForeignKey(
+        "users.CustomUser",
+        on_delete=models.CASCADE,
+        related_name="job_order_prints",
+    )
+    printed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-printed_at"]
+        verbose_name = "Job Order Template Print"
+        verbose_name_plural = "Job Order Template Prints"
+
+    def __str__(self):
+        return f"JO #{self.start_number}-{self.end_number} by {self.printed_by}"

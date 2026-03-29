@@ -29,6 +29,7 @@ from services.business_logic import (
 from services.models import (
     ApplianceItemUsed,
     ApplianceType,
+    JobOrderTemplatePrint,
     PaymentType,
     Service,
     ServiceAppliance,
@@ -2480,3 +2481,32 @@ class ServicePaymentSummarySerializer(serializers.Serializer):
     balance_due = serializers.DecimalField(max_digits=10, decimal_places=2)
     payment_status = serializers.CharField()
     payments = ServicePaymentSerializer(many=True)
+
+
+class JobOrderTemplatePrintSerializer(serializers.ModelSerializer):
+    """Serializer for job order template print tracking."""
+
+    printed_by_name = serializers.CharField(
+        source="printed_by.get_full_name", read_only=True
+    )
+
+    class Meta:
+        model = JobOrderTemplatePrint
+        fields = [
+            "id",
+            "start_number",
+            "end_number",
+            "printed_by",
+            "printed_by_name",
+            "printed_at",
+        ]
+        read_only_fields = ["id", "printed_by", "printed_by_name", "printed_at"]
+
+    def validate(self, attrs):
+        if attrs["start_number"] > attrs["end_number"]:
+            raise ValidationError(
+                "Start number must be less than or equal to end number."
+            )
+        if attrs["end_number"] - attrs["start_number"] + 1 > 200:
+            raise ValidationError("Cannot print more than 200 templates at a time.")
+        return attrs
