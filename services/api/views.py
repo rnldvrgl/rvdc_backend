@@ -105,6 +105,9 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         "status",
         "service_type",
         "service_mode",
+        "appliances__appliance_type__name",
+        "appliances__brand",
+        "appliances__model",
     ]
     ordering_fields = "__all__"
 
@@ -125,6 +128,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 "installation_units__model__brand",
                 "schedules",
             )
+            .distinct()
         )
 
         return filter_by_date_range(self.request, qs)
