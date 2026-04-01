@@ -179,6 +179,13 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
     def get_line_total(self, obj):
         return str(obj.line_total)
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if getattr(self, '_stock_auto_added', False):
+            data['stock_auto_added'] = True
+            data['stock_auto_added_qty'] = float(getattr(self, '_stock_deficit', 0))
+        return data
+
     def validate(self, data):
         """Validate stock availability for reservation."""
         item = data.get("item")
@@ -314,6 +321,7 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
                     )
                     validated_data["stall_stock"] = reserved_stock
                     aiu = super().create(validated_data)
+                    self._stock_auto_added = True
 
                     # Notify all admins that stock was auto-added
                     User = get_user_model()
@@ -570,6 +578,13 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
     def get_line_total(self, obj):
         return str(obj.line_total)
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if getattr(self, '_stock_auto_added', False):
+            data['stock_auto_added'] = True
+            data['stock_auto_added_qty'] = float(getattr(self, '_stock_deficit', 0))
+        return data
+
     def validate(self, data):
         item = data.get("item")
 
@@ -692,6 +707,7 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
                     )
                     validated_data["stall_stock"] = reserved_stock
                     siu = super().create(validated_data)
+                    self._stock_auto_added = True
 
                     # Notify all admins that stock was auto-added
                     User = get_user_model()

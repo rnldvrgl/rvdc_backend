@@ -523,6 +523,11 @@ class ServiceCompletionHandler:
             # Calculate and save revenue attribution
             revenue_data = RevenueCalculator.calculate_service_revenue(service, save=True)
 
+            # Auto-mark as complementary if total revenue is zero
+            if not service.is_complementary and revenue_data.get('total_revenue', 0) <= 0:
+                service.is_complementary = True
+                service.save(update_fields=['is_complementary', 'updated_at'])
+
             # Update service status to completed
             service.status = ServiceStatusEnum.COMPLETED
             service.save(update_fields=['status', 'updated_at'])
