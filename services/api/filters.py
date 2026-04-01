@@ -19,6 +19,7 @@ class ServiceFilter(filters.FilterSet):
     service_type = CharInFilter(field_name="service_type", lookup_expr="in")
     service_mode = CharInFilter(field_name="service_mode", lookup_expr="in")
     stall = filters.NumberFilter(field_name="stall_id", lookup_expr="exact")
+    is_back_job = filters.BooleanFilter(field_name="is_back_job")
     has_receipt = filters.CharFilter(method="filter_has_receipt")
     receipt_type = filters.CharFilter(method="filter_receipt_type")
 
@@ -55,6 +56,7 @@ class ServiceFilter(filters.FilterSet):
             "service_type",
             "service_mode",
             "stall",
+            "is_back_job",
             "has_receipt",
             "receipt_type",
         ]

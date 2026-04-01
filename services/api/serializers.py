@@ -129,6 +129,7 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
             "appliance",
             "item",
             "custom_price",
+            "custom_description",
             "item_name",
             "item_sku",
             "item_price",
@@ -160,7 +161,7 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
     def get_item_name(self, obj):
         if obj.item:
             return obj.item.name
-        return "Custom Item"
+        return obj.custom_description or "Custom Item"
 
     def get_item_sku(self, obj):
         if obj.item:
@@ -519,6 +520,7 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
             "service",
             "item",
             "custom_price",
+            "custom_description",
             "item_name",
             "item_sku",
             "item_price",
@@ -550,7 +552,7 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
     def get_item_name(self, obj):
         if obj.item:
             return obj.item.name
-        return "Custom Item"
+        return obj.custom_description or "Custom Item"
 
     def get_item_sku(self, obj):
         if obj.item:
@@ -1510,6 +1512,10 @@ class ServiceSerializer(serializers.ModelSerializer):
             "receipts",
             # Backdating
             "transaction_date",
+            # Back job / re-service
+            "is_back_job",
+            "back_job_parent",
+            "back_job_reason",
         ]
         read_only_fields = [
             "main_stall_revenue",

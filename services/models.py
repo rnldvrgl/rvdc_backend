@@ -63,6 +63,11 @@ class BaseItemUsed(models.Model):
         blank=True,
         help_text="Price per unit for custom items not in inventory.",
     )
+    custom_description = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Name or description for custom items not in inventory.",
+    )
 
     class Meta:
         abstract = True
@@ -292,6 +297,24 @@ class Service(models.Model):
         max_length=200,
         blank=True,
         help_text="Reason for complementary service (e.g., 'Warranty', 'Goodwill', 'Promotional')"
+    )
+
+    # Back job / re-service tracking (redo work for a previously completed service)
+    is_back_job = models.BooleanField(
+        default=False,
+        help_text="Mark as a back job (re-service for a previously completed service)"
+    )
+    back_job_parent = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="back_jobs",
+        help_text="Original service this back job is for"
+    )
+    back_job_reason = models.TextField(
+        blank=True,
+        help_text="Reason for back job (e.g., 'Unit not cooling properly after repair')"
     )
 
     # Service-level items review tracking (mirrors appliance-level items_checked)

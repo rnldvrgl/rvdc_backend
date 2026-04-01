@@ -112,7 +112,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         qs = (
             Service.objects.all()
             .filter(is_deleted=False)
-            .select_related("client", "stall", "related_transaction", "service_items_checked_by")
+            .select_related("client", "stall", "related_transaction", "service_items_checked_by", "back_job_parent")
             .prefetch_related(
                 "appliances__items_used__item",
                 "appliances__items_used__stall_stock__stall",
