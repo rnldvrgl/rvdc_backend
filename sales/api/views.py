@@ -293,7 +293,7 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 payment_type=serializer.validated_data["payment_type"],
                 amount=amount,
                 payment_date=serializer.validated_data.get("payment_date")
-                or timezone.now(),
+                or dj_timezone.now(),
             )
 
             transaction.update_payment_status()
