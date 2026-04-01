@@ -63,6 +63,11 @@ class BaseItemUsed(models.Model):
         blank=True,
         help_text="Price per unit for custom items not in inventory.",
     )
+    custom_description = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Name or description for custom items not in inventory.",
+    )
 
     class Meta:
         abstract = True
@@ -294,6 +299,24 @@ class Service(models.Model):
         help_text="Reason for complementary service (e.g., 'Warranty', 'Goodwill', 'Promotional')"
     )
 
+    # Back job / re-service tracking (redo work for a previously completed service)
+    is_back_job = models.BooleanField(
+        default=False,
+        help_text="Mark as a back job (re-service for a previously completed service)"
+    )
+    back_job_parent = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="back_jobs",
+        help_text="Original service this back job is for"
+    )
+    back_job_reason = models.TextField(
+        blank=True,
+        help_text="Reason for back job (e.g., 'Unit not cooling properly after repair')"
+    )
+
     # Service-level items review tracking (mirrors appliance-level items_checked)
     service_parts_needed_notes = models.TextField(
         blank=True,
@@ -436,7 +459,10 @@ class Service(models.Model):
         total_paid = paid_result["total"] or Decimal("0")
         net_paid = total_paid - (self.total_refunded or Decimal("0"))
 
-        if net_paid <= 0:
+        # Zero-total services (all labor/parts free) are fully paid by definition
+        if total <= 0:
+            self.payment_status = PaymentStatus.PAID
+        elif net_paid <= 0:
             self.payment_status = PaymentStatus.UNPAID
         elif net_paid < total:
             self.payment_status = PaymentStatus.PARTIAL

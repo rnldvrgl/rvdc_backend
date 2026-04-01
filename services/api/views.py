@@ -105,6 +105,9 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         "status",
         "service_type",
         "service_mode",
+        "appliances__appliance_type__name",
+        "appliances__brand",
+        "appliances__model",
     ]
     ordering_fields = "__all__"
 
@@ -112,7 +115,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         qs = (
             Service.objects.all()
             .filter(is_deleted=False)
-            .select_related("client", "stall", "related_transaction", "service_items_checked_by")
+            .select_related("client", "stall", "related_transaction", "service_items_checked_by", "back_job_parent")
             .prefetch_related(
                 "appliances__items_used__item",
                 "appliances__items_used__stall_stock__stall",
@@ -125,6 +128,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 "installation_units__model__brand",
                 "schedules",
             )
+            .distinct()
         )
 
         return filter_by_date_range(self.request, qs)

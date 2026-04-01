@@ -129,6 +129,7 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
             "appliance",
             "item",
             "custom_price",
+            "custom_description",
             "item_name",
             "item_sku",
             "item_price",
@@ -160,7 +161,7 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
     def get_item_name(self, obj):
         if obj.item:
             return obj.item.name
-        return "Custom Item"
+        return obj.custom_description or "Custom Item"
 
     def get_item_sku(self, obj):
         if obj.item:
@@ -177,6 +178,13 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
 
     def get_line_total(self, obj):
         return str(obj.line_total)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if getattr(self, '_stock_auto_added', False):
+            data['stock_auto_added'] = True
+            data['stock_auto_added_qty'] = float(getattr(self, '_stock_deficit', 0))
+        return data
 
     def validate(self, data):
         """Validate stock availability for reservation."""
@@ -313,6 +321,7 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
                     )
                     validated_data["stall_stock"] = reserved_stock
                     aiu = super().create(validated_data)
+                    self._stock_auto_added = True
 
                     # Notify all admins that stock was auto-added
                     User = get_user_model()
@@ -519,6 +528,7 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
             "service",
             "item",
             "custom_price",
+            "custom_description",
             "item_name",
             "item_sku",
             "item_price",
@@ -550,7 +560,7 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
     def get_item_name(self, obj):
         if obj.item:
             return obj.item.name
-        return "Custom Item"
+        return obj.custom_description or "Custom Item"
 
     def get_item_sku(self, obj):
         if obj.item:
@@ -567,6 +577,13 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
 
     def get_line_total(self, obj):
         return str(obj.line_total)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if getattr(self, '_stock_auto_added', False):
+            data['stock_auto_added'] = True
+            data['stock_auto_added_qty'] = float(getattr(self, '_stock_deficit', 0))
+        return data
 
     def validate(self, data):
         item = data.get("item")
@@ -690,6 +707,7 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
                     )
                     validated_data["stall_stock"] = reserved_stock
                     siu = super().create(validated_data)
+                    self._stock_auto_added = True
 
                     # Notify all admins that stock was auto-added
                     User = get_user_model()
@@ -1510,6 +1528,10 @@ class ServiceSerializer(serializers.ModelSerializer):
             "receipts",
             # Backdating
             "transaction_date",
+            # Back job / re-service
+            "is_back_job",
+            "back_job_parent",
+            "back_job_reason",
         ]
         read_only_fields = [
             "main_stall_revenue",
@@ -1573,7 +1595,7 @@ class ServiceSerializer(serializers.ModelSerializer):
         # Fallback for services with no revenue yet
         total_cost = float(obj.total_revenue or 0)
         if total_cost == 0:
-            return "unpaid"
+            return "paid"
         return "unpaid"
 
     def get_payments(self, obj):

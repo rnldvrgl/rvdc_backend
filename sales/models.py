@@ -141,6 +141,11 @@ class SalesTransaction(models.Model):
         return sum(payment.amount for payment in self.payments.all())
 
     def update_payment_status(self):
+        # Clear prefetch cache to ensure fresh data from DB
+        if hasattr(self, '_prefetched_objects_cache'):
+            self._prefetched_objects_cache.pop('payments', None)
+            self._prefetched_objects_cache.pop('items', None)
+
         if self.voided:
             self.payment_status = PaymentStatus.VOIDED
             self.change_amount = 0

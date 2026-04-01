@@ -182,11 +182,11 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
     """
     serializer_class = SystemSettingsSerializer
     permission_classes = [permissions.IsAuthenticated]
-    
+
     def get_object(self):
         """Always return the singleton settings instance"""
         return SystemSettings.get_settings()
-    
+
     def get_permissions(self):
         """Allow any authenticated user to view, but only admins to update"""
         if self.request.method in ['PUT', 'PATCH']:
@@ -293,6 +293,7 @@ class ServerMaintenanceView(APIView):
         {"id": "fix_service_transaction_types", "label": "Fix Service Transaction Types", "description": "Update service-linked sales transactions from 'sale' to 'service' type", "app": "sales", "category": "sales", "destructive": False},
         {"id": "remove_duplicate_clients", "label": "Remove Duplicate Clients", "description": "Remove duplicate client records by contact number, keeping the oldest", "app": "clients", "category": "maintenance", "destructive": True},
         {"id": "add_philippine_holidays", "label": "Add PH Holidays", "description": "Add Philippine holidays for the current year (skip existing)", "app": "payroll", "args": ["--skip-existing"], "category": "payroll", "destructive": False},
+        {"id": "fix_zero_balance_payment_status", "label": "Fix Free Service Payment Status", "description": "Fix completed services with free labor/no parts stuck as unpaid", "app": "services", "category": "sales", "destructive": False},
     ]
 
     def get(self, request):
