@@ -296,6 +296,87 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         return Response(result, status=status.HTTP_200_OK)
 
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="link-aircon-units",
+        permission_classes=[IsAdminOrManager],
+    )
+    def link_aircon_units(self, request, pk=None):
+        """
+        Link aircon units to an existing service, claiming free cleaning and/or
+        filing warranty claims as appropriate.
+
+        Request body:
+        {
+            "free_cleaning_unit_ids": [1, 2],
+            "warranty_unit_ids": [
+                {"unit_id": 3, "claim_type": "repair", "issue_description": "Not cooling"}
+            ]
+        }
+        """
+        from installations.models import AirconUnit
+        from installations.business_logic import FreeCleaningManager, WarrantyClaimManager
+
+        service = self.get_object()
+
+        free_cleaning_unit_ids = request.data.get("free_cleaning_unit_ids", [])
+        warranty_unit_ids = request.data.get("warranty_unit_ids", [])
+
+        results = {"free_cleaning": [], "warranty_claims": [], "errors": []}
+
+        # --- Free cleaning units ---
+        for unit_id in free_cleaning_unit_ids:
+            try:
+                unit = AirconUnit.objects.get(id=unit_id)
+                eligibility = FreeCleaningManager.check_eligibility(unit)
+                if not eligibility["eligible"]:
+                    results["errors"].append(
+                        {"unit_id": unit_id, "error": eligibility["reason"]}
+                    )
+                    continue
+                unit.free_cleaning_redeemed = True
+                unit.free_cleaning_service = service
+                unit.save(clean=False)
+                results["free_cleaning"].append(unit_id)
+            except AirconUnit.DoesNotExist:
+                results["errors"].append({"unit_id": unit_id, "error": "Unit not found"})
+
+        # --- Warranty claim units ---
+        for entry in warranty_unit_ids:
+            unit_id = entry.get("unit_id")
+            claim_type = entry.get("claim_type", "repair")
+            issue_description = entry.get("issue_description", "Warranty service")
+            try:
+                unit = AirconUnit.objects.get(id=unit_id)
+                claim = WarrantyClaimManager.create_claim(
+                    unit=unit,
+                    issue_description=issue_description,
+                    claim_type=claim_type,
+                    customer_notes=entry.get("customer_notes", ""),
+                )
+                # Note: service FK is OneToOneField; leave it null here so
+                # the normal approval flow can assign/create a service later.
+                results["warranty_claims"].append(claim.id)
+            except AirconUnit.DoesNotExist:
+                results["errors"].append({"unit_id": unit_id, "error": "Unit not found"})
+            except Exception as exc:
+                results["errors"].append({"unit_id": unit_id, "error": str(exc)})
+
+        # Mark service as complementary if any units linked
+        if results["free_cleaning"] or results["warranty_claims"]:
+            if not service.is_complementary:
+                reasons = []
+                if results["free_cleaning"]:
+                    reasons.append("Free Cleaning")
+                if results["warranty_claims"]:
+                    reasons.append("Warranty")
+                service.is_complementary = True
+                service.complementary_reason = ", ".join(reasons)
+                service.save(update_fields=["is_complementary", "complementary_reason"])
+
+        return Response(results, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=["post"], url_path="recalculate-revenue")
     def recalculate_revenue(self, request, pk=None):
         """
