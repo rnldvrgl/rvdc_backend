@@ -1595,7 +1595,7 @@ class ServiceSerializer(serializers.ModelSerializer):
         # Fallback for services with no revenue yet
         total_cost = float(obj.total_revenue or 0)
         if total_cost == 0:
-            return "unpaid"
+            return "paid"
         return "unpaid"
 
     def get_payments(self, obj):

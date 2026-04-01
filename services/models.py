@@ -459,7 +459,10 @@ class Service(models.Model):
         total_paid = paid_result["total"] or Decimal("0")
         net_paid = total_paid - (self.total_refunded or Decimal("0"))
 
-        if net_paid <= 0:
+        # Zero-total services (all labor/parts free) are fully paid by definition
+        if total <= 0:
+            self.payment_status = PaymentStatus.PAID
+        elif net_paid <= 0:
             self.payment_status = PaymentStatus.UNPAID
         elif net_paid < total:
             self.payment_status = PaymentStatus.PARTIAL
