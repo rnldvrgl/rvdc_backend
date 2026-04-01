@@ -1,6 +1,8 @@
 from clients.api.filters import ClientFilter
 from clients.api.serializers import ClientSerializer
 from clients.models import Client
+from django.db import models
+from django.db.models import functions
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, permissions, serializers, status, viewsets
 from rest_framework.decorators import action
@@ -98,6 +100,53 @@ class ClientViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             )
 
         serializer.save(contact_number=contact_number)
+
+    @action(detail=False, methods=["get"], url_path="recent")
+    def recent_clients(self, request):
+        """
+        Return clients from recent sales transactions and services,
+        ordered by most recent interaction.
+        """
+        from django.db.models import Max
+
+        limit = int(request.query_params.get("limit", 10))
+
+        # Get clients with recent sales or services, ordered by latest activity
+        recent = (
+            Client.objects.filter(is_deleted=False)
+            .annotate(
+                latest_sale=Max("salestransaction__created_at"),
+                latest_service=Max("services__created_at"),
+            )
+            .filter(
+                models.Q(latest_sale__isnull=False)
+                | models.Q(latest_service__isnull=False)
+            )
+            .order_by(
+                models.functions.Coalesce("latest_sale", "latest_service").desc()
+            )[:limit]
+        )
+
+        serializer = self.get_serializer(recent, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=["post"], url_path="toggle-favorite")
+    def toggle_favorite(self, request, pk=None):
+        """Toggle the is_favorite flag on a client."""
+        client = self.get_object()
+        client.is_favorite = not client.is_favorite
+        client.save(update_fields=["is_favorite", "updated_at"])
+        return Response(
+            {"is_favorite": client.is_favorite},
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=["get"], url_path="favorites")
+    def favorite_clients(self, request):
+        """Return all favorite clients."""
+        favorites = Client.objects.filter(is_deleted=False, is_favorite=True).order_by("full_name")
+        serializer = self.get_serializer(favorites, many=True)
+        return Response(serializer.data)
 
     @action(
         detail=False,

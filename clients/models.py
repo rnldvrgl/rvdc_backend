@@ -18,6 +18,7 @@ class Client(models.Model):
     is_deleted = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
     is_blocklisted = models.BooleanField(default=False)
+    is_favorite = models.BooleanField(default=False)
 
     objects = ActiveClientManager()
     all_objects = models.Manager()
