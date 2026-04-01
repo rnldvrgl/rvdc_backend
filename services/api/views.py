@@ -18,6 +18,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from services.api.serializers import (
     ApplianceItemUsedSerializer,
     ApplianceTypeSerializer,
+    CompanyAssetSerializer,
     ServiceItemUsedSerializer,
     CreateServicePaymentSerializer,
     JobOrderTemplatePrintSerializer,
@@ -36,6 +37,7 @@ from services.business_logic import RevenueCalculator, ServicePaymentManager
 from services.models import (
     ApplianceItemUsed,
     ApplianceType,
+    CompanyAsset,
     JobOrderTemplatePrint,
     Service,
     ServiceAppliance,
@@ -687,6 +689,164 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             },
             status=status.HTTP_200_OK
         )
+
+    @action(detail=True, methods=["post"], url_path="mark-claimed", permission_classes=[IsAdminOrManager])
+    def mark_claimed(self, request, pk=None):
+        """
+        Record that the client has picked up the repaired appliance (carry-in)
+        or that RVDC has delivered it back (pull-out).
+        Stops the 2-month unclaimed clock.
+        """
+        from django.utils import timezone as tz
+        from utils.enums import ServiceMode
+
+        service = self.get_object()
+        if service.service_mode == ServiceMode.HOME_SERVICE:
+            return Response(
+                {"detail": "Home-service jobs do not have a claim/delivery step."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if service.claimed_at:
+            return Response(
+                {"detail": "Already marked as claimed.", "claimed_at": service.claimed_at},
+                status=status.HTTP_200_OK,
+            )
+        service.claimed_at = request.data.get("claimed_at") or tz.now()
+        service.save(update_fields=["claimed_at"])
+        return Response(
+            {"detail": "Marked as claimed.", "claimed_at": service.claimed_at},
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"], url_path="mark-forfeited", permission_classes=[IsAdminOrManager])
+    def mark_forfeited(self, request, pk=None):
+        """
+        Declare the appliance as company property (2-month unclaimed policy or admin decision).
+        Sets payment_status to WRITTEN_OFF and creates a CompanyAsset record.
+        """
+        from django.utils import timezone as tz
+        from services.models import PaymentStatus
+
+        service = self.get_object()
+        if service.is_forfeited:
+            return Response({"detail": "Already forfeited."}, status=status.HTTP_200_OK)
+        if service.claimed_at:
+            return Response(
+                {"detail": "Cannot forfeit a service that has already been claimed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        notes = request.data.get("forfeiture_notes", "")
+        service.is_forfeited = True
+        service.forfeited_at = tz.now()
+        service.forfeiture_type = Service.ForfeitureType.UNCLAIMED
+        service.forfeiture_notes = notes
+        service.payment_status = PaymentStatus.WRITTEN_OFF
+        service.save(update_fields=[
+            "is_forfeited", "forfeited_at", "forfeiture_type",
+            "forfeiture_notes", "payment_status",
+        ])
+
+        # Build a description of all appliances
+        appliance_descriptions = "; ".join(
+            str(a) for a in service.appliances.select_related("appliance_type").all()
+        ) or "Unspecified appliance"
+
+        asset = CompanyAsset.objects.create(
+            service=service,
+            appliance_description=appliance_descriptions,
+            acquisition_type=CompanyAsset.AcquisitionType.UNCLAIMED,
+            acquired_by=request.user,
+            condition_notes=notes,
+        )
+        return Response(
+            {
+                "detail": "Service forfeited. Appliance recorded as company asset.",
+                "asset_id": asset.id,
+                "payment_status": service.payment_status,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"], url_path="convert-to-acquisition", permission_classes=[IsAdminOrManager])
+    def convert_to_acquisition(self, request, pk=None):
+        """
+        Client agrees to sell their appliance to the company instead of paying
+        or collecting after repair. Cancels any remaining balance and records
+        a CompanyAsset at the agreed acquisition_price.
+        """
+        from django.utils import timezone as tz
+        from services.models import PaymentStatus
+
+        service = self.get_object()
+        if service.is_forfeited:
+            return Response({"detail": "Already forfeited/acquired."}, status=status.HTTP_400_BAD_REQUEST)
+
+        acquisition_price = request.data.get("acquisition_price")
+        notes = request.data.get("notes", "")
+        try:
+            acquisition_price = float(acquisition_price) if acquisition_price is not None else None
+        except (ValueError, TypeError):
+            return Response({"detail": "acquisition_price must be a number."}, status=status.HTTP_400_BAD_REQUEST)
+
+        service.is_forfeited = True
+        service.forfeited_at = tz.now()
+        service.forfeiture_type = Service.ForfeitureType.CLIENT_SOLD
+        service.forfeiture_notes = notes
+        service.acquisition_price = acquisition_price
+        service.payment_status = PaymentStatus.WRITTEN_OFF
+        service.save(update_fields=[
+            "is_forfeited", "forfeited_at", "forfeiture_type",
+            "forfeiture_notes", "acquisition_price", "payment_status",
+        ])
+
+        appliance_descriptions = "; ".join(
+            str(a) for a in service.appliances.select_related("appliance_type").all()
+        ) or "Unspecified appliance"
+
+        asset = CompanyAsset.objects.create(
+            service=service,
+            appliance_description=appliance_descriptions,
+            acquisition_type=CompanyAsset.AcquisitionType.CLIENT_SOLD,
+            acquisition_price=acquisition_price,
+            acquired_by=request.user,
+            condition_notes=notes,
+        )
+        return Response(
+            {
+                "detail": "Converted to company acquisition.",
+                "asset_id": asset.id,
+                "payment_status": service.payment_status,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=["get"], url_path="unclaimed-eligible", permission_classes=[IsAdminOrManager])
+    def unclaimed_eligible(self, request):
+        """
+        List carry-in and pull-out services that have been completed for ≥60 days
+        without being claimed. Used for the forfeiture alert dashboard.
+        """
+        from datetime import timedelta
+        from django.utils import timezone as tz
+        from utils.enums import ServiceMode
+
+        sixty_days_ago = tz.now() - timedelta(days=60)
+        qs = (
+            Service.objects.filter(
+                is_deleted=False,
+                status="completed",
+                service_mode__in=[ServiceMode.CARRY_IN, ServiceMode.PULL_OUT],
+                claimed_at__isnull=True,
+                is_forfeited=False,
+                completed_at__lte=sixty_days_ago,
+            )
+            .select_related("client", "stall")
+            .prefetch_related("appliances__appliance_type")
+            .order_by("completed_at")
+        )
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["get"], url_path="outstanding")
     def outstanding(self, request):
@@ -1379,3 +1539,54 @@ class JobOrderTemplatePrintViewSet(viewsets.ModelViewSet):
         latest = JobOrderTemplatePrint.objects.order_by("-end_number").first()
         next_num = (latest.end_number + 1) if latest else 1
         return Response({"next_number": next_num})
+
+
+# --------------------------
+# Company Asset ViewSet
+# --------------------------
+class CompanyAssetViewSet(viewsets.ModelViewSet):
+    """
+    CRUD + status management for company-owned (forfeited / acquired) appliances.
+
+    Endpoints:
+    - GET  /company-assets/              – list with optional ?service=, ?status=, ?acquisition_type=
+    - POST /company-assets/              – create (used by convert_to_acquisition action internally)
+    - GET  /company-assets/{id}/         – detail
+    - PATCH /company-assets/{id}/        – update status / notes
+    - POST /company-assets/{id}/dispose/ – mark as disposed/sold
+    """
+
+    serializer_class = CompanyAssetSerializer
+    permission_classes = [IsAdminOrManager]
+    filterset_fields = ["status", "acquisition_type", "service"]
+    ordering_fields = ["acquired_at", "status", "id"]
+    ordering = ["-acquired_at"]
+
+    def get_queryset(self):
+        qs = CompanyAsset.objects.select_related(
+            "service__client", "service_appliance", "acquired_by"
+        )
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save(acquired_by=self.request.user)
+
+    @action(detail=True, methods=["post"], url_path="dispose")
+    def dispose(self, request, pk=None):
+        """Mark asset as sold, repurposed, or disposed."""
+        asset = self.get_object()
+        new_status = request.data.get("status")
+        valid = [s[0] for s in CompanyAsset.AssetStatus.choices]
+        if new_status not in valid:
+            return Response(
+                {"detail": f"status must be one of: {valid}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        from django.utils import timezone as tz
+
+        asset.status = new_status
+        asset.disposal_notes = request.data.get("disposal_notes", "")
+        if new_status in (CompanyAsset.AssetStatus.SOLD, CompanyAsset.AssetStatus.DISPOSED, CompanyAsset.AssetStatus.REPURPOSED):
+            asset.disposed_at = tz.now()
+        asset.save()
+        return Response(CompanyAssetSerializer(asset).data)

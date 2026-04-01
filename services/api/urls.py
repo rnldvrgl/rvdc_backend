@@ -7,6 +7,7 @@ from services.api.views import (
     ServiceReceiptViewSet,
     TechnicianAssignmentViewSet,
     ApplianceTypeViewSet,
+    CompanyAssetViewSet,
     JobOrderTemplatePrintViewSet,
 )
 
@@ -24,6 +25,7 @@ router.register(
     basename="technician-assignment",
 )
 router.register(r"appliance-types", ApplianceTypeViewSet, basename="appliance-type")
+router.register(r"company-assets", CompanyAssetViewSet, basename="company-asset")
 router.register(
     r"jo-template-prints",
     JobOrderTemplatePrintViewSet,

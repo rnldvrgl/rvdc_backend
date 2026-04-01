@@ -27,6 +27,7 @@ class PaymentStatus(models.TextChoices):
     PAID = "paid", _("Paid")
     REFUNDED = "refunded", _("Refunded")
     NOT_APPLICABLE = "n/a", _("N/A (Complementary)")
+    WRITTEN_OFF = "written_off", _("Written Off (Forfeited)")
 
 
 # ----------------------------------
@@ -82,6 +83,14 @@ class BaseItemUsed(models.Model):
 # ----------------------------------
 class ApplianceType(models.Model):
     name = models.CharField(max_length=100, unique=True)
+    default_labor_warranty_months = models.PositiveIntegerField(
+        default=0,
+        help_text="Default labor warranty in months auto-applied to new service appliances of this type (0 = no default)"
+    )
+    default_unit_warranty_months = models.PositiveIntegerField(
+        default=0,
+        help_text="Default unit/parts warranty in months applied only for brand-new installation services (0 = no default)"
+    )
 
     class Meta:
         verbose_name = "Appliance Type"
@@ -201,7 +210,7 @@ class Service(models.Model):
 
     # Payment tracking
     payment_status = models.CharField(
-        max_length=10,
+        max_length=11,
         choices=PaymentStatus.choices,
         default=PaymentStatus.UNPAID,
         help_text="Payment status of this service",
@@ -317,6 +326,44 @@ class Service(models.Model):
         help_text="Reason for back job (e.g., 'Unit not cooling properly after repair')"
     )
 
+    # Completion and client claim tracking
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the service status was set to completed"
+    )
+    claimed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the client picked up the appliance or RVDC delivered it back (carry-in / pull-out)"
+    )
+
+    # Forfeiture / unclaimed appliance tracking
+    class ForfeitureType(models.TextChoices):
+        UNCLAIMED = "unclaimed", _("Unclaimed – 2-Month Policy")
+        CLIENT_SOLD = "client_sold", _("Client Sold to Company")
+
+    is_forfeited = models.BooleanField(
+        default=False,
+        help_text="Appliance declared as company property (unclaimed >2 mo or client sold)"
+    )
+    forfeited_at = models.DateTimeField(null=True, blank=True)
+    forfeiture_type = models.CharField(
+        max_length=20,
+        choices=ForfeitureType.choices,
+        blank=True,
+        null=True,
+    )
+    forfeiture_notes = models.TextField(
+        blank=True,
+        help_text="Notes on forfeiture (condition, estimated value, decision rationale)"
+    )
+    # For client-sold acquisitions: agreed acquisition price
+    acquisition_price = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Agreed price when client sells the appliance to the company"
+    )
+
     # Service-level items review tracking (mirrors appliance-level items_checked)
     service_parts_needed_notes = models.TextField(
         blank=True,
@@ -373,7 +420,19 @@ class Service(models.Model):
                 })
 
     def save(self, *args, **kwargs):
-        """Override save to run validation"""
+        """Override save to run validation and track completion time."""
+        # Auto-set completed_at the first time status is set to completed
+        if self.pk:
+            try:
+                old = Service.objects.only("status").get(pk=self.pk)
+                if old.status != ServiceStatus.COMPLETED and self.status == ServiceStatus.COMPLETED:
+                    if not self.completed_at:
+                        self.completed_at = timezone.now()
+            except Service.DoesNotExist:
+                pass
+        elif self.status == ServiceStatus.COMPLETED and not self.completed_at:
+            self.completed_at = timezone.now()
+
         if kwargs.pop('skip_validation', False):
             super().save(*args, **kwargs)
         else:
@@ -445,6 +504,12 @@ class Service(models.Model):
         # Complementary services don't require payment
         if self.is_complementary:
             self.payment_status = PaymentStatus.NOT_APPLICABLE
+            self.save(update_fields=["payment_status"], skip_validation=True)
+            return
+
+        # Forfeited services are written off — do not recalculate
+        if self.is_forfeited:
+            self.payment_status = PaymentStatus.WRITTEN_OFF
             self.save(update_fields=["payment_status"], skip_validation=True)
             return
 
@@ -916,6 +981,34 @@ class ServiceAppliance(models.Model):
     class Meta:
         ordering = ["appliance_type__name", "brand"]
 
+    def save(self, *args, **kwargs):
+        """Auto-fill warranty months from ApplianceType defaults on new records."""
+        if self._state.adding and self.appliance_type_id:
+            try:
+                at = ApplianceType.objects.get(pk=self.appliance_type_id)
+            except ApplianceType.DoesNotExist:
+                at = None
+
+            if at:
+                # Labor warranty: apply default when not explicitly set
+                if self.labor_warranty_months == 0 and at.default_labor_warranty_months > 0:
+                    self.labor_warranty_months = at.default_labor_warranty_months
+
+                # Unit warranty: only for brand-new installation services
+                is_brand_new_install = (
+                    self.unit_type == "brand_new"
+                    and self.service
+                    and getattr(self.service, "service_type", None) == ServiceType.INSTALLATION
+                )
+                if (
+                    is_brand_new_install
+                    and self.unit_warranty_months == 0
+                    and at.default_unit_warranty_months > 0
+                ):
+                    self.unit_warranty_months = at.default_unit_warranty_months
+
+        super().save(*args, **kwargs)
+
     def __str__(self):
         appliance_type = (
             self.appliance_type.name if self.appliance_type else "Unknown Type"
@@ -1148,3 +1241,83 @@ class JobOrderTemplatePrint(models.Model):
 
     def __str__(self):
         return f"JO #{self.start_number}-{self.end_number} by {self.printed_by}"
+
+
+# ----------------------------------
+# Company Asset (Forfeited / Acquired)
+# ----------------------------------
+class CompanyAsset(models.Model):
+    """
+    Tracks appliances that became company property via the 2-month unclaimed
+    policy or because the client agreed to sell the appliance to RVDC.
+    """
+
+    class AcquisitionType(models.TextChoices):
+        UNCLAIMED = "unclaimed", _("Unclaimed \u2013 2-Month Policy")
+        CLIENT_SOLD = "client_sold", _("Client Sold to Company")
+
+    class AssetStatus(models.TextChoices):
+        HOLDING = "holding", _("In Holding")
+        SOLD = "sold", _("Sold")
+        REPURPOSED = "repurposed", _("Repurposed / Used In-House")
+        DISPOSED = "disposed", _("Disposed / Scrapped")
+
+    service = models.ForeignKey(
+        Service,
+        on_delete=models.PROTECT,
+        related_name="company_assets",
+        help_text="The service where the appliance originated",
+    )
+    service_appliance = models.ForeignKey(
+        ServiceAppliance,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="company_asset_records",
+        help_text="Specific appliance record (if tracked per-appliance)",
+    )
+    appliance_description = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Brief description of the appliance (type, brand, model, serial)",
+    )
+    acquisition_type = models.CharField(
+        max_length=20,
+        choices=AcquisitionType.choices,
+    )
+    acquisition_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Agreed price for client-sold acquisitions (null for unclaimed)",
+    )
+    acquired_at = models.DateTimeField(default=timezone.now)
+    acquired_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="declared_company_assets",
+    )
+    condition_notes = models.TextField(
+        blank=True,
+        help_text="Condition of the appliance at time of acquisition",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=AssetStatus.choices,
+        default=AssetStatus.HOLDING,
+    )
+    disposed_at = models.DateTimeField(null=True, blank=True)
+    disposal_notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-acquired_at"]
+        verbose_name = "Company Asset"
+        verbose_name_plural = "Company Assets"
+
+    def __str__(self):
+        return f"{self.appliance_description or 'Asset'} from SVC-{self.service_id} ({self.get_acquisition_type_display()})"

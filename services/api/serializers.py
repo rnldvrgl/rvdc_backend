@@ -29,6 +29,7 @@ from services.business_logic import (
 from services.models import (
     ApplianceItemUsed,
     ApplianceType,
+    CompanyAsset,
     JobOrderTemplatePrint,
     PaymentType,
     Service,
@@ -47,7 +48,7 @@ class ApplianceTypeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ApplianceType
-        fields = ["id", "name"]
+        fields = ["id", "name", "default_labor_warranty_months", "default_unit_warranty_months"]
         read_only_fields = ["id"]
 
 
@@ -1532,6 +1533,15 @@ class ServiceSerializer(serializers.ModelSerializer):
             "is_back_job",
             "back_job_parent",
             "back_job_reason",
+            # Completion & claim tracking
+            "completed_at",
+            "claimed_at",
+            # Forfeiture / unclaimed policy
+            "is_forfeited",
+            "forfeited_at",
+            "forfeiture_type",
+            "forfeiture_notes",
+            "acquisition_price",
         ]
         read_only_fields = [
             "main_stall_revenue",
@@ -1551,6 +1561,8 @@ class ServiceSerializer(serializers.ModelSerializer):
             "service_items_checked",
             "service_items_checked_by",
             "service_items_checked_at",
+            "completed_at",
+            "forfeited_at",
         ]
 
     def get_fields(self):
@@ -2532,3 +2544,51 @@ class JobOrderTemplatePrintSerializer(serializers.ModelSerializer):
         if attrs["end_number"] - attrs["start_number"] + 1 > 200:
             raise ValidationError("Cannot print more than 200 templates at a time.")
         return attrs
+
+
+# ----------------------------------
+# Company Asset Serializer
+# ----------------------------------
+class CompanyAssetSerializer(serializers.ModelSerializer):
+    service_ref = serializers.SerializerMethodField()
+    client_name = serializers.SerializerMethodField()
+    declared_by_name = serializers.CharField(
+        source="acquired_by.get_full_name", read_only=True, allow_null=True
+    )
+
+    class Meta:
+        model = CompanyAsset
+        fields = [
+            "id",
+            "service",
+            "service_ref",
+            "client_name",
+            "service_appliance",
+            "appliance_description",
+            "acquisition_type",
+            "acquisition_price",
+            "acquired_at",
+            "acquired_by",
+            "declared_by_name",
+            "condition_notes",
+            "status",
+            "disposed_at",
+            "disposal_notes",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "acquired_at",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_service_ref(self, obj):
+        return f"SVC-{obj.service_id}"
+
+    def get_client_name(self, obj):
+        try:
+            return obj.service.client.full_name
+        except Exception:
+            return None
