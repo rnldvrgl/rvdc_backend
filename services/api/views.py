@@ -321,13 +321,15 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         """
         from installations.models import AirconUnit
         from installations.business_logic import FreeCleaningManager, WarrantyClaimManager
+        from services.models import ServiceAppliance
 
         service = self.get_object()
 
         free_cleaning_unit_ids = request.data.get("free_cleaning_unit_ids", [])
         warranty_unit_ids = request.data.get("warranty_unit_ids", [])
+        warranty_appliance_ids = request.data.get("warranty_appliance_ids", [])
 
-        results = {"free_cleaning": [], "warranty_claims": [], "errors": []}
+        results = {"free_cleaning": [], "warranty_claims": [], "warranty_appliances": [], "errors": []}
 
         # --- Free cleaning units ---
         for unit_id in free_cleaning_unit_ids:
@@ -367,8 +369,16 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             except Exception as exc:
                 results["errors"].append({"unit_id": unit_id, "error": str(exc)})
 
+        # --- Warranty appliances (from past repairs) ---
+        for appliance_id in warranty_appliance_ids:
+            try:
+                appliance = ServiceAppliance.objects.get(id=appliance_id)
+                results["warranty_appliances"].append(appliance_id)
+            except ServiceAppliance.DoesNotExist:
+                results["errors"].append({"appliance_id": appliance_id, "error": "Appliance not found"})
+
         # Mark service as complementary if any units linked
-        if results["free_cleaning"] or results["warranty_claims"]:
+        if results["free_cleaning"] or results["warranty_claims"] or results["warranty_appliances"]:
             if not service.is_complementary:
                 reasons = []
                 if results["free_cleaning"]:
@@ -843,7 +853,10 @@ class ServiceApplianceViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return (
+        from django.utils import timezone
+        from django.db.models import Q
+
+        qs = (
             ServiceAppliance.objects.all()
             .select_related("service", "appliance_type")
             .prefetch_related(
@@ -852,6 +865,20 @@ class ServiceApplianceViewSet(viewsets.ModelViewSet):
                 "technician_assignments__technician",
             )
         )
+
+        client_id = self.request.query_params.get("client")
+        if client_id:
+            qs = qs.filter(service__client_id=client_id)
+
+        # ?warranty_active=true  →  only appliances with at least one active warranty
+        if self.request.query_params.get("warranty_active") == "true":
+            today = timezone.now().date()
+            qs = qs.filter(
+                Q(labor_warranty_end_date__gte=today) |
+                Q(unit_warranty_end_date__gte=today)
+            ).filter(warranty_start_date__lte=today)
+
+        return qs
 
     def perform_create(self, serializer):
         """Create appliance, recalculate revenue, and notify clerks."""
