@@ -34,32 +34,9 @@ class StockReservationManager:
     """Manages stock reservations for service parts."""
 
     @staticmethod
-    def _get_tolerance_buffer(item, quantity):
-        """
-        Calculate the tolerance buffer for an item.
-
-        Items like freon (kg) or copper tubes (ft) have a waste_tolerance_percentage
-        that accounts for measurement imprecision when dispensing.
-
-        Returns:
-            Decimal: The tolerance buffer amount
-            (e.g., 5% tolerance on 10kg = 0.5kg buffer)
-        """
-        tolerance_pct = getattr(item, 'waste_tolerance_percentage', None) or Decimal('0')
-        if tolerance_pct > 0:
-            return (Decimal(str(quantity)) * tolerance_pct / Decimal('100')).quantize(
-                Decimal('0.01'), rounding=ROUND_HALF_UP
-            )
-        return Decimal('0')
-
-    @staticmethod
     def reserve_stock(item, quantity, stall_stock=None):
         """
         Reserve stock for a service part.
-
-        If the item has a waste_tolerance_percentage, the availability check
-        allows reservation when stock is within the tolerance range.
-        For example: need 10kg freon, 5% tolerance → allow if available >= 9.50kg.
 
         Args:
             item: The Item to reserve
@@ -95,23 +72,13 @@ class StockReservationManager:
             available = stall_stock.quantity - stall_stock.reserved_quantity
             quantity_dec = Decimal(str(quantity))
 
-            # Apply waste tolerance: allow reservation if stock is within tolerance
-            tolerance_buffer = StockReservationManager._get_tolerance_buffer(item, quantity_dec)
-            minimum_required = max(quantity_dec - tolerance_buffer, Decimal('0'))
-
-            if available < minimum_required:
-                tolerance_note = ""
-                if tolerance_buffer > 0:
-                    tolerance_note = f" (with {item.waste_tolerance_percentage}% waste tolerance)"
+            if available < quantity_dec:
                 raise ValidationError(
-                    f"Insufficient stock for {item.name}{tolerance_note}. "
+                    f"Insufficient stock for {item.name}. "
                     f"Available: {available}, Requested: {quantity}"
                 )
 
-            # Reserve the requested amount (not the tolerance-adjusted minimum)
-            # If available < quantity but >= minimum_required, reserve what's available
-            actual_reserve = min(quantity_dec, available)
-            stall_stock.reserved_quantity += actual_reserve
+            stall_stock.reserved_quantity += quantity_dec
             stall_stock.save(update_fields=['reserved_quantity', 'updated_at'])
 
             return stall_stock
@@ -142,11 +109,6 @@ class StockReservationManager:
         """
         Convert reservation to actual consumption (deduct from quantity and reserved_quantity).
 
-        Tolerance-aware: If the item has waste_tolerance_percentage, the actual
-        consumption may differ slightly from the reserved amount. The method
-        handles the case where actual usage exceeds reservation within tolerance
-        by adjusting the reserved_quantity accordingly.
-
         Args:
             item: The Item to consume
             quantity: Actual quantity consumed (may differ from reserved)
@@ -159,22 +121,11 @@ class StockReservationManager:
             stock = Stock.objects.select_for_update().get(pk=stall_stock.pk)
             quantity_dec = Decimal(str(quantity))
 
-            # For items with waste tolerance, actual consumption may slightly
-            # exceed the reserved amount. Allow this within the tolerance range.
             if quantity_dec > stock.reserved_quantity:
-                tolerance_buffer = StockReservationManager._get_tolerance_buffer(
-                    item, quantity_dec
+                raise ValidationError(
+                    f"Cannot consume {quantity} of {item.name}: only "
+                    f"{stock.reserved_quantity} reserved."
                 )
-                over_reserved = quantity_dec - stock.reserved_quantity
-                if over_reserved > tolerance_buffer:
-                    raise ValidationError(
-                        f"Cannot consume {quantity} of {item.name}: only "
-                        f"{stock.reserved_quantity} reserved "
-                        f"(tolerance allows +{tolerance_buffer})."
-                    )
-                # Within tolerance: adjust reserved to match actual
-                # (so the deduction below zeroes it cleanly)
-                stock.reserved_quantity = quantity_dec
 
             if quantity_dec > stock.quantity:
                 raise ValidationError(

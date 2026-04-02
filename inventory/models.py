@@ -3,7 +3,7 @@ import uuid
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.core.validators import MinValueValidator, MaxValueValidator
+from django.core.validators import MinValueValidator
 from django.db import models
 
 
@@ -90,13 +90,6 @@ class Item(models.Model):
     cost_price = models.DecimalField(
         max_digits=10, decimal_places=2, default=0, null=True, blank=True,
         validators=[MinValueValidator(Decimal("0"))],
-    )
-    waste_tolerance_percentage = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        default=0,
-        validators=[MinValueValidator(Decimal("0")), MaxValueValidator(Decimal("100"))],
-        help_text="Acceptable waste/loss % when dispensing (e.g. 5.00 = 5% tolerance for freon, copper tubes).",
     )
     is_tracked = models.BooleanField(
         default=True,
