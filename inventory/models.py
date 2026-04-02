@@ -98,6 +98,14 @@ class Item(models.Model):
         validators=[MinValueValidator(Decimal("0")), MaxValueValidator(Decimal("100"))],
         help_text="Acceptable waste/loss % when dispensing (e.g. 5.00 = 5% tolerance for freon, copper tubes).",
     )
+    is_tracked = models.BooleanField(
+        default=True,
+        help_text=(
+            "If True, stock is maintained in inventory. "
+            "If False, this is a catalogue-only / custom item — no stock deducted, "
+            "but pricing is still sourced from this record."
+        ),
+    )
     is_deleted = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

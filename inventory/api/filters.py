@@ -99,6 +99,7 @@ class ItemFilter(filters.FilterSet):
     )
     cost_price = filters.BooleanFilter(method=make_zero_filter("cost_price"))
     retail_price = filters.BooleanFilter(method=make_zero_filter("retail_price"))
+    is_tracked = filters.BooleanFilter(field_name="is_tracked")
 
     class Meta:
         model = Item
@@ -109,4 +110,5 @@ class ItemFilter(filters.FilterSet):
             "technician_price",
             "cost_price",
             "retail_price",
+            "is_tracked",
         ]

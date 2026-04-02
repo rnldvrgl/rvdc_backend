@@ -548,6 +548,191 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         return Response(results)
 
+    @action(detail=False, methods=["get"], url_path="custom-migration-summary", permission_classes=[IsAdminUser])
+    def custom_migration_summary(self, request):
+        """
+        Returns all unique custom-item descriptions that still have item=null
+        across SalesItem, ApplianceItemUsed, and ServiceItemUsed, grouped and
+        annotated with usage counts and suggested inventory matches.
+        """
+        import re
+        from sales.models import SalesItem
+        from services.models import ApplianceItemUsed, ServiceItemUsed
+
+        # ---- Aggregate unique descriptions from all three tables ----
+        from django.db.models import Count, Avg
+
+        si_rows = (
+            SalesItem.objects.filter(item__isnull=True)
+            .exclude(description="")
+            .values("description")
+            .annotate(count=Count("id"), avg_price=Avg("final_price_per_unit"))
+        )
+
+        appliance_rows = (
+            ApplianceItemUsed.objects.filter(item__isnull=True)
+            .exclude(custom_description="")
+            .values("custom_description")
+            .annotate(count=Count("id"), avg_price=Avg("custom_price"))
+        )
+
+        service_rows = (
+            ServiceItemUsed.objects.filter(item__isnull=True)
+            .exclude(custom_description="")
+            .values("custom_description")
+            .annotate(count=Count("id"), avg_price=Avg("custom_price"))
+        )
+
+        # Merge into a single dict keyed by normalised description
+        aggregated: dict[str, dict] = {}
+        for row in si_rows:
+            key = row["description"].strip().lower()
+            if key not in aggregated:
+                aggregated[key] = {"description": row["description"].strip(), "count": 0, "avg_price": None, "sources": []}
+            aggregated[key]["count"] += row["count"]
+            aggregated[key]["avg_price"] = row["avg_price"]
+            aggregated[key]["sources"].append("sales")
+
+        for row in appliance_rows:
+            key = row["custom_description"].strip().lower()
+            if key not in aggregated:
+                aggregated[key] = {"description": row["custom_description"].strip(), "count": 0, "avg_price": None, "sources": []}
+            aggregated[key]["count"] += row["count"]
+            if aggregated[key]["avg_price"] is None:
+                aggregated[key]["avg_price"] = row["avg_price"]
+            aggregated[key]["sources"].append("service_appliance")
+
+        for row in service_rows:
+            key = row["custom_description"].strip().lower()
+            if key not in aggregated:
+                aggregated[key] = {"description": row["custom_description"].strip(), "count": 0, "avg_price": None, "sources": []}
+            aggregated[key]["count"] += row["count"]
+            if aggregated[key]["avg_price"] is None:
+                aggregated[key]["avg_price"] = row["avg_price"]
+            aggregated[key]["sources"].append("service_level")
+
+        # ---- Suggest matches for each description ----
+        all_items = list(Item.objects.filter(is_deleted=False).values("id", "name", "sku", "retail_price", "is_tracked"))
+
+        def find_suggestions(desc):
+            normalised = re.sub(r"\s+", " ", desc.strip().lower())
+            tokens = set(normalised.split())
+            suggestions = []
+            seen_ids: set[int] = set()
+
+            for item in all_items:
+                item_name_lower = item["name"].lower()
+                if item_name_lower == normalised:
+                    suggestions.insert(0, {**item, "match_type": "exact"})
+                    seen_ids.add(item["id"])
+                    continue
+                if normalised in item_name_lower or item_name_lower in normalised:
+                    if item["id"] not in seen_ids:
+                        suggestions.append({**item, "match_type": "contains"})
+                        seen_ids.add(item["id"])
+                    continue
+                item_tokens = set(item_name_lower.split())
+                overlap = len(tokens & item_tokens)
+                total = max(len(tokens | item_tokens), 1)
+                if overlap / total >= 0.4:
+                    if item["id"] not in seen_ids:
+                        suggestions.append({**item, "match_type": "similar"})
+                        seen_ids.add(item["id"])
+
+            return suggestions[:5]
+
+        results = []
+        for entry in sorted(aggregated.values(), key=lambda x: -x["count"]):
+            entry["suggestions"] = find_suggestions(entry["description"])
+            entry["avg_price"] = float(entry["avg_price"]) if entry["avg_price"] else None
+            entry["sources"] = list(set(entry["sources"]))
+            results.append(entry)
+
+        return Response(results)
+
+    @action(detail=False, methods=["post"], url_path="link-custom-items", permission_classes=[IsAdminUser])
+    def link_custom_items(self, request):
+        """
+        Links all item=null rows that match a given description to an existing or
+        new untracked Item. Also supports creating the untracked item on the fly.
+
+        Body:
+          description    str   — the custom description to match (case-insensitive)
+          item_id        int   — existing Item to link to (mutually exclusive with create_item)
+          create_item    bool  — if True, create a new untracked Item from name+price
+          item_name      str   — name for the new item (used when create_item=True)
+          item_price     dec   — retail_price for the new item (used when create_item=True)
+          item_cost      dec   — cost_price for the new item (optional)
+
+        Returns: { linked: int, item: {id, name, is_tracked} }
+        """
+        from sales.models import SalesItem
+        from services.models import ApplianceItemUsed, ServiceItemUsed
+        from django.db import transaction
+
+        description = (request.data.get("description") or "").strip()
+        if not description:
+            return Response({"detail": "description is required."}, status=400)
+
+        item_id = request.data.get("item_id")
+        create_item_flag = bool(request.data.get("create_item", False))
+
+        if not item_id and not create_item_flag:
+            return Response({"detail": "Provide either item_id or create_item=true."}, status=400)
+
+        with transaction.atomic():
+            if create_item_flag:
+                item_name = (request.data.get("item_name") or description).strip()
+                try:
+                    item_price = float(request.data.get("item_price") or 0)
+                    item_cost = float(request.data.get("item_cost") or 0)
+                except (ValueError, TypeError):
+                    return Response({"detail": "item_price and item_cost must be numbers."}, status=400)
+
+                target_item = Item(
+                    name=item_name,
+                    retail_price=item_price,
+                    cost_price=item_cost or None,
+                    is_tracked=False,
+                )
+                target_item.save()
+            else:
+                try:
+                    target_item = Item.objects.get(pk=item_id)
+                except Item.DoesNotExist:
+                    return Response({"detail": "Item not found."}, status=404)
+
+            total_linked = 0
+
+            # SalesItem: match by description
+            si_qs = SalesItem.objects.filter(item__isnull=True, description__iexact=description)
+            count = si_qs.count()
+            si_qs.update(item=target_item)
+            total_linked += count
+
+            # ApplianceItemUsed: match by custom_description
+            aiu_qs = ApplianceItemUsed.objects.filter(item__isnull=True, custom_description__iexact=description)
+            count = aiu_qs.count()
+            aiu_qs.update(item=target_item)
+            total_linked += count
+
+            # ServiceItemUsed: match by custom_description
+            siu_qs = ServiceItemUsed.objects.filter(item__isnull=True, custom_description__iexact=description)
+            count = siu_qs.count()
+            siu_qs.update(item=target_item)
+            total_linked += count
+
+        return Response({
+            "linked": total_linked,
+            "item": {
+                "id": target_item.id,
+                "name": target_item.name,
+                "sku": target_item.sku,
+                "retail_price": float(target_item.retail_price),
+                "is_tracked": target_item.is_tracked,
+            },
+        })
+
 
 class StallViewSet(viewsets.ModelViewSet):
     queryset = Stall.objects.all()

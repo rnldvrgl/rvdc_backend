@@ -33,6 +33,7 @@ def create_item_with_initial_stock(validated_data, user=None):
         unit_of_measure=validated_data.get("unit_of_measure", "pcs"),
         waste_tolerance_percentage=validated_data.get("waste_tolerance_percentage", 0),
         description=validated_data.get("description"),
+        is_tracked=validated_data.get("is_tracked", True),
     )
 
     initial_stock_quantity = validated_data.get("initial_stock_quantity", 0)
