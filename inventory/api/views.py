@@ -1003,7 +1003,7 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         This bypasses the stock room process for quick inventory sync.
         """
         stock = self.get_object()
-        
+
         # Check permissions
         if not (request.user.role == "admin" or user_can_manage_stall(request.user, stock.stall)):
             return Response(
@@ -1110,7 +1110,7 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     def audit(self, request, pk=None):
         """
         Stock audit/reconciliation tool (admin only).
-        
+
         GET: Returns the current stock breakdown and active reservations.
         POST: Accepts physical_count and adjusts system quantity to match,
               preserving reserved_quantity.
