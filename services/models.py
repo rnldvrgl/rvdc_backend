@@ -916,6 +916,36 @@ class ServiceAppliance(models.Model):
         help_text="When items were confirmed"
     )
 
+    # Per-appliance claiming / forfeiture tracking
+    claimed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When this specific appliance was claimed/collected by the client",
+    )
+    is_forfeited = models.BooleanField(
+        default=False,
+        help_text="Whether this appliance has been forfeited or acquired by the company",
+    )
+    forfeiture_type = models.CharField(
+        max_length=20,
+        choices=[("unclaimed", "Unclaimed"), ("client_sold", "Client Sold")],
+        null=True,
+        blank=True,
+        help_text="How the appliance became company property",
+    )
+    forfeiture_notes = models.TextField(
+        blank=True,
+        default="",
+        help_text="Additional notes on the forfeiture / acquisition",
+    )
+    acquisition_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Price agreed upon when the client sells the appliance to the company",
+    )
+
     @property
     def discounted_labor_fee(self):
         """Labor fee after item-level discount"""

@@ -1121,6 +1121,173 @@ class ServiceApplianceViewSet(viewsets.ModelViewSet):
             "items_checked_at": appliance.items_checked_at,
         })
 
+    @action(detail=True, methods=["post"], url_path="mark-claimed", permission_classes=[IsAdminOrManager])
+    def mark_claimed(self, request, pk=None):
+        """
+        Record that the client has collected this specific appliance.
+        Updates the service-level claimed_at when all appliances are claimed.
+        """
+        from django.utils import timezone as tz
+        from utils.enums import ServiceMode
+
+        appliance = self.get_object()
+        service = appliance.service
+
+        if service.service_mode == ServiceMode.HOME_SERVICE:
+            return Response(
+                {"detail": "Home-service jobs do not have a claim/delivery step."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if appliance.claimed_at:
+            return Response(
+                {"detail": "Already marked as claimed.", "claimed_at": appliance.claimed_at},
+                status=status.HTTP_200_OK,
+            )
+        if appliance.is_forfeited:
+            return Response(
+                {"detail": "This appliance has already been forfeited/acquired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        appliance.claimed_at = request.data.get("claimed_at") or tz.now()
+        appliance.save(update_fields=["claimed_at"])
+
+        # Update service-level claimed_at if every appliance is now claimed
+        all_appliances = list(service.appliances.all())
+        if all(a.claimed_at for a in all_appliances):
+            service.claimed_at = tz.now()
+            service.save(update_fields=["claimed_at"])
+
+        return Response(
+            {"detail": "Appliance marked as claimed.", "claimed_at": appliance.claimed_at},
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"], url_path="mark-forfeited", permission_classes=[IsAdminOrManager])
+    def mark_forfeited(self, request, pk=None):
+        """
+        Declare this specific appliance as company property (2-month unclaimed policy).
+        Creates an individual CompanyAsset record for this appliance.
+        """
+        from django.utils import timezone as tz
+        from services.models import PaymentStatus, CompanyAsset
+
+        appliance = self.get_object()
+        service = appliance.service
+
+        if appliance.is_forfeited:
+            return Response({"detail": "Already forfeited."}, status=status.HTTP_200_OK)
+        if appliance.claimed_at:
+            return Response(
+                {"detail": "Cannot forfeit an appliance that has already been claimed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        notes = request.data.get("forfeiture_notes", "")
+        appliance.is_forfeited = True
+        appliance.forfeiture_type = "unclaimed"
+        appliance.forfeiture_notes = notes
+        appliance.save(update_fields=["is_forfeited", "forfeiture_type", "forfeiture_notes"])
+
+        asset = CompanyAsset.objects.create(
+            service=service,
+            service_appliance=appliance,
+            appliance_description=str(appliance),
+            acquisition_type=CompanyAsset.AcquisitionType.UNCLAIMED,
+            acquired_by=request.user,
+            condition_notes=notes,
+        )
+
+        # Update service-level if every appliance is now either claimed or forfeited
+        all_appliances = list(service.appliances.all())
+        all_resolved = all(a.claimed_at or a.is_forfeited for a in all_appliances)
+        any_forfeited = any(a.is_forfeited for a in all_appliances)
+        if all_resolved and any_forfeited and not service.is_forfeited:
+            service.is_forfeited = True
+            service.forfeited_at = tz.now()
+            service.forfeiture_type = Service.ForfeitureType.UNCLAIMED
+            service.forfeiture_notes = notes
+            service.payment_status = PaymentStatus.WRITTEN_OFF
+            service.save(update_fields=[
+                "is_forfeited", "forfeited_at", "forfeiture_type",
+                "forfeiture_notes", "payment_status",
+            ])
+
+        return Response(
+            {
+                "detail": "Appliance forfeited and recorded as company asset.",
+                "asset_id": asset.id,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"], url_path="convert-to-acquisition", permission_classes=[IsAdminOrManager])
+    def convert_to_acquisition(self, request, pk=None):
+        """
+        Client agrees to sell this specific appliance to the company.
+        Creates an individual CompanyAsset record at the agreed acquisition_price.
+        """
+        from django.utils import timezone as tz
+        from services.models import PaymentStatus, CompanyAsset
+
+        appliance = self.get_object()
+        service = appliance.service
+
+        if appliance.is_forfeited:
+            return Response({"detail": "Already forfeited/acquired."}, status=status.HTTP_400_BAD_REQUEST)
+        if appliance.claimed_at:
+            return Response(
+                {"detail": "Cannot acquire an appliance that has already been claimed."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        acquisition_price = request.data.get("acquisition_price")
+        notes = request.data.get("notes", "")
+        try:
+            acquisition_price = float(acquisition_price) if acquisition_price is not None else None
+        except (ValueError, TypeError):
+            return Response({"detail": "acquisition_price must be a number."}, status=status.HTTP_400_BAD_REQUEST)
+
+        appliance.is_forfeited = True
+        appliance.forfeiture_type = "client_sold"
+        appliance.forfeiture_notes = notes
+        appliance.acquisition_price = acquisition_price
+        appliance.save(update_fields=["is_forfeited", "forfeiture_type", "forfeiture_notes", "acquisition_price"])
+
+        asset = CompanyAsset.objects.create(
+            service=service,
+            service_appliance=appliance,
+            appliance_description=str(appliance),
+            acquisition_type=CompanyAsset.AcquisitionType.CLIENT_SOLD,
+            acquisition_price=acquisition_price,
+            acquired_by=request.user,
+            condition_notes=notes,
+        )
+
+        # Update service-level if every appliance is now either claimed or forfeited
+        all_appliances = list(service.appliances.all())
+        all_resolved = all(a.claimed_at or a.is_forfeited for a in all_appliances)
+        any_forfeited = any(a.is_forfeited for a in all_appliances)
+        if all_resolved and any_forfeited and not service.is_forfeited:
+            service.is_forfeited = True
+            service.forfeited_at = tz.now()
+            service.forfeiture_type = Service.ForfeitureType.CLIENT_SOLD
+            service.forfeiture_notes = notes
+            service.acquisition_price = acquisition_price
+            service.payment_status = PaymentStatus.WRITTEN_OFF
+            service.save(update_fields=[
+                "is_forfeited", "forfeited_at", "forfeiture_type",
+                "forfeiture_notes", "acquisition_price", "payment_status",
+            ])
+
+        return Response(
+            {
+                "detail": "Appliance converted to company acquisition.",
+                "asset_id": asset.id,
+            },
+            status=status.HTTP_200_OK,
+        )
+
     def _notify_clerks_items_pending(self, appliance):
         """Send notification to clerks about appliance needing item review."""
         try:
