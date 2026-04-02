@@ -76,10 +76,10 @@ class RemittanceRecord(models.Model):
         collected_cash = self.total_sales_cash or Decimal("0")
         expenses = self.total_expenses or Decimal("0")
 
-        # Use THIS remittance's date to look up the previous day's COD
-        remittance_date = self.created_at.date() if self.created_at else None
-        if remittance_date:
-            cod_info = RemittanceRecord.get_cod_for_date(self.stall, remittance_date)
+        # Use remittance_date (business date) to look up the previous COD
+        target = self.remittance_date or (self.created_at.date() if self.created_at else None)
+        if target:
+            cod_info = RemittanceRecord.get_cod_for_date(self.stall, target)
         else:
             cod_info = RemittanceRecord.get_cod_for_today(self.stall)
         cod_yesterday = Decimal(cod_info.get("cod_amount", 0) or 0)
@@ -89,35 +89,38 @@ class RemittanceRecord(models.Model):
     @classmethod
     def get_cod_for_date(cls, stall: Stall, target_date) -> dict:
         """
-        Returns COD info for a given date based on the remittance of the day before.
-        If no remittance was made the day before, fallback to that day's total_sales_cash.
+        Returns COD info based on the most recent remittance before target_date.
+        Handles gaps from closed days by looking back to find the last actual remittance
+        instead of only checking the previous day.
         """
-        previous_day = target_date - timedelta(days=1)
+        remittance = (
+            cls.objects
+            .filter(stall=stall, remittance_date__lt=target_date)
+            .order_by("-remittance_date")
+            .first()
+        )
 
-        try:
-            remittance = cls.objects.get(stall=stall, remittance_date=previous_day)
-
-            if hasattr(remittance, "cash_breakdown"):
-                return {
-                    "cod_amount": remittance.cash_breakdown.cod_amount,
-                    "cod_breakdown": remittance.cash_breakdown.cod_breakdown,
-                    "source": "remitted",
-                    "date": str(previous_day),
-                }
-            else:
-                return {
-                    "cod_amount": 0,
-                    "cod_breakdown": {},
-                    "source": "remitted (no breakdown)",
-                    "date": str(previous_day),
-                }
-
-        except cls.DoesNotExist:
+        if remittance is None:
             return {
                 "cod_amount": 0,
                 "cod_breakdown": None,
                 "source": "no_remittance",
-                "date": str(previous_day),
+                "date": str(target_date - timedelta(days=1)),
+            }
+
+        if hasattr(remittance, "cash_breakdown"):
+            return {
+                "cod_amount": remittance.cash_breakdown.cod_amount,
+                "cod_breakdown": remittance.cash_breakdown.cod_breakdown,
+                "source": "remitted",
+                "date": str(remittance.remittance_date),
+            }
+        else:
+            return {
+                "cod_amount": 0,
+                "cod_breakdown": {},
+                "source": "remitted (no breakdown)",
+                "date": str(remittance.remittance_date),
             }
 
     @classmethod
