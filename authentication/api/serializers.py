@@ -61,6 +61,7 @@ class LoginSerializer(serializers.Serializer):
     username = serializers.CharField()
     password = serializers.CharField(write_only=True)
     device_id = serializers.CharField(required=False, allow_blank=True, max_length=128)
+    remember_me = serializers.BooleanField(required=False, default=True)
 
     def validate(self, data):
         user = authenticate(
@@ -100,6 +101,7 @@ class LoginSerializer(serializers.Serializer):
             request=request,
             device_id=data.get("device_id", ""),
             access_jti=access_jti,
+            remember_me=data.get("remember_me", True),
         )
 
         user_data = UserSerializer(user, context=self.context).data
@@ -251,6 +253,9 @@ class AuthSessionSerializer(serializers.ModelSerializer):
             "user",
             "device_id",
             "device_label",
+            "browser_name",
+            "os_name",
+            "remember_me",
             "ip_address",
             "user_agent",
             "is_active",

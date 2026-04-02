@@ -12,8 +12,11 @@ class AuthSession(models.Model):
 	access_jti = models.CharField(max_length=64, blank=True, default="", db_index=True)
 	device_id = models.CharField(max_length=128, blank=True, default="")
 	device_label = models.CharField(max_length=255, blank=True, default="Unknown device")
+	browser_name = models.CharField(max_length=100, blank=True, default="")
+	os_name = models.CharField(max_length=100, blank=True, default="")
 	user_agent = models.TextField(blank=True, default="")
 	ip_address = models.GenericIPAddressField(null=True, blank=True)
+	remember_me = models.BooleanField(default=True)
 	is_active = models.BooleanField(default=True)
 	created_at = models.DateTimeField(auto_now_add=True)
 	last_seen_at = models.DateTimeField(default=timezone.now)
@@ -29,5 +32,3 @@ class AuthSession(models.Model):
 
 	def __str__(self):
 		return f"{self.user_id} - {self.device_label} - {'active' if self.is_active else 'revoked'}"
-
-# Create your models here.

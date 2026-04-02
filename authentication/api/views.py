@@ -2,6 +2,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from rest_framework_simplejwt.views import TokenRefreshView
+from django.db.models import Q
+from django.utils import timezone
 from authentication.api.serializers import (
     AuthSessionSerializer,
     DeviceAwareTokenRefreshSerializer,
@@ -94,7 +96,11 @@ class SessionListView(APIView):
 
         sessions = AuthSession.objects.filter(user=request.user)
         if not include_revoked:
-            sessions = sessions.filter(is_active=True)
+            sessions = sessions.filter(
+                is_active=True
+            ).filter(
+                Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())
+            )
 
         device_id = request.query_params.get("device_id") or request.headers.get(
             "X-Device-ID", ""
@@ -134,7 +140,11 @@ class AdminSessionListView(APIView):
 
         sessions = AuthSession.objects.select_related("user").all()
         if not include_revoked:
-            sessions = sessions.filter(is_active=True)
+            sessions = sessions.filter(
+                is_active=True
+            ).filter(
+                Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())
+            )
 
         # Optionally filter by user_id
         user_id = request.query_params.get("user_id")
