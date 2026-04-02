@@ -204,6 +204,9 @@ class DeviceAwareTokenRefreshSerializer(TokenRefreshSerializer):
     device_id = serializers.CharField(required=False, allow_blank=True, max_length=128)
 
     def validate(self, attrs):
+        import logging
+        logger = logging.getLogger(__name__)
+
         device_id = attrs.get("device_id", "")
         old_refresh = attrs.get("refresh", "")
         data = super().validate(attrs)
@@ -224,9 +227,15 @@ class DeviceAwareTokenRefreshSerializer(TokenRefreshSerializer):
                 device_id=device_id,
                 new_access_jti=new_access_jti,
             )
-        except Exception:
-            # Session tracking should not block token refresh.
-            pass
+        except Exception as exc:
+            # Session tracking must not block the token refresh, but we log the
+            # error so access_jti desync issues are visible in server logs.
+            logger.warning(
+                "rotate_session_refresh failed during token refresh "
+                "(session tracking may be out of sync): %s",
+                exc,
+                exc_info=True,
+            )
 
         return data
 
