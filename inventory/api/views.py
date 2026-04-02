@@ -108,6 +108,12 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                     {"label": "Is Not Zero", "value": "false"},
                 ],
             },
+            "is_tracked": {
+                "options": lambda: [
+                    {"label": "Tracked", "value": "true"},
+                    {"label": "Untracked", "value": "false"},
+                ],
+            },
         }
 
         ordering_config = [
@@ -121,6 +127,20 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             filters_config,
             ordering_config,
         )
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="toggle-tracked",
+        permission_classes=[IsAdminUser],
+    )
+    def toggle_tracked(self, request, pk=None):
+        """Toggle the is_tracked flag on an item."""
+        item = self.get_object()
+        item.is_tracked = not item.is_tracked
+        item.save(update_fields=["is_tracked", "updated_at"])
+        serializer = self.get_serializer(item)
+        return Response(serializer.data)
 
     @action(
         detail=False,
