@@ -294,6 +294,7 @@ class ServerMaintenanceView(APIView):
         {"id": "remove_duplicate_clients", "label": "Remove Duplicate Clients", "description": "Remove duplicate client records by contact number, keeping the oldest", "app": "clients", "category": "maintenance", "destructive": True},
         {"id": "add_philippine_holidays", "label": "Add PH Holidays", "description": "Add Philippine holidays for the current year (skip existing)", "app": "payroll", "args": ["--skip-existing"], "category": "payroll", "destructive": False},
         {"id": "fix_zero_balance_payment_status", "label": "Fix Free Service Payment Status", "description": "Fix completed services with free labor/no parts stuck as unpaid", "app": "services", "category": "sales", "destructive": False},
+        {"id": "migrate_custom_items", "label": "Migrate Custom Items", "description": "Create untracked items and link historical custom/free-text rows to inventory items", "app": "inventory", "args": ["--apply"], "category": "inventory", "destructive": True},
     ]
 
     def get(self, request):
