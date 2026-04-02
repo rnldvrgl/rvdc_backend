@@ -259,21 +259,13 @@ class ApplianceItemUsedSerializer(serializers.ModelSerializer):
 
             if additional_qty_needed > 0:
                 available = stock.quantity - stock.reserved_quantity
-                tolerance_buffer = StockReservationManager._get_tolerance_buffer(item, additional_qty_needed)
-                minimum_required = max(additional_qty_needed - tolerance_buffer, Decimal('0'))
-
-                if available < minimum_required:
-                    # Insufficient stock on update — flag for stock request
+                if available < additional_qty_needed:
                     self._insufficient_stock = True
                     self._stock_deficit = max(additional_qty_needed - available, Decimal('0'))
         else:
             available = stock.quantity - stock.reserved_quantity
             qty_dec = Decimal(str(qty))
-            tolerance_buffer = StockReservationManager._get_tolerance_buffer(item, qty_dec)
-            minimum_required = max(qty_dec - tolerance_buffer, Decimal('0'))
-
-            if available < minimum_required:
-                # Insufficient stock — flag for stock request instead of error
+            if available < qty_dec:
                 self._insufficient_stock = True
                 self._stock_deficit = max(qty_dec - available, Decimal('0'))
 
@@ -654,19 +646,13 @@ class ServiceItemUsedSerializer(serializers.ModelSerializer):
 
             if additional_qty_needed > 0:
                 available = stock.quantity - stock.reserved_quantity
-                tolerance_buffer = StockReservationManager._get_tolerance_buffer(item, additional_qty_needed)
-                minimum_required = max(additional_qty_needed - tolerance_buffer, Decimal('0'))
-
-                if available < minimum_required:
+                if available < additional_qty_needed:
                     self._insufficient_stock = True
                     self._stock_deficit = max(additional_qty_needed - available, Decimal('0'))
         else:
             available = stock.quantity - stock.reserved_quantity
             qty_dec = Decimal(str(qty))
-            tolerance_buffer = StockReservationManager._get_tolerance_buffer(item, qty_dec)
-            minimum_required = max(qty_dec - tolerance_buffer, Decimal('0'))
-
-            if available < minimum_required:
+            if available < qty_dec:
                 self._insufficient_stock = True
                 self._stock_deficit = max(qty_dec - available, Decimal('0'))
 
@@ -1607,7 +1593,7 @@ class ServiceSerializer(serializers.ModelSerializer):
         # Fallback for services with no revenue yet
         total_cost = float(obj.total_revenue or 0)
         if total_cost == 0:
-            return "paid"
+            return "pending"
         return "unpaid"
 
     def get_payments(self, obj):
