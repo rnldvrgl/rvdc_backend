@@ -373,8 +373,9 @@ class OutstandingAnalytics:
 
         # Outstanding services
         service_qs = Service.objects.filter(
+            is_deleted=False,
             payment_status__in=[ServicePaymentStatus.UNPAID, ServicePaymentStatus.PARTIAL],
-        )
+        ).exclude(status='cancelled')
         if stall:
             service_qs = service_qs.filter(stall=stall)
 
@@ -382,11 +383,12 @@ class OutstandingAnalytics:
             count=Count("id"),
             total_revenue=Sum("total_revenue"),
             total_paid=Sum("payments__amount"),
+            total_refunded=Sum("total_refunded"),
         )
 
         service_balance = (
             (service_outstanding["total_revenue"] or Decimal("0")) -
-            (service_outstanding["total_paid"] or Decimal("0"))
+            ((service_outstanding["total_paid"] or Decimal("0")) - (service_outstanding["total_refunded"] or Decimal("0")))
         )
 
         return {
@@ -400,6 +402,7 @@ class OutstandingAnalytics:
                 "count": service_outstanding["count"] or 0,
                 "total_revenue": float(service_outstanding["total_revenue"] or 0),
                 "total_paid": float(service_outstanding["total_paid"] or 0),
+                "total_refunded": float(service_outstanding["total_refunded"] or 0),
                 "balance_due": float(service_balance),
             },
             "total_outstanding": float(sales_balance + service_balance),
@@ -474,8 +477,9 @@ class OutstandingAnalytics:
 
         # Service aging
         service_qs = Service.objects.filter(
+            is_deleted=False,
             payment_status__in=[ServicePaymentStatus.UNPAID, ServicePaymentStatus.PARTIAL],
-        )
+        ).exclude(status='cancelled')
         if stall:
             service_qs = service_qs.filter(stall=stall)
 
@@ -678,7 +682,7 @@ class EmployeePerformanceAnalytics:
     def get_employee_performance(start_date=None, end_date=None):
         """
         Get comprehensive employee performance statistics.
-        
+
         Returns:
         - top_service_types: Which service types are most completed
         - top_technicians: Employees with most service assignments

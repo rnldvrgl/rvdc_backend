@@ -73,7 +73,7 @@ def get_stall_filter(request):
 class SummaryStatsView(APIView):
     def get(self, request):
         from decimal import Decimal
-        
+
         start_date, end_date = get_date_range(request)
         stall_filter = get_stall_filter(request)
         today = timezone.now().date()
@@ -96,7 +96,7 @@ class SummaryStatsView(APIView):
         )
         if stall_filter:
             service_qs = service_qs.filter(**stall_filter)
-        
+
         service_agg = service_qs.aggregate(
             total=Sum("total_revenue"),
             main=Sum("main_stall_revenue"),
@@ -111,7 +111,7 @@ class SummaryStatsView(APIView):
 
         # Clients
         clients_count = Client.objects.filter(is_deleted=False).count()
-        
+
         # New clients in period
         new_clients = Client.objects.filter(
             created_at__range=(start_date, end_date),
@@ -190,7 +190,7 @@ class SummaryStatsView(APIView):
         ).aggregate(
             total_due=Sum('total')
         )['total_due'] or Decimal("0")
-        
+
         # Total paid for those transactions
         sales_total_paid = SalesPayment.objects.filter(
             transaction__is_deleted=False,
@@ -199,26 +199,35 @@ class SummaryStatsView(APIView):
         ).aggregate(
             total_paid=Sum('amount')
         )['total_paid'] or Decimal("0")
-        
+
         sales_outstanding = sales_total_due - sales_total_paid
-        
+
         # Calculate services outstanding
-        # Total revenue from unpaid/partial services
-        services_total_due = Service.objects.filter(
+        # Total revenue from unpaid/partial services (exclude deleted/cancelled)
+        services_outstanding_qs = Service.objects.filter(
+            is_deleted=False,
             payment_status__in=['partial', 'unpaid']
-        ).aggregate(
-            total_due=Sum('total_revenue')
-        )['total_due'] or Decimal("0")
-        
+        ).exclude(status='cancelled')
+
+        services_agg = services_outstanding_qs.aggregate(
+            total_due=Sum('total_revenue'),
+            total_refunded=Sum('total_refunded'),
+        )
+        services_total_due = services_agg['total_due'] or Decimal("0")
+        services_total_refunded = services_agg['total_refunded'] or Decimal("0")
+
         # Total paid for those services
         services_total_paid = ServicePayment.objects.filter(
+            service__is_deleted=False,
             service__payment_status__in=['partial', 'unpaid']
+        ).exclude(
+            service__status='cancelled'
         ).aggregate(
             total_paid=Sum('amount')
         )['total_paid'] or Decimal("0")
-        
-        services_outstanding = services_total_due - services_total_paid
-        
+
+        services_outstanding = services_total_due - (services_total_paid - services_total_refunded)
+
         total_outstanding = float(sales_outstanding) + float(services_outstanding)
 
         # Service metrics
@@ -230,7 +239,7 @@ class SummaryStatsView(APIView):
             completed=Count('id', filter=Q(status='completed')),
             active=Count('id', filter=Q(status__in=['pending', 'in_progress', 'confirmed']))
         )
-        
+
         completion_rate = (
             (service_stats['completed'] / service_stats['total'] * 100)
             if service_stats['total'] > 0 else 0
@@ -241,7 +250,7 @@ class SummaryStatsView(APIView):
             scheduled_date=today,
             status='pending'
         ).count()
-        
+
         today_schedules = Schedule.objects.filter(
             scheduled_date=today
         ).count()
@@ -268,37 +277,37 @@ class SummaryStatsView(APIView):
                 "sub_stall_service_revenue": float(sub_stall_service_revenue),
                 "total_revenue": total_revenue,
                 "net_income": net_income,
-                
+
                 # Outstanding balances
                 "total_outstanding": total_outstanding,
                 "sales_outstanding": float(sales_outstanding),
                 "services_outstanding": float(services_outstanding),
-                
+
                 # Service performance
                 "total_services": service_stats['total'],
                 "active_services": service_stats['active'],
                 "completed_services": service_stats['completed'],
                 "service_completion_rate": round(completion_rate, 1),
-                
+
                 # Schedule metrics
                 "today_schedules": today_schedules,
                 "pending_schedules": pending_schedules,
-                
+
                 # Client metrics
                 "total_clients": clients_count,
                 "new_clients": new_clients,
-                
+
                 # Inventory
                 "low_stock_items": low_stock_count,
                 "no_stock_items": no_stock_count,
                 "inventory_alerts": low_stock_count + no_stock_count,
-                
+
                 # Expenses
                 "total_expense": float(expense),
-                
+
                 # Unit cost deductions
                 "unit_cost_deduction": total_unit_cost,
-                
+
                 # Top selling
                 "top_selling_item": {
                     "name": (
@@ -761,7 +770,7 @@ class CalendarEventsView(APIView):
         # Get current user and role
         user = request.user
         user_role = getattr(user, 'role', None)
-        
+
         # Get date range from query params
         start_param = request.query_params.get("start")
         end_param = request.query_params.get("end")
@@ -873,7 +882,7 @@ class CalendarEventsView(APIView):
                 scheduled_date__gte=start_date,
                 scheduled_date__lte=end_date
             ).select_related('client', 'service').prefetch_related('technicians')
-            
+
             # Role-based filtering for schedules
             if user_role == 'technician':
                 # Technicians see only schedules they are assigned to
@@ -903,7 +912,7 @@ class CalendarEventsView(APIView):
                 # Get display name for schedule type
                 schedule_type_dict = dict(Schedule.SCHEDULE_TYPES)
                 schedule_display = schedule_type_dict.get(schedule.schedule_type, schedule.schedule_type)
-    
+
                 # Create title
                 tech_display = ", ".join(technician_names) if technician_names else "Unassigned"
                 title = f"{schedule_display} - {schedule.client.full_name}"
@@ -955,16 +964,16 @@ class CalendarEventsView(APIView):
                         'notes': schedule.notes,
                     }
                 })
-            
+
             # Also fetch delivery dates from services
             from services.models import Service as ServiceModel
-            
+
             services_query = ServiceModel.objects.filter(
                 delivery_date__isnull=False,
                 delivery_date__date__gte=start_date,
                 delivery_date__date__lte=end_date
             ).select_related('client').prefetch_related('schedules__technicians')
-            
+
             # Role-based filtering for delivery dates
             if user_role == 'technician':
                 # Technicians see only their assigned services
@@ -975,19 +984,19 @@ class CalendarEventsView(APIView):
                 # Clerks see no delivery dates
                 services_query = ServiceModel.objects.none()
             # Managers and admins see all delivery dates
-            
+
             for service in services_query:
                 delivery_datetime = service.delivery_date
                 delivery_date = delivery_datetime.date()
                 delivery_time = delivery_datetime.time()
-                
+
                 # Check if delivery date is within range
                 if start_date <= delivery_date <= end_date:
                     title = f"Delivery - {service.client.full_name}"
-                    
+
                     # Use full datetime for the event
                     start_iso = delivery_datetime.isoformat()
-                    
+
                     # Get technicians from related schedules (already prefetched)
                     technician_names = []
                     technician_ids = []
@@ -998,10 +1007,10 @@ class CalendarEventsView(APIView):
                                 seen_tech_ids.add(tech.id)
                                 technician_names.append(f"{tech.first_name} {tech.last_name}")
                                 technician_ids.append(tech.id)
-                    
+
                     # Get service type display
                     service_type_display = ServiceTypeEnum(service.service_type).label if service.service_type else None
-                    
+
                     events.append({
                         'id': f"delivery-{service.id}",
                         'title': title,
@@ -1025,7 +1034,7 @@ class CalendarEventsView(APIView):
         # Fetch approved leaves (supports multi-day date ranges)
         if include_leaves:
             from django.db.models import Q
-            
+
             # Filter leaves that overlap with the requested date range
             # A leave overlaps if: leave_start <= range_end AND leave_end >= range_start
             leaves_query = LeaveRequest.objects.filter(
@@ -1035,13 +1044,13 @@ class CalendarEventsView(APIView):
                 Q(start_date__lte=end_date, end_date__gte=start_date) |  # Multi-day range overlap
                 Q(start_date__isnull=True, date__gte=start_date, date__lte=end_date)  # Legacy single-date
             ).select_related('employee')
-            
+
             # Role-based filtering for leaves
             if user_role in ['technician', 'clerk']:
                 # Technicians and clerks see only their own leaves
                 leaves_query = leaves_query.filter(employee=user)
             # Managers and admins see all leaves (no additional filter)
-            
+
             leaves = leaves_query.values(
                 'id', 'employee__first_name', 'employee__last_name',
                 'employee_id', 'leave_type', 'date', 'start_date', 'end_date',
@@ -1105,7 +1114,7 @@ class CalendarEventsView(APIView):
                         'reason': leave['reason'],
                     }
                 })
-        
+
         # Fetch custom calendar events
         custom_events = CalendarEvent.objects.filter(
             is_deleted=False,
@@ -1114,7 +1123,7 @@ class CalendarEventsView(APIView):
         ).select_related('created_by').values(
             'id', 'title', 'description', 'event_date', 'event_type', 'created_by__first_name', 'created_by__last_name'
         )
-        
+
         for custom_event in custom_events:
             # Map event_type to color - distinguished colors
             type_colors = {
@@ -1124,7 +1133,7 @@ class CalendarEventsView(APIView):
                 'deadline': '#f43f5e',  # rose-500
                 'other': '#64748b',  # slate-500
             }
-            
+
             events.append({
                 'id': f"custom-{custom_event['id']}",
                 'title': custom_event['title'],
@@ -1147,7 +1156,7 @@ class CalendarEventsView(APIView):
         ).select_related('created_by').values(
             'id', 'date', 'reason', 'schedule_type', 'created_by__first_name', 'created_by__last_name'
         )
-        
+
         for half_day in half_day_schedules:
             is_shop_closed = half_day['schedule_type'] == 'shop_closed'
             default_label = 'Shop Closed' if is_shop_closed else 'Half Day'
@@ -1189,7 +1198,7 @@ from rest_framework import filters
 class CalendarEventViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing custom calendar events.
-    
+
     Endpoints:
     - GET /api/analytics/calendar-events/ - List all events
     - POST /api/analytics/calendar-events/ - Create new event
@@ -1205,25 +1214,24 @@ class CalendarEventViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     search_fields = ['title', 'description']
     ordering_fields = ['event_date', 'created_at', 'title']
     ordering = ['-event_date']
-    
+
     def get_queryset(self):
         """Get non-deleted calendar events."""
         queryset = CalendarEvent.objects.filter(is_deleted=False).select_related('created_by')
-        
+
         # Filter by date range if provided
         start_date = self.request.query_params.get('start_date')
         end_date = self.request.query_params.get('end_date')
-        
+
         if start_date:
             queryset = queryset.filter(event_date__gte=start_date)
         if end_date:
             queryset = queryset.filter(event_date__lte=end_date)
-        
+
         return queryset
-    
+
     def get_serializer_class(self):
         """Use lightweight serializer for list view."""
         if self.action == 'list':
             return CalendarEventListSerializer
         return CalendarEventSerializer
-
