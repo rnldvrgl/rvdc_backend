@@ -29,7 +29,6 @@ class Command(BaseCommand):
             'payroll.PayrollSettings': 'Payroll Settings',
             'payroll.Holiday': 'Holidays',
             'payroll.GovernmentBenefit': 'Government Benefits',
-            'payroll.TaxBracket': 'Tax Brackets',
             'payroll.DeductionRate': 'Deduction Rates',
             'expenses.Expense': 'Expenses',
             'expenses.ExpenseCategory': 'Expense Categories',
@@ -96,7 +95,7 @@ class Command(BaseCommand):
         # Ask for confirmation
         if not options['auto_yes']:
             confirmation = input('Are you sure you want to DELETE the above records? Type "yes" or "no": ').strip().lower()
-            
+
             if confirmation not in ['yes', 'y']:
                 self.stdout.write(self.style.WARNING('Operation cancelled.'))
                 sys.exit(0)
@@ -115,7 +114,7 @@ class Command(BaseCommand):
                     app_label, model_name = model_path.split('.')
                     model = apps.get_model(app_label, model_name)
                     count = model.objects.count()
-                    
+
                     if count > 0:
                         model.objects.all().delete()
                         deleted_count += 1
@@ -124,7 +123,7 @@ class Command(BaseCommand):
                         )
                     else:
                         self.stdout.write(f'  • No records to delete from {description}')
-                        
+
                 except LookupError:
                     error_count += 1
                     self.stdout.write(

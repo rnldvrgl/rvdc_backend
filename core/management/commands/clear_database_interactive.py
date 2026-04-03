@@ -45,7 +45,7 @@ class Command(BaseCommand):
             'remittances.RemittanceRecord': {'name': 'Remittance Records', 'default': 'delete'},
             'remittances.CashDenominationBreakdown': {'name': 'Cash Denomination Breakdowns', 'default': 'delete'},
             'receivables.ChequeCollection': {'name': 'Cheque Collections', 'default': 'delete'},
-            
+
             # Master Data (PRESERVE by default)
             'clients.Client': {'name': 'Clients', 'default': 'preserve'},
             'inventory.Item': {'name': 'Inventory Items', 'default': 'preserve'},
@@ -58,7 +58,6 @@ class Command(BaseCommand):
             'payroll.PayrollSettings': {'name': 'Payroll Settings', 'default': 'preserve'},
             'payroll.Holiday': {'name': 'Holidays', 'default': 'preserve'},
             'payroll.GovernmentBenefit': {'name': 'Government Benefits', 'default': 'preserve'},
-            'payroll.TaxBracket': {'name': 'Tax Brackets', 'default': 'preserve'},
             'payroll.DeductionRate': {'name': 'Deduction Rates', 'default': 'preserve'},
             'expenses.Expense': {'name': 'Expenses', 'default': 'preserve'},
             'expenses.ExpenseCategory': {'name': 'Expense Categories', 'default': 'preserve'},
@@ -148,7 +147,7 @@ class Command(BaseCommand):
         # Final confirmation
         if not options['auto_yes']:
             confirmation = input('Proceed with deletion? Type "yes" to confirm: ').strip().lower()
-            
+
             if confirmation != 'yes':
                 self.stdout.write(self.style.WARNING('Operation cancelled.'))
                 sys.exit(0)
@@ -168,7 +167,7 @@ class Command(BaseCommand):
                     app_label, model_name = model_path.split('.')
                     model = apps.get_model(app_label, model_name)
                     count = model.objects.count()
-                    
+
                     if count > 0:
                         model.objects.all().delete()
                         deleted_count += 1
@@ -178,7 +177,7 @@ class Command(BaseCommand):
                         )
                     else:
                         self.stdout.write(f'  • No records in {info["name"]}')
-                        
+
                 except LookupError:
                     error_count += 1
                     self.stdout.write(

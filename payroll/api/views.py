@@ -23,7 +23,6 @@ from payroll.api.serializers import (
     ManualDeductionSerializer,
     PayrollSettingsSerializer,
     PercentageDeductionSerializer,
-    TaxBracketSerializer,
     WeeklyPayrollSerializer,
 )
 from payroll.models import (
@@ -32,7 +31,6 @@ from payroll.models import (
     ManualDeduction,
     PayrollSettings,
     PercentageDeduction,
-    TaxBracket,
     WeeklyPayroll,
 )
 from rest_framework import filters, generics, permissions, status, viewsets
@@ -58,13 +56,13 @@ def _apply_pending_cash_advance_movements(payroll: WeeklyPayroll):
     """
     try:
         from users.models import CashAdvanceMovement
-        
+
         pending_movements = CashAdvanceMovement.objects.filter(
             reference=f'payroll-{payroll.id}',
             is_pending=True,
             is_deleted=False,
         )
-        
+
         for movement in pending_movements:
             movement.apply_to_balance()
     except Exception as e:
@@ -82,17 +80,17 @@ def _add_cash_ban_contribution(payroll: WeeklyPayroll):
         settings = PayrollSettings.objects.first()
         if not settings or not settings.cash_ban_enabled:
             return
-        
+
         employee = payroll.employee
-        
+
         # Check if employee has cash ban enabled
         if not employee.has_cash_ban:
             return
-        
+
         contribution_amount = settings.cash_ban_contribution_amount
         if contribution_amount <= 0:
             return
-        
+
         # Create a CREDIT movement (this also updates the employee's balance)
         CashAdvanceMovement.objects.create(
             employee=employee,
@@ -734,19 +732,19 @@ class WeeklyPayrollRestoreView(APIView):
 class WeeklyPayrollDownloadPDFView(APIView):
     """Download a payslip as PDF."""
     permission_classes = [permissions.IsAuthenticated]
-    
+
     def get(self, request, pk):
         from payroll.utils.pdf_generator import generate_payslip_pdf
-        
+
         try:
             payroll = WeeklyPayroll.objects.select_related("employee").get(pk=pk, is_deleted=False)
-            
+
             # Hide draft payrolls from regular employees
             user = request.user
             if not user.is_staff and user.role not in ['admin', 'manager']:
                 if payroll.status == 'draft':
                     raise NotFound(detail="Payroll record not found.")
-            
+
             return generate_payslip_pdf(payroll)
         except WeeklyPayroll.DoesNotExist:
             raise NotFound(detail="Payroll record not found.")
@@ -1745,67 +1743,6 @@ class ManualDeductionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class TaxBracketViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet for managing tax brackets.
-    Admin-only access for CRUD operations.
-    """
-    serializer_class = TaxBracketSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
-    ordering_fields = ["min_income", "effective_start", "created_at"]
-
-    def get_queryset(self):
-        queryset = TaxBracket.objects.select_related("created_by").all()
-
-        # Filter by bracket type
-        bracket_type = self.request.query_params.get("bracket_type")
-        if bracket_type:
-            queryset = queryset.filter(bracket_type=bracket_type)
-
-        # Filter by active status
-        is_active = self.request.query_params.get("is_active")
-        if is_active is not None:
-            queryset = queryset.filter(is_active=is_active.lower() in ["true", "1"])
-
-        # Filter by effective date
-        as_of_date = self.request.query_params.get("as_of_date")
-        if as_of_date:
-            from django.db.models import Q
-            queryset = queryset.filter(
-                effective_start__lte=as_of_date
-            ).filter(
-                Q(effective_end__isnull=True) | Q(effective_end__gte=as_of_date)
-            )
-
-        return queryset.order_by("bracket_type", "min_income")
-
-    def perform_create(self, serializer):
-        """Set created_by to current user"""
-        serializer.save(created_by=self.request.user)
-
-    @action(detail=False, methods=["get"])
-    def active(self, request):
-        """Get currently active tax brackets"""
-        from django.utils import timezone
-        today = timezone.now().date()
-
-        # Allow filtering by bracket_type in active endpoint
-        bracket_type = request.query_params.get("bracket_type")
-        qs = self.get_queryset().filter(
-            is_active=True,
-            effective_start__lte=today,
-        ).filter(
-            models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=today)
-        )
-
-        if bracket_type:
-            qs = qs.filter(bracket_type=bracket_type)
-
-        serializer = self.get_serializer(qs, many=True)
-        return Response(serializer.data)
-
-
 class PercentageDeductionViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing percentage-based deductions.
@@ -1965,7 +1902,7 @@ class EmployeeBenefitOverrideViewSet(viewsets.ModelViewSet):
     ViewSet for managing employee-specific benefit overrides.
     Allows setting custom benefit amounts for individual employees.
     """
-    
+
     serializer_class = EmployeeBenefitOverrideSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -1973,17 +1910,17 @@ class EmployeeBenefitOverrideViewSet(viewsets.ModelViewSet):
     search_fields = ['employee__first_name', 'employee__last_name', 'notes']
     ordering_fields = ['effective_start', 'created_at', 'employee']
     ordering = ['-effective_start']
-    
+
     def get_queryset(self):
         from payroll.models import EmployeeBenefitOverride
-        
+
         queryset = EmployeeBenefitOverride.objects.select_related('employee').all()
-        
+
         # Admin sees all, others see their own only
         if not self.request.user.is_staff and self.request.user.role != 'admin':
             queryset = queryset.filter(employee=self.request.user)
-        
+
         return queryset
-    
+
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)

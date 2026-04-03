@@ -165,111 +165,6 @@ class ManualDeduction(models.Model):
             raise ValidationError("Recurring/One-time for all deductions cannot have a specific employee.")
 
 
-class TaxBracket(models.Model):
-    """
-    Progressive tax brackets for withholding tax computation.
-    Supports different bracket types (BIR, SSS, PhilHealth, Pag-IBIG, etc.)
-    Example: 0-20833 = 0%, 20834-33332 = 20%, etc.
-    """
-
-    BRACKET_TYPES = [
-        ("bir", "BIR Withholding Tax"),
-        ("sss", "SSS Contribution"),
-        ("philhealth", "PhilHealth Contribution"),
-        ("pagibig", "Pag-IBIG Contribution"),
-        ("custom", "Custom Tax/Contribution"),
-    ]
-
-    bracket_type = models.CharField(
-        max_length=32,
-        choices=BRACKET_TYPES,
-        default="bir",
-        help_text="Type of tax bracket (BIR, SSS, PhilHealth, Pag-IBIG, etc.)"
-    )
-    min_income = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        help_text="Minimum weekly income for this bracket (inclusive)"
-    )
-    max_income = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        help_text="Maximum weekly income for this bracket (inclusive). Null = no upper limit"
-    )
-    base_tax = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=Decimal("0.00"),
-        help_text="Base tax amount for this bracket"
-    )
-    rate = models.DecimalField(
-        max_digits=5,
-        decimal_places=4,
-        help_text="Tax rate as decimal (e.g., 0.20 for 20%)"
-    )
-
-    effective_start = models.DateField(help_text="Date this bracket becomes effective")
-    effective_end = models.DateField(
-        null=True,
-        blank=True,
-        help_text="Date this bracket stops being effective. Null = still active"
-    )
-
-    is_active = models.BooleanField(default=True)
-
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="created_tax_brackets"
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ['bracket_type', 'min_income']
-        indexes = [
-            models.Index(fields=['bracket_type', 'effective_start', 'is_active']),
-            models.Index(fields=['effective_start', 'is_active']),
-        ]
-
-    def __str__(self):
-        max_display = f"{self.max_income}" if self.max_income else "above"
-        return f"₱{self.min_income} - {max_display}: {self.rate*100}%"
-
-    @staticmethod
-    def compute_tax(gross_income: Decimal, as_of_date: date, bracket_type: str = "bir") -> Decimal:
-        """
-        Compute progressive withholding tax for given gross income.
-        Defaults to BIR withholding tax if bracket_type not specified.
-        """
-        brackets = TaxBracket.objects.filter(
-            bracket_type=bracket_type,
-            is_active=True,
-            effective_start__lte=as_of_date,
-        ).filter(
-            models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=as_of_date)
-        ).order_by('min_income')
-
-        tax = Decimal("0.00")
-
-        for bracket in brackets:
-            # Check if income falls in this bracket
-            if gross_income <= bracket.min_income:
-                break
-
-            # Calculate taxable amount in this bracket
-            bracket_max = bracket.max_income if bracket.max_income else gross_income
-            taxable_in_bracket = min(gross_income, bracket_max) - bracket.min_income
-
-            if taxable_in_bracket > 0:
-                tax = bracket.base_tax + (taxable_in_bracket * bracket.rate)
-
-        return tax.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-
 class PercentageDeduction(models.Model):
     """
     Percentage-based deductions like withholding tax, HDMF savings, etc.
@@ -335,7 +230,6 @@ class GovernmentBenefit(models.Model):
     CALCULATION_METHODS = [
         ('fixed', 'Fixed Amount'),
         ('percentage', 'Percentage of Gross'),
-        ('progressive_tax', 'Progressive Tax Bracket'),
     ]
 
     PERIOD_TYPES = [
@@ -433,9 +327,6 @@ class GovernmentBenefit(models.Model):
             return (gross_pay * Decimal(self.employee_share_rate or 0)).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
             )
-        elif self.calculation_method == 'progressive_tax':
-            # For BIR tax, use TaxBracket computation
-            return TaxBracket.compute_tax(gross_pay, self.effective_start)
         return Decimal("0.00")
 
     def compute_employer_share(self, gross_pay: Decimal) -> Decimal:
@@ -460,24 +351,24 @@ class GovernmentBenefit(models.Model):
 class EmployeeBenefitOverride(models.Model):
     """
     Per-employee overrides for government benefit amounts.
-    Takes precedence over GovernmentBenefit and TaxBracket calculations.
+    Takes precedence over GovernmentBenefit calculations.
     Use for employees with custom arrangements (e.g., owners, contractors).
     """
-    
+
     BENEFIT_TYPES = [
         ('sss', 'SSS'),
         ('philhealth', 'PhilHealth'),
         ('pagibig', 'Pag-IBIG / HDMF'),
         ('bir_tax', 'BIR Withholding Tax'),
     ]
-    
+
     employee = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="benefit_overrides"
     )
     benefit_type = models.CharField(max_length=20, choices=BENEFIT_TYPES)
-    
+
     # Fixed weekly amounts
     employee_share_amount = models.DecimalField(
         max_digits=12,
@@ -491,7 +382,7 @@ class EmployeeBenefitOverride(models.Model):
         blank=True,
         help_text="Fixed employer contribution amount per week (for reporting)"
     )
-    
+
     # Date effectiveness
     effective_start = models.DateField(help_text="Date this override becomes effective")
     effective_end = models.DateField(
@@ -499,10 +390,10 @@ class EmployeeBenefitOverride(models.Model):
         blank=True,
         help_text="Date this override ends (null = still active)"
     )
-    
+
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True, help_text="Reason for override or special notes")
-    
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -512,7 +403,7 @@ class EmployeeBenefitOverride(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     class Meta:
         ordering = ['-effective_start', 'employee', 'benefit_type']
         indexes = [
@@ -526,7 +417,7 @@ class EmployeeBenefitOverride(models.Model):
                 name='unique_employee_benefit_start_date'
             )
         ]
-    
+
     def __str__(self):
         return f"{self.employee.get_full_name()} - {self.get_benefit_type_display()} - ₱{self.employee_share_amount}"
 
@@ -1030,7 +921,7 @@ class WeeklyPayroll(models.Model):
         # Apply government benefits (SSS, PhilHealth, Pag-IBIG, BIR Tax)
         # Only apply benefits where employee has the corresponding flag set to True
         try:
-            from payroll.models import EmployeeBenefitOverride, GovernmentBenefit, TaxBracket
+            from payroll.models import EmployeeBenefitOverride, GovernmentBenefit
 
             # Check individual government benefit flags per employee
             benefit_flag_map = {
@@ -1039,18 +930,18 @@ class WeeklyPayroll(models.Model):
                 'pagibig': self.employee.has_pagibig,
                 'bir_tax': self.employee.has_bir_tax,
             }
-            
+
             benefit_types = ['sss', 'philhealth', 'pagibig', 'bir_tax']
-                
+
             for benefit_type in benefit_types:
                 # Skip this benefit if employee doesn't have this specific benefit enabled
                 if not benefit_flag_map.get(benefit_type, False):
                     continue
-                    
+
                 employee_share = Decimal('0.00')
                 source_type = None
                 source_id = None
-                
+
                 # Priority 1: Check for employee-specific override first (highest priority)
                 # Use week_end for effective_start check so overrides starting
                 # mid-week are picked up (e.g. override starts Friday, week
@@ -1064,7 +955,7 @@ class WeeklyPayroll(models.Model):
                 ).filter(
                     models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
                 ).order_by('-effective_start').first()
-                
+
                 if override:
                     # Use override amount (weekly fixed)
                     employee_share = override.employee_share_amount
@@ -1079,26 +970,17 @@ class WeeklyPayroll(models.Model):
                     ).filter(
                         models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=self.week_start)
                     ).order_by('-effective_start').first()
-                    
+
                     if govt_benefit:
                         # Use GovernmentBenefit's calculation method
                         employee_share = govt_benefit.compute_employee_share(self.gross_pay)
                         source_type = 'GovernmentBenefit'
                         source_id = govt_benefit.id
-                    else:
-                        # Priority 3: Fall back to TaxBracket (legacy support)
-                        employee_share = TaxBracket.compute_tax(
-                            gross_income=self.gross_pay,
-                            as_of_date=self.week_start,
-                            bracket_type=benefit_type
-                        )
-                        source_type = 'TaxBracket'
-                        # source_id is None for TaxBracket (multiple brackets may be used)
-                
+
                 # Add to deductions if amount is positive
                 if employee_share > 0:
                     deductions_map[benefit_type] = self._q(employee_share)
-                    
+
                     category = 'tax' if benefit_type == 'bir_tax' else 'government'
                     deduction_metadata_map[benefit_type] = {
                         'source_type': source_type,
@@ -1113,7 +995,7 @@ class WeeklyPayroll(models.Model):
         # Apply cash ban contribution deduction (if enabled for this employee)
         try:
             from payroll.models import PayrollSettings
-            
+
             # Check if employee has cash ban enabled
             if getattr(self.employee, 'has_cash_ban', False):
                 settings = PayrollSettings.objects.first()
@@ -1227,10 +1109,10 @@ class WeeklyPayroll(models.Model):
     def create_deduction_records_legacy(self):
         """
         LEGACY METHOD - Use compute_from_daily_attendance instead.
-        
+
         This method is deprecated. Deductions are now computed directly in
         compute_from_daily_attendance and stored in JSON fields (deductions, deduction_metadata).
-        
+
         Kept for backward compatibility but does minimal work.
         """
         # Call the helper to get deduction records (without marking as applied)

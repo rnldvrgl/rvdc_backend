@@ -5,7 +5,6 @@ from rest_framework.routers import DefaultRouter
 router = DefaultRouter()
 router.register(r"holidays", views.HolidayViewSet, basename="holiday")
 router.register(r"manual-deductions", views.ManualDeductionViewSet, basename="manual-deduction")
-router.register(r"tax-brackets", views.TaxBracketViewSet, basename="tax-bracket")
 router.register(r"percentage-deductions", views.PercentageDeductionViewSet, basename="percentage-deduction")
 router.register(r"government-benefits", views.GovernmentBenefitViewSet, basename="government-benefit")
 router.register(r"employee-benefit-overrides", views.EmployeeBenefitOverrideViewSet, basename="employee-benefit-override")

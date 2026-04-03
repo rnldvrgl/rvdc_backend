@@ -13,7 +13,6 @@ from payroll.models import (
     ManualDeduction,
     PayrollSettings,
     PercentageDeduction,
-    TaxBracket,
     WeeklyPayroll,
 )
 from rest_framework import serializers
@@ -314,7 +313,7 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
                 earning_date__gte=obj.week_start,
                 earning_date__lte=obj.week_end,
             ).order_by('earning_date')
-            
+
             return [
                 {
                     'id': earning.id,
@@ -436,7 +435,7 @@ class EmployeeBenefitOverrideSerializer(serializers.ModelSerializer):
     """Serializer for EmployeeBenefitOverride model."""
     employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
     benefit_type_display = serializers.CharField(source='get_benefit_type_display', read_only=True)
-    
+
     class Meta:
         model = EmployeeBenefitOverride
         fields = [
@@ -456,7 +455,7 @@ class EmployeeBenefitOverrideSerializer(serializers.ModelSerializer):
             'created_by',
         ]
         read_only_fields = ['created_at', 'updated_at', 'created_by', 'employee_name', 'benefit_type_display']
-    
+
     def validate(self, attrs):
         """Validate benefit override data."""
         employee = attrs.get('employee')
@@ -464,7 +463,7 @@ class EmployeeBenefitOverrideSerializer(serializers.ModelSerializer):
         effective_start = attrs.get('effective_start')
         effective_end = attrs.get('effective_end')
         is_active = attrs.get('is_active', True)
-        
+
         # Check for duplicate active overrides for same employee + benefit type
         if is_active and employee and benefit_type:
             existing_query = EmployeeBenefitOverride.objects.filter(
@@ -472,82 +471,42 @@ class EmployeeBenefitOverrideSerializer(serializers.ModelSerializer):
                 benefit_type=benefit_type,
                 is_active=True,
             )
-            
+
             # Exclude current instance when updating
             if self.instance:
                 existing_query = existing_query.exclude(pk=self.instance.pk)
-            
+
             # Check for overlapping date ranges
             if existing_query.exists():
                 overlapping = existing_query.filter(
                     models.Q(effective_end__isnull=True) | models.Q(effective_end__gte=effective_start)
                 )
-                
+
                 if effective_end:
                     overlapping = overlapping.filter(effective_start__lte=effective_end)
-                
+
                 if overlapping.exists():
                     raise serializers.ValidationError({
                         'benefit_type': f'An active override for this benefit type already exists for this employee with overlapping dates.'
                     })
-        
+
         # Validate date range
         if effective_end and effective_start and effective_end < effective_start:
             raise serializers.ValidationError({
                 'effective_end': 'End date must be on or after start date.'
             })
-        
+
         # Validate amounts are positive
         employee_share = attrs.get('employee_share_amount')
         if employee_share and employee_share < 0:
             raise serializers.ValidationError({
                 'employee_share_amount': 'Amount must be positive.'
             })
-        
+
         employer_share = attrs.get('employer_share_amount')
         if employer_share and employer_share < 0:
             raise serializers.ValidationError({
                 'employer_share_amount': 'Amount must be positive.'
-            })
-        
-        return attrs
-
-class TaxBracketSerializer(serializers.ModelSerializer):
-    created_by_detail = MinimalUserSerializer(source="created_by", read_only=True)
-
-    class Meta:
-        model = TaxBracket
-        fields = [
-            "id",
-            "bracket_type",
-            "min_income",
-            "max_income",
-            "base_tax",
-            "rate",
-            "effective_start",
-            "effective_end",
-            "is_active",
-            "created_by",
-            "created_by_detail",
-            "created_at",
-        ]
-        read_only_fields = ["created_at", "created_by"]
-
-    def validate(self, attrs):
-        min_income = attrs.get("min_income")
-        max_income = attrs.get("max_income")
-
-        if max_income and min_income and max_income < min_income:
-            raise serializers.ValidationError({
-                "max_income": "Maximum income must be greater than or equal to minimum income."
-            })
-
-        effective_start = attrs.get("effective_start")
-        effective_end = attrs.get("effective_end")
-
-        if effective_end and effective_start and effective_end < effective_start:
-            raise serializers.ValidationError({
-                "effective_end": "End date must be on or after the start date."
             })
 
         return attrs
@@ -621,13 +580,6 @@ class GovernmentBenefitSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         """Validate government benefit data."""
         calculation_method = attrs.get('calculation_method')
-        benefit_type = attrs.get('benefit_type')
-
-        # Validate calculation method matches benefit type
-        if benefit_type == 'bir_tax' and calculation_method != 'progressive_tax':
-            raise serializers.ValidationError({
-                'calculation_method': 'BIR tax must use progressive_tax calculation method.'
-            })
 
         # Ensure required fields are present for each calculation method
         if calculation_method == 'fixed':
@@ -640,7 +592,6 @@ class GovernmentBenefitSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     'employee_share_rate': 'Required for percentage calculation method.'
                 })
-        # Progressive tax uses TaxBracket.compute_tax() method, no additional field required
 
         # Validate date range
         effective_start = attrs.get('effective_start')

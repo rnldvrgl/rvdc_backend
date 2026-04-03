@@ -9,7 +9,7 @@ Updated rates as of 2025:
 
 Usage:
     python manage.py seed_government_benefits_2025
-    
+
     # Or via Docker:
     docker-compose exec api python manage.py seed_government_benefits_2025
 """
@@ -25,15 +25,15 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         self.stdout.write(self.style.SUCCESS('🇵🇭 Seeding 2025 Philippine Government Benefits...'))
-        
+
         # Deactivate any existing benefits before creating new ones
         old_benefits = GovernmentBenefit.objects.filter(is_active=True)
         if old_benefits.exists():
             count = old_benefits.update(is_active=False, effective_end=timezone.now().date())
             self.stdout.write(self.style.WARNING(f'   Deactivated {count} old benefit(s)'))
-        
+
         benefits_created = []
-        
+
         # ============================================================
         # SSS - Social Security System (2025)
         # ============================================================
@@ -41,7 +41,7 @@ class Command(BaseCommand):
         # Weekly calculation: Monthly rate ÷ 4.33 weeks
         # Max MSC: ₱30,000/month = ~₱6,928/week
         # Note: Using percentage method for flexibility
-        
+
         sss, created = GovernmentBenefit.objects.update_or_create(
             benefit_type='sss',
             name='SSS Contribution - 2025',
@@ -61,7 +61,7 @@ class Command(BaseCommand):
             }
         )
         benefits_created.append(('SSS', created))
-        
+
         # ============================================================
         # PhilHealth - Philippine Health Insurance (2025)
         # ============================================================
@@ -70,7 +70,7 @@ class Command(BaseCommand):
         # Weekly equivalent: ~₱2,309 - ₱23,094
         # Max monthly premium: ₱5,000 total (₱2,500 each)
         # Max weekly premium: ~₱1,155 total (₱577.50 each)
-        
+
         philhealth, created = GovernmentBenefit.objects.update_or_create(
             benefit_type='philhealth',
             name='PhilHealth Contribution - 2025',
@@ -91,7 +91,7 @@ class Command(BaseCommand):
             }
         )
         benefits_created.append(('PhilHealth', created))
-        
+
         # ============================================================
         # Pag-IBIG - Home Development Mutual Fund (2025)
         # ============================================================
@@ -99,7 +99,7 @@ class Command(BaseCommand):
         # Monthly cap: ₱200 per party (based on ₱10,000 max compensation)
         # Weekly cap: ₱200 ÷ 4.33 = ~₱46.21 per party
         # Using fixed amount for simplicity at the cap
-        
+
         pagibig, created = GovernmentBenefit.objects.update_or_create(
             benefit_type='pagibig',
             name='Pag-IBIG Contribution - 2025',
@@ -120,61 +120,53 @@ class Command(BaseCommand):
             }
         )
         benefits_created.append(('Pag-IBIG', created))
-        
+
         # ============================================================
         # BIR - Withholding Tax (2025 TRAIN Law)
         # ============================================================
-        # Progressive tax brackets apply
-        # Tax-exempt threshold: ₱20,832.99/month (~₱4,808/week)
-        # This should reference TaxBracket model for progressive calculation
-        # Note: Requires TaxBracket records to be seeded separately
-        
+        # Fixed amount approach - admin sets weekly withholding per employee via overrides
+
         bir, created = GovernmentBenefit.objects.update_or_create(
             benefit_type='bir_tax',
             name='BIR Withholding Tax - 2025 (TRAIN Law)',
             defaults={
-                'calculation_method': 'progressive_tax',
+                'calculation_method': 'fixed',
                 'employee_share_rate': None,
                 'employer_share_rate': None,
-                'employee_share_amount': None,
+                'employee_share_amount': Decimal('0.00'),
                 'employer_share_amount': None,
                 'effective_start': '2025-01-01',
                 'effective_end': None,
                 'is_active': True,
                 'description': (
                     'Bureau of Internal Revenue withholding tax under TRAIN Law. '
-                    'Progressive rates: 15% - 35% for high earners. '
-                    'Tax-exempt threshold: ₱20,832.99/month (~₱4,808/week). '
-                    'Minimum wage earners are fully exempt. '
-                    'Uses progressive tax bracket calculation. '
-                    'Note: Requires TaxBracket records to be configured.'
+                    'Set per-employee withholding amounts via Employee Benefit Overrides.'
                 )
             }
         )
         benefits_created.append(('BIR Tax', created))
-        
+
         # ============================================================
         # Summary Report
         # ============================================================
         self.stdout.write('')
         self.stdout.write(self.style.SUCCESS('✅ Government Benefits Seeded Successfully!'))
         self.stdout.write('')
-        
+
         for name, was_created in benefits_created:
             action = 'Created' if was_created else 'Updated'
             icon = '🆕' if was_created else '🔄'
             self.stdout.write(f'   {icon} {action}: {name}')
-        
+
         self.stdout.write('')
         self.stdout.write(self.style.WARNING('📋 Important Notes:'))
         self.stdout.write('   • SSS: 5% employee, 10% employer (max ₱30k MSC)')
         self.stdout.write('   • PhilHealth: 2.5% each (₱10k-₱100k ceiling)')
         self.stdout.write('   • Pag-IBIG: Fixed ₱46.21/week (₱200/month cap)')
-        self.stdout.write('   • BIR Tax: Requires TaxBracket records for progressive calculation')
+        self.stdout.write('   • BIR Tax: Set per-employee via Benefit Overrides')
         self.stdout.write('')
         self.stdout.write(self.style.SUCCESS('🎯 Next Steps:'))
-        self.stdout.write('   1. Run: python manage.py seed_tax_brackets_2025')
-        self.stdout.write('   2. Navigate to Settings → Government Benefits in frontend')
-        self.stdout.write('   3. Verify benefit rates are displayed correctly')
-        self.stdout.write('   4. Generate test payroll to confirm deductions')
+        self.stdout.write('   1. Navigate to Settings → Government Benefits in frontend')
+        self.stdout.write('   2. Verify benefit rates are displayed correctly')
+        self.stdout.write('   3. Generate test payroll to confirm deductions')
         self.stdout.write('')
