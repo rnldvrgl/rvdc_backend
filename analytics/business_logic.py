@@ -349,12 +349,12 @@ class OutstandingAnalytics:
         from services.models import PaymentStatus as ServicePaymentStatus
         from services.models import Service
 
-        # Outstanding sales
+        # Outstanding sales (exclude service-linked transactions to avoid double-counting with services)
         sales_qs = SalesTransaction.objects.filter(
             is_deleted=False,
             voided=False,
             payment_status__in=[SalesPaymentStatus.UNPAID, SalesPaymentStatus.PARTIAL],
-        )
+        ).exclude(transaction_type='service')
         if stall:
             sales_qs = sales_qs.filter(stall=stall)
 
@@ -425,12 +425,12 @@ class OutstandingAnalytics:
         sixty_days_ago = today - timedelta(days=60)
         ninety_days_ago = today - timedelta(days=90)
 
-        # Sales aging
+        # Sales aging (exclude service-linked transactions to avoid double-counting)
         sales_qs = SalesTransaction.objects.filter(
             is_deleted=False,
             voided=False,
             payment_status__in=[SalesPaymentStatus.UNPAID, SalesPaymentStatus.PARTIAL],
-        )
+        ).exclude(transaction_type='service')
         if stall:
             sales_qs = sales_qs.filter(stall=stall)
 

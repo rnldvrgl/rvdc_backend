@@ -78,13 +78,14 @@ class SummaryStatsView(APIView):
         stall_filter = get_stall_filter(request)
         today = timezone.now().date()
 
-        # Sales revenue
+        # Sales revenue (exclude service-linked transactions to avoid double-counting with service_revenue)
         sales_revenue = (
             SalesItem.objects.filter(
                 transaction__created_at__range=(start_date, end_date),
                 transaction__is_deleted=False,
             )
             .filter(**{"transaction__%s" % k: v for k, v in stall_filter.items()})
+            .exclude(transaction__transaction_type='service')
             .aggregate(total=Sum(F("quantity") * F("final_price_per_unit")))["total"]
             or 0
         )
@@ -179,13 +180,12 @@ class SummaryStatsView(APIView):
         net_income = total_revenue - float(expense) - total_unit_cost
 
         # Outstanding balances
-        # Calculate sales outstanding
-        # Total due from unpaid/partial transactions
+        # Calculate sales outstanding (exclude service-linked transactions to avoid double-counting)
         sales_total_due = SalesTransaction.objects.filter(
             is_deleted=False,
             voided=False,
             payment_status__in=['partial', 'unpaid']
-        ).annotate(
+        ).exclude(transaction_type='service').annotate(
             total=Sum(F('items__quantity') * F('items__final_price_per_unit'))
         ).aggregate(
             total_due=Sum('total')
@@ -196,7 +196,7 @@ class SummaryStatsView(APIView):
             transaction__is_deleted=False,
             transaction__voided=False,
             transaction__payment_status__in=['partial', 'unpaid']
-        ).aggregate(
+        ).exclude(transaction__transaction_type='service').aggregate(
             total_paid=Sum('amount')
         )['total_paid'] or Decimal("0")
 
@@ -255,13 +255,15 @@ class SummaryStatsView(APIView):
             scheduled_date=today
         ).count()
 
-        # Top selling item
+        # Top selling item (exclude service-linked transactions)
         top_selling_item = (
             SalesItem.objects.filter(
                 transaction__created_at__range=(start_date, end_date),
                 transaction__is_deleted=False,
+                item__isnull=False,
                 **{"transaction__%s" % k: v for k, v in stall_filter.items()}
             )
+            .exclude(transaction__transaction_type='service')
             .values("item__name")
             .annotate(total_sold=Sum("quantity"))
             .order_by("-total_sold")
