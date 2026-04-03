@@ -490,11 +490,14 @@ class ServiceCompletionHandler:
             ).update(status=ApplianceStatus.COMPLETED)
 
             # Activate warranties for all appliances when service is completed
+            # Skip warranty activation for complementary services (warranty claims / free cleaning)
+            # to prevent warranty-on-warranty chains
             from datetime import date
             completion_date = date.today()
-            for appliance in service.appliances.all():
-                if appliance.labor_warranty_months > 0 or appliance.unit_warranty_months > 0:
-                    appliance.activate_warranties(start_date=completion_date)
+            if not service.is_complementary:
+                for appliance in service.appliances.all():
+                    if appliance.labor_warranty_months > 0 or appliance.unit_warranty_months > 0:
+                        appliance.activate_warranties(start_date=completion_date)
 
             # For installation services, set warranty_start_date and mark as sold on all aircon units
             from utils.enums import ServiceType

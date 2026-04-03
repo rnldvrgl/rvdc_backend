@@ -366,6 +366,21 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 # Note: service FK is OneToOneField; leave it null here so
                 # the normal approval flow can assign/create a service later.
                 results["warranty_claims"].append(claim.id)
+                # Clone unit info as an appliance in the warranty service
+                brand_name = unit.model.brand.name if unit.model and unit.model.brand else ""
+                model_name = unit.model.name if unit.model else ""
+                ServiceAppliance.objects.create(
+                    service=service,
+                    brand=brand_name,
+                    model=model_name,
+                    serial_number=unit.serial_number or "",
+                    issue_reported=issue_description,
+                    status="received",
+                    labor_is_free=True,
+                    labor_fee=0,
+                    labor_warranty_months=0,
+                    unit_warranty_months=0,
+                )
             except AirconUnit.DoesNotExist:
                 results["errors"].append({"unit_id": unit_id, "error": "Unit not found"})
             except Exception as exc:
@@ -374,7 +389,21 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         # --- Warranty appliances (from past repairs) ---
         for appliance_id in warranty_appliance_ids:
             try:
-                appliance = ServiceAppliance.objects.get(id=appliance_id)
+                original = ServiceAppliance.objects.get(id=appliance_id)
+                # Clone the appliance into the new warranty claim service
+                ServiceAppliance.objects.create(
+                    service=service,
+                    appliance_type=original.appliance_type,
+                    brand=original.brand,
+                    model=original.model,
+                    serial_number=original.serial_number,
+                    issue_reported=f"Warranty claim (original service #{original.service_id})",
+                    status="received",
+                    labor_is_free=True,
+                    labor_fee=0,
+                    labor_warranty_months=0,
+                    unit_warranty_months=0,
+                )
                 results["warranty_appliances"].append(appliance_id)
             except ServiceAppliance.DoesNotExist:
                 results["errors"].append({"appliance_id": appliance_id, "error": "Appliance not found"})

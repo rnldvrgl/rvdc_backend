@@ -1528,6 +1528,9 @@ class ServiceSerializer(serializers.ModelSerializer):
             "forfeiture_type",
             "forfeiture_notes",
             "acquisition_price",
+            # Complementary / warranty tracking
+            "is_complementary",
+            "complementary_reason",
         ]
         read_only_fields = [
             "main_stall_revenue",
@@ -2554,6 +2557,9 @@ class CompanyAssetSerializer(serializers.ModelSerializer):
             "appliance_description",
             "acquisition_type",
             "acquisition_price",
+            # Complementary / warranty tracking
+            "is_complementary",
+            "complementary_reason",
             "acquired_at",
             "acquired_by",
             "declared_by_name",

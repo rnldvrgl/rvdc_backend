@@ -502,11 +502,15 @@ class Service(models.Model):
         """Update payment status based on net paid (paid minus refunded) vs total revenue."""
         from django.db.models import Sum
 
-        # Complementary services don't require payment
+        # Complementary services with zero revenue don't require payment.
+        # Warranty claims are free for labor only — if parts are added,
+        # total_revenue > 0 and normal payment logic should apply.
         if self.is_complementary:
-            self.payment_status = PaymentStatus.NOT_APPLICABLE
-            self.save(update_fields=["payment_status"], skip_validation=True)
-            return
+            self.refresh_from_db(fields=["total_revenue"])
+            if self.total_revenue <= 0:
+                self.payment_status = PaymentStatus.NOT_APPLICABLE
+                self.save(update_fields=["payment_status"], skip_validation=True)
+                return
 
         # Forfeited services are written off — do not recalculate
         if self.is_forfeited:
@@ -1013,8 +1017,13 @@ class ServiceAppliance(models.Model):
         ordering = ["appliance_type__name", "brand"]
 
     def save(self, *args, **kwargs):
-        """Auto-fill warranty months from ApplianceType defaults on new records."""
-        if self._state.adding and self.appliance_type_id:
+        """Auto-fill warranty months from ApplianceType defaults on new records.
+        Skip auto-fill for complementary services (warranty claims / free cleaning)
+        to prevent warranty-on-warranty chains."""
+        is_complementary_service = (
+            self.service and getattr(self.service, "is_complementary", False)
+        )
+        if self._state.adding and self.appliance_type_id and not is_complementary_service:
             try:
                 at = ApplianceType.objects.get(pk=self.appliance_type_id)
             except ApplianceType.DoesNotExist:
