@@ -1349,10 +1349,13 @@ class CompanyAsset(models.Model):
         blank=True,
         help_text="Price the asset was sold for (sub-stall revenue)",
     )
-    sold_to = models.CharField(
-        max_length=255,
+    sold_to = models.ForeignKey(
+        "clients.Client",
+        on_delete=models.SET_NULL,
+        null=True,
         blank=True,
-        help_text="Name of buyer when asset is sold",
+        related_name="purchased_assets",
+        help_text="Client who purchased this asset",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

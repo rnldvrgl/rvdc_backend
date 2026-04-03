@@ -1761,9 +1761,55 @@ class CompanyAssetViewSet(viewsets.ModelViewSet):
             sale_price = request.data.get("sale_price")
             if sale_price is not None:
                 asset.sale_price = sale_price
-            sold_to = request.data.get("sold_to", "")
-            if sold_to:
-                asset.sold_to = sold_to
+
+            sold_to_id = request.data.get("sold_to")
+            if sold_to_id:
+                from clients.models import Client
+                try:
+                    client = Client.objects.get(pk=sold_to_id)
+                    asset.sold_to = client
+                except Client.DoesNotExist:
+                    return Response(
+                        {"detail": "Client not found."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            else:
+                asset.sold_to = None
+
+            # Auto-create a SalesTransaction for revenue tracking
+            if sale_price and sold_to_id:
+                from decimal import Decimal
+                from sales.models import (
+                    SalesTransaction,
+                    SalesItem,
+                    SalesPayment,
+                    TransactionType,
+                    PaymentStatus,
+                )
+
+                stall = asset.service.stall
+                tx = SalesTransaction.objects.create(
+                    stall=stall,
+                    client=asset.sold_to,
+                    sales_clerk=request.user,
+                    transaction_type=TransactionType.ASSET_SALE,
+                    payment_status=PaymentStatus.UNPAID,
+                    note=f"Asset sale: {asset.appliance_description}",
+                    transaction_date=tz.now().date(),
+                )
+                SalesItem.objects.create(
+                    transaction=tx,
+                    description=asset.appliance_description,
+                    quantity=1,
+                    final_price_per_unit=Decimal(str(sale_price)),
+                )
+                # Create payment record (cash) so it's marked as paid
+                payment_type = request.data.get("payment_type", "cash")
+                SalesPayment.objects.create(
+                    transaction=tx,
+                    payment_type=payment_type,
+                    amount=Decimal(str(sale_price)),
+                )
 
         asset.save()
         return Response(CompanyAssetSerializer(asset).data)

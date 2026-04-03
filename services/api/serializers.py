@@ -2538,6 +2538,7 @@ class JobOrderTemplatePrintSerializer(serializers.ModelSerializer):
 class CompanyAssetSerializer(serializers.ModelSerializer):
     service_ref = serializers.SerializerMethodField()
     client_name = serializers.SerializerMethodField()
+    sold_to_name = serializers.SerializerMethodField()
     declared_by_name = serializers.CharField(
         source="acquired_by.get_full_name", read_only=True, allow_null=True
     )
@@ -2562,6 +2563,7 @@ class CompanyAssetSerializer(serializers.ModelSerializer):
             "disposal_notes",
             "sale_price",
             "sold_to",
+            "sold_to_name",
             "created_at",
             "updated_at",
         ]
@@ -2578,5 +2580,11 @@ class CompanyAssetSerializer(serializers.ModelSerializer):
     def get_client_name(self, obj):
         try:
             return obj.service.client.full_name
+        except Exception:
+            return None
+
+    def get_sold_to_name(self, obj):
+        try:
+            return obj.sold_to.full_name if obj.sold_to else None
         except Exception:
             return None
