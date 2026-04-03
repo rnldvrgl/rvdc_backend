@@ -11,6 +11,7 @@ class CharInFilter(filters.BaseInFilter, filters.CharFilter):
 
 class SalesTransactionFilter(filters.FilterSet):
     payment_status = CharInFilter(field_name="payment_status", lookup_expr="in")
+    transaction_type = CharInFilter(field_name="transaction_type", lookup_expr="in")
     has_receipt = filters.CharFilter(method="filter_has_receipt")
     receipt_type = filters.CharFilter(method="filter_receipt_type")
 
