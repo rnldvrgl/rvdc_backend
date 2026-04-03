@@ -1342,6 +1342,18 @@ class CompanyAsset(models.Model):
     )
     disposed_at = models.DateTimeField(null=True, blank=True)
     disposal_notes = models.TextField(blank=True)
+    sale_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Price the asset was sold for (sub-stall revenue)",
+    )
+    sold_to = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Name of buyer when asset is sold",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

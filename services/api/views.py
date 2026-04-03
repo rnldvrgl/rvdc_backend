@@ -1755,5 +1755,15 @@ class CompanyAssetViewSet(viewsets.ModelViewSet):
         asset.disposal_notes = request.data.get("disposal_notes", "")
         if new_status in (CompanyAsset.AssetStatus.SOLD, CompanyAsset.AssetStatus.DISPOSED, CompanyAsset.AssetStatus.REPURPOSED):
             asset.disposed_at = tz.now()
+
+        # Sale-specific fields
+        if new_status == CompanyAsset.AssetStatus.SOLD:
+            sale_price = request.data.get("sale_price")
+            if sale_price is not None:
+                asset.sale_price = sale_price
+            sold_to = request.data.get("sold_to", "")
+            if sold_to:
+                asset.sold_to = sold_to
+
         asset.save()
         return Response(CompanyAssetSerializer(asset).data)

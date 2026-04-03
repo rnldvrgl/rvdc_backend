@@ -2560,6 +2560,8 @@ class CompanyAssetSerializer(serializers.ModelSerializer):
             "status",
             "disposed_at",
             "disposal_notes",
+            "sale_price",
+            "sold_to",
             "created_at",
             "updated_at",
         ]
