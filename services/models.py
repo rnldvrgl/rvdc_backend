@@ -22,11 +22,12 @@ class PaymentType(models.TextChoices):
 
 
 class PaymentStatus(models.TextChoices):
+    PENDING = "pending", _("Pending")
     UNPAID = "unpaid", _("Unpaid")
     PARTIAL = "partial", _("Partial")
     PAID = "paid", _("Paid")
     REFUNDED = "refunded", _("Refunded")
-    NOT_APPLICABLE = "n/a", _("N/A (Complementary)")
+    NOT_APPLICABLE = "no_charge", _("No Charge")
     WRITTEN_OFF = "written_off", _("Written Off (Forfeited)")
 
 
@@ -212,7 +213,7 @@ class Service(models.Model):
     payment_status = models.CharField(
         max_length=11,
         choices=PaymentStatus.choices,
-        default=PaymentStatus.UNPAID,
+        default=PaymentStatus.PENDING,
         help_text="Payment status of this service",
     )
 
@@ -524,9 +525,9 @@ class Service(models.Model):
         total_paid = paid_result["total"] or Decimal("0")
         net_paid = total_paid - (self.total_refunded or Decimal("0"))
 
-        # Zero-total services (all labor/parts free) are fully paid by definition
-        if total <= 0:
-            self.payment_status = PaymentStatus.PAID
+        # Zero-total services with no payments are still pending (no pricing set yet)
+        if total <= 0 and net_paid <= 0:
+            self.payment_status = PaymentStatus.PENDING
         elif net_paid <= 0:
             self.payment_status = PaymentStatus.UNPAID
         elif net_paid < total:
