@@ -499,6 +499,20 @@ class ServiceCompletionHandler:
                     if appliance.labor_warranty_months > 0 or appliance.unit_warranty_months > 0:
                         appliance.activate_warranties(start_date=completion_date)
 
+            # Auto-claim all unclaimed, non-forfeited appliances when the service is completed.
+            # Applies to carry_in and pull_out modes where the customer physically collects their unit.
+            from utils.enums import ServiceMode
+            now = timezone.now()
+            if service.service_mode in (ServiceMode.CARRY_IN, ServiceMode.PULL_OUT):
+                service.appliances.filter(
+                    claimed_at__isnull=True,
+                    is_forfeited=False,
+                ).update(claimed_at=now)
+                # Mark the service itself as claimed if all appliances are now resolved
+                if not service.appliances.filter(claimed_at__isnull=True, is_forfeited=False).exists():
+                    service.claimed_at = now
+                    service.save(update_fields=['claimed_at', 'updated_at'])
+
             # For installation services, set warranty_start_date and mark as sold on all aircon units
             from utils.enums import ServiceType
             if service.service_type == ServiceType.INSTALLATION:
