@@ -659,6 +659,63 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             status=status.HTTP_200_OK,
         )
 
+    @action(detail=True, methods=["post"], url_path=r"edit-payment")
+    def edit_payment(self, request, pk=None):
+        """
+        Edit an existing service payment (amount, type, notes, date).
+
+        Atomically replaces the old SalesPayment mirrors and re-creates them
+        with the updated values.
+
+        Request body:
+        {
+            "payment_id": 42,           // Required
+            "payment_type": "gcash",    // Optional — only fields to change needed
+            "amount": "800.00",         // Optional
+            "notes": "Corrected",       // Optional
+            "payment_date": "2026-04-04T10:00:00Z"  // Optional ISO datetime
+        }
+        """
+        from services.models import ServicePayment
+
+        service = self.get_object()
+        payment_id = request.data.get("payment_id")
+        if not payment_id:
+            return Response(
+                {"error": "payment_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            payment = ServicePayment.objects.get(id=payment_id, service=service)
+        except ServicePayment.DoesNotExist:
+            return Response(
+                {"error": "Payment not found for this service."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Only pass fields that were actually provided
+        kwargs = {}
+        if "payment_type" in request.data:
+            kwargs["payment_type"] = request.data["payment_type"]
+        if "amount" in request.data:
+            kwargs["amount"] = request.data["amount"]
+        if "notes" in request.data:
+            kwargs["notes"] = request.data["notes"]
+        if "payment_date" in request.data:
+            from django.utils.dateparse import parse_datetime
+            pd = parse_datetime(request.data["payment_date"])
+            if pd is None:
+                return Response(
+                    {"error": "Invalid payment_date format. Use ISO 8601."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            kwargs["payment_date"] = pd
+
+        updated_payment = ServicePaymentManager.update_payment(payment, **kwargs)
+        output_serializer = ServicePaymentSerializer(updated_payment)
+        return Response(output_serializer.data, status=status.HTTP_200_OK)
+
     @action(detail=True, methods=["post"], url_path="schedule-delivery")
     def schedule_delivery(self, request, pk=None):
         """

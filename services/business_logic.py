@@ -1866,6 +1866,116 @@ class ServicePaymentManager:
         }
 
     @staticmethod
+    def update_payment(payment, payment_type=None, amount=None, notes=None, payment_date=None, cheque_collection=None):
+        """
+        Edit an existing service payment in-place.
+
+        Atomically:
+        1. Removes the old SalesPayment mirror(s) from linked transactions
+        2. Updates the ServicePayment fields
+        3. Re-creates SalesPayment mirror(s) with the new values
+
+        Args:
+            payment: ServicePayment instance to update
+            payment_type: New payment type (optional — keeps existing if None)
+            amount: New amount (optional — keeps existing if None)
+            notes: New notes (optional)
+            payment_date: New payment date override (optional)
+            cheque_collection: New ChequeCollection link (optional)
+
+        Returns:
+            Updated ServicePayment instance
+        """
+        from sales.models import SalesPayment
+
+        with transaction.atomic():
+            service = payment.service
+
+            old_amount = payment.amount
+            old_type = payment.payment_type
+
+            new_type = payment_type if payment_type is not None else old_type
+            new_amount = Decimal(str(amount)) if amount is not None else old_amount
+
+            # Validate new amount won't cause overpayment
+            # balance_due includes the current payment, so the headroom is:
+            # (balance_due + old_amount) room for the new_amount
+            headroom = service.balance_due + old_amount
+            if new_amount > headroom:
+                raise ValidationError(
+                    f"Edited amount (₱{new_amount}) exceeds allowable balance "
+                    f"(₱{headroom:.2f})."
+                )
+
+            # ── Remove old SalesPayment mirrors ──
+            remaining = old_amount
+            for tx in [service.related_sub_transaction, service.related_transaction]:
+                if not tx or remaining <= 0:
+                    continue
+                matching = SalesPayment.objects.filter(
+                    transaction=tx,
+                    payment_type=old_type,
+                    amount__lte=remaining,
+                ).order_by('-amount')
+                for sp in matching:
+                    if remaining <= 0:
+                        break
+                    remaining -= sp.amount
+                    sp.delete()
+                tx.update_payment_status()
+
+            # ── Apply changes to ServicePayment ──
+            payment.payment_type = new_type
+            payment.amount = new_amount
+            if notes is not None:
+                payment.notes = notes
+            if payment_date is not None:
+                payment.payment_date = payment_date
+            if cheque_collection is not None:
+                payment.cheque_collection = cheque_collection
+            payment.save()
+
+            # ── Re-create SalesPayment mirrors with new values ──
+            sales_tx = service.related_transaction
+            sub_tx = service.related_sub_transaction
+
+            if sales_tx or sub_tx:
+                main_total = (sales_tx.computed_total or Decimal('0')) if sales_tx else Decimal('0')
+                sub_total = (sub_tx.computed_total or Decimal('0')) if sub_tx else Decimal('0')
+                main_paid = sum(p.amount for p in sales_tx.payments.all()) if sales_tx else Decimal('0')
+                sub_paid = sum(p.amount for p in sub_tx.payments.all()) if sub_tx else Decimal('0')
+
+                m_share, s_share = ServicePaymentManager._waterfall_split(
+                    new_amount,
+                    main_total - main_paid,
+                    sub_total - sub_paid,
+                )
+
+                sp_kwargs_base = {'payment_type': new_type}
+                if payment_date is not None:
+                    sp_kwargs_base['payment_date'] = payment_date
+
+                if m_share > 0 and sales_tx:
+                    SalesPayment.objects.create(
+                        transaction=sales_tx,
+                        amount=m_share,
+                        **sp_kwargs_base,
+                    )
+                    sales_tx.update_payment_status()
+
+                if s_share > 0 and sub_tx:
+                    SalesPayment.objects.create(
+                        transaction=sub_tx,
+                        amount=s_share,
+                        **sp_kwargs_base,
+                    )
+                    sub_tx.update_payment_status()
+
+            service.update_payment_status()
+
+        return payment
+
+    @staticmethod
     def void_payment(payment, reason=""):
         """
         Void/delete a payment and update service payment status.
