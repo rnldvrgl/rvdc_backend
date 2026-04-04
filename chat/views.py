@@ -1,9 +1,14 @@
 import json
+import os
+import uuid
 
 import redis
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from rest_framework import permissions, status
+from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -102,3 +107,51 @@ class ChatUsersView(APIView):
         r.close()
 
         return Response(result)
+
+
+_ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+class ChatImageUploadView(APIView):
+    """
+    POST /api/chat/upload-image/
+    Accepts a single image file and saves it under media/chat_images/.
+    Returns { "url": "<absolute_url>" }.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        user = request.user
+        if user.role not in ("admin", "manager", "clerk"):
+            return Response(
+                {"detail": "Chat not available for your role."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        image = request.FILES.get("image")
+        if not image:
+            return Response(
+                {"detail": "No image provided."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if image.content_type not in _ALLOWED_IMAGE_TYPES:
+            return Response(
+                {"detail": "Unsupported image type. Use JPEG, PNG, GIF, or WebP."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if image.size > _MAX_IMAGE_BYTES:
+            return Response(
+                {"detail": "Image too large. Maximum size is 5 MB."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ext = os.path.splitext(image.name)[1].lower() or ".jpg"
+        filename = f"chat_images/{uuid.uuid4().hex}{ext}"
+        path = default_storage.save(filename, ContentFile(image.read()))
+        url = request.build_absolute_uri(f"{settings.MEDIA_URL}{path}")
+        return Response({"url": url})

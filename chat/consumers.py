@@ -152,7 +152,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def _handle_send(self, payload):
         to_id = payload.get("to")
         body = (payload.get("body") or "").strip()
-        if not to_id or not body or len(body) > 2000:
+        image_url = (payload.get("image_url") or "").strip()
+        if not to_id or (not body and not image_url) or len(body) > 2000 or len(image_url) > 2048:
             return
 
         # Validate target user exists and is eligible for chat
@@ -170,6 +171,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
             "body": body,
             "ts": ts,
         }
+
+        if image_url:
+            message["image_url"] = image_url
 
         # Attach reply_to if provided
         reply_to = payload.get("reply_to")
@@ -201,7 +205,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         # Send Web Push notification to recipient (runs in thread to avoid blocking)
         sender_name = await self._get_display_name(self.user_id)
-        await database_sync_to_async(self._send_chat_push)(to_id, self.user_id, sender_name, body)
+        push_text = body if body else "Sent an image"
+        await database_sync_to_async(self._send_chat_push)(to_id, self.user_id, sender_name, push_text)
 
     async def _handle_history(self, payload):
         with_id = payload.get("with")
