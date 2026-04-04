@@ -48,6 +48,7 @@ from utils.filters.options import (
 )
 from utils.filters.role_filters import get_role_based_filter_response
 from utils.inventory import (
+    create_item_with_initial_stock,
     user_can_manage_stall,
 )
 from utils.query import (
@@ -159,7 +160,7 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         ws = wb.active
         ws.title = "Items"
 
-        headers = ["SKU", "Name", "Category", "Cost Price", "Retail Price", "Wholesale Price", "Technician Price"]
+        headers = ["SKU", "Name", "Category", "Cost Price", "Retail Price", "Wholesale Price", "Technician Price", "Action"]
         header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
         header_font = Font(color="FFFFFF", bold=True, size=11)
         thin_border = Border(
@@ -184,11 +185,10 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             ws.cell(row=row_idx, column=5, value=float(item.retail_price or 0)).border = thin_border
             ws.cell(row=row_idx, column=6, value=float(item.wholesale_price or 0)).border = thin_border
             ws.cell(row=row_idx, column=7, value=float(item.technician_price or 0)).border = thin_border
+            ws.cell(row=row_idx, column=8, value="").border = thin_border
 
-        # Lock SKU column (read-only identifier)
         ws.sheet_properties.tabColor = "1F4E79"
 
-        # Auto-width
         for col in ws.columns:
             max_len = 0
             col_letter = col[0].column_letter
@@ -218,6 +218,10 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         """
         Upload an XLSX file to preview changes before applying them.
         Returns a list of changes (old vs new) without saving anything.
+        Supports:
+          - Update:  SKU present, Action blank → update prices/name
+          - Delete:  SKU present, Action = "DELETE" → soft-delete item
+          - Create:  SKU blank, Name present → create new item
         """
         import openpyxl
 
@@ -273,7 +277,31 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 continue
 
             sku = str(row[0] or "").strip()
+            action_val = str(row[7] or "").strip().upper() if len(row) > 7 else ""
+
+            # ── CREATE: blank SKU means new item ──────────────────────────────
             if not sku:
+                new_name = str(row[1] or "").strip()
+                if not new_name:
+                    continue  # fully blank row — skip quietly
+
+                try:
+                    new_retail = Decimal(str(row[4])) if row[4] is not None and str(row[4]).strip() != "" else None
+                except (InvalidOperation, ValueError):
+                    errors.append({"row": row_num, "error": "Invalid retail price for new item."})
+                    continue
+
+                if new_retail is None or new_retail <= 0:
+                    errors.append({"row": row_num, "error": "New items require a positive retail price."})
+                    continue
+
+                changes.append({
+                    "row": row_num,
+                    "sku": "",
+                    "name": new_name,
+                    "action": "create",
+                    "changes": [{"field": "Name", "old": "", "new": new_name}],
+                })
                 continue
 
             item = all_items.get(sku)
@@ -281,6 +309,18 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 errors.append({"row": row_num, "sku": sku, "error": "SKU not found."})
                 continue
 
+            # ── DELETE ────────────────────────────────────────────────────────
+            if action_val == "DELETE":
+                changes.append({
+                    "row": row_num,
+                    "sku": sku,
+                    "name": item.name,
+                    "action": "delete",
+                    "changes": [],
+                })
+                continue
+
+            # ── UPDATE ────────────────────────────────────────────────────────
             new_name = str(row[1] or "").strip()
 
             try:
@@ -314,16 +354,24 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                         "row": row_num,
                         "sku": sku,
                         "name": item.name,
+                        "action": "update",
                         "changes": item_changes,
                     })
                 else:
                     skipped += 1
 
+        creates = sum(1 for c in changes if c["action"] == "create")
+        deletes = sum(1 for c in changes if c["action"] == "delete")
+        updates = sum(1 for c in changes if c["action"] == "update")
+
         return Response({
             "changes": changes,
             "skipped": skipped,
             "errors": errors,
-            "summary": f"{len(changes)} items to update, {skipped} unchanged, {len(errors)} errors.",
+            "summary": (
+                f"{updates} to update, {creates} to create, {deletes} to delete, "
+                f"{skipped} unchanged, {len(errors)} errors."
+            ),
         })
 
     @action(
@@ -335,6 +383,8 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     def bulk_update(self, request):
         """
         Upload an XLSX file to bulk-update item names and prices.
+        Also supports creating new items (blank SKU) and deleting existing
+        items (Action = DELETE).
         Validates the file synchronously, then processes in a background
         thread. Results are delivered via WebSocket notification.
         """
@@ -381,6 +431,13 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         user_id = request.user.id
 
+        excluded_rows_raw = request.data.get("excluded_rows", "[]")
+        try:
+            import json as _json
+            excluded_rows = set(_json.loads(excluded_rows_raw))
+        except Exception:
+            excluded_rows = set()
+
         def _process_bulk_update():
             try:
                 all_items = {
@@ -389,16 +446,54 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 }
 
                 updated = []
+                to_delete = []
+                to_create = []
                 skipped = []
                 errors = []
 
                 for row_num, row in enumerate(rows, 2):
+                    if row_num in excluded_rows:
+                        skipped.append(str(row[0] or ""))
+                        continue
+
                     if len(row) < 7:
                         errors.append({"row": row_num, "error": "Row has fewer than 7 columns."})
                         continue
 
                     sku = str(row[0] or "").strip()
+                    action_val = str(row[7] or "").strip().upper() if len(row) > 7 else ""
+
+                    # ── CREATE ────────────────────────────────────────────────
                     if not sku:
+                        new_name = str(row[1] or "").strip()
+                        if not new_name:
+                            continue
+
+                        try:
+                            new_retail = Decimal(str(row[4])) if row[4] is not None and str(row[4]).strip() != "" else Decimal("0")
+                            new_cost = Decimal(str(row[3])) if row[3] is not None and str(row[3]).strip() != "" else Decimal("0")
+                            new_wholesale = Decimal(str(row[5])) if row[5] is not None and str(row[5]).strip() != "" else Decimal("0")
+                            new_tech = Decimal(str(row[6])) if row[6] is not None and str(row[6]).strip() != "" else Decimal("0")
+                        except (InvalidOperation, ValueError) as e:
+                            errors.append({"row": row_num, "error": f"Invalid price value: {e}"})
+                            continue
+
+                        category_name = str(row[2] or "").strip()
+                        category = None
+                        if category_name:
+                            try:
+                                category = ProductCategory.objects.get(name__iexact=category_name, is_deleted=False)
+                            except ProductCategory.DoesNotExist:
+                                pass
+
+                        to_create.append({
+                            "name": new_name,
+                            "category": category,
+                            "retail_price": new_retail,
+                            "cost_price": new_cost,
+                            "wholesale_price": new_wholesale,
+                            "technician_price": new_tech,
+                        })
                         continue
 
                     item = all_items.get(sku)
@@ -406,6 +501,12 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                         errors.append({"row": row_num, "sku": sku, "error": "SKU not found."})
                         continue
 
+                    # ── DELETE ────────────────────────────────────────────────
+                    if action_val == "DELETE":
+                        to_delete.append(item)
+                        continue
+
+                    # ── UPDATE ────────────────────────────────────────────────
                     new_name = str(row[1] or "").strip()
 
                     try:
@@ -447,10 +548,22 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 with transaction.atomic():
                     for item in updated:
                         item.save()
+                    for item in to_delete:
+                        item.is_deleted = True
+                        item.deleted_at = timezone.now()
+                        item.save(track_history=False)
+                    for data in to_create:
+                        create_item_with_initial_stock(data)
 
-                detail = f"Updated {len(updated)} items, skipped {len(skipped)} unchanged, {len(errors)} errors."
+                detail = (
+                    f"Updated {len(updated)}, created {len(to_create)}, "
+                    f"deleted {len(to_delete)}, skipped {len(skipped)} unchanged, "
+                    f"{len(errors)} errors."
+                )
                 _notify_bulk_update(user_id, {
                     "updated": len(updated),
+                    "created": len(to_create),
+                    "deleted": len(to_delete),
                     "skipped": len(skipped),
                     "errors": errors,
                     "detail": detail,
@@ -865,6 +978,108 @@ def _notify_bulk_update_failed(user_id):
         logging.getLogger(__name__).exception("Failed to send bulk_update_failed via WebSocket")
 
 
+def _notify_stall_stock_bulk_update(user_id, result):
+    """Push stall_stock_bulk_update_complete event via WebSocket."""
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {
+                    "type": "send_notification",
+                    "data": {
+                        "event": "export_ready",
+                        "export_type": "stall_stock_bulk_update",
+                        "title": "Stall Stock Bulk Update Complete",
+                        "message": result["detail"],
+                        "result": result,
+                    },
+                },
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send stall_stock_bulk_update via WebSocket")
+
+
+def _notify_stall_stock_bulk_update_failed(user_id):
+    """Push stall_stock_bulk_update_failed event via WebSocket."""
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {
+                    "type": "send_notification",
+                    "data": {
+                        "event": "export_failed",
+                        "export_type": "stall_stock_bulk_update",
+                        "title": "Stall Stock Bulk Update Failed",
+                        "message": "Failed to process the stall stock bulk update. Please try again.",
+                    },
+                },
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send stall_stock_bulk_update_failed via WebSocket")
+
+
+def _notify_stockroom_bulk_update(user_id, result):
+    """Push stockroom_bulk_update_complete event via WebSocket."""
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {
+                    "type": "send_notification",
+                    "data": {
+                        "event": "export_ready",
+                        "export_type": "stockroom_bulk_update",
+                        "title": "Stockroom Bulk Update Complete",
+                        "message": result["detail"],
+                        "result": result,
+                    },
+                },
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send stockroom_bulk_update via WebSocket")
+
+
+def _notify_stockroom_bulk_update_failed(user_id):
+    """Push stockroom_bulk_update_failed event via WebSocket."""
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {
+                    "type": "send_notification",
+                    "data": {
+                        "event": "export_failed",
+                        "export_type": "stockroom_bulk_update",
+                        "title": "Stockroom Bulk Update Failed",
+                        "message": "Failed to process the stockroom bulk update. Please try again.",
+                    },
+                },
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send stockroom_bulk_update_failed via WebSocket")
+
+
 class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     queryset = Stock.objects.select_related(
         'item__category', 'item__stockroom_stock', 'stall'
@@ -1103,6 +1318,7 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             "quantity_removed": float(quantity),
             "old_quantity": float(old_quantity),
             "new_quantity": float(stock.quantity),
+
         })
 
     @action(detail=True, methods=["get", "post"], permission_classes=[IsAdminUser], url_path="audit")
@@ -1190,6 +1406,309 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             "discrepancy": discrepancy,
             "adjusted": True,
         })
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="bulk-template",
+        permission_classes=[IsAdminUser],
+    )
+    def bulk_template(self, request):
+        """Download an XLSX template pre-filled with all active stall stock entries."""
+        import openpyxl
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+        stocks = (
+            Stock.objects.filter(is_deleted=False, item__is_deleted=False)
+            .select_related("item__category", "stall")
+            .order_by("item__name")
+        )
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Stall Stock"
+
+        headers = ["Stock ID", "SKU", "Item Name", "Category", "Stall", "Quantity", "Low Stock Threshold", "Track Stock"]
+        header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True, size=11)
+        thin_border = Border(
+            left=Side(style="thin"),
+            right=Side(style="thin"),
+            top=Side(style="thin"),
+            bottom=Side(style="thin"),
+        )
+
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+
+        for row_idx, stock in enumerate(stocks, 2):
+            ws.cell(row=row_idx, column=1, value=stock.id).border = thin_border
+            ws.cell(row=row_idx, column=2, value=stock.item.sku).border = thin_border
+            ws.cell(row=row_idx, column=3, value=stock.item.name).border = thin_border
+            ws.cell(row=row_idx, column=4, value=stock.item.category.name if stock.item.category else "").border = thin_border
+            ws.cell(row=row_idx, column=5, value=stock.stall.name if stock.stall else "").border = thin_border
+            ws.cell(row=row_idx, column=6, value=float(stock.quantity)).border = thin_border
+            ws.cell(row=row_idx, column=7, value=float(stock.low_stock_threshold)).border = thin_border
+            ws.cell(row=row_idx, column=8, value=stock.track_stock).border = thin_border
+
+        for col in ws.columns:
+            max_len = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                if cell.value:
+                    max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = min(max_len + 4, 40)
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        response = HttpResponse(
+            buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = 'attachment; filename="stall_stock_template.xlsx"'
+        return response
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-preview",
+        permission_classes=[IsAdminUser],
+    )
+    def bulk_preview(self, request):
+        """
+        Upload an XLSX file to preview stall stock changes before applying them.
+        Returns a list of changes (old vs new) without saving anything.
+        """
+        import openpyxl
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response({"detail": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response({"detail": "Only .xlsx files are supported."}, status=status.HTTP_400_BAD_REQUEST)
+        if xlsx_file.size > 5 * 1024 * 1024:
+            return Response({"detail": "File too large. Maximum 5 MB."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response({"detail": "Could not parse the uploaded file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ws = wb.active
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response({"detail": "The file contains no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+
+        all_stocks = {stock.id: stock for stock in Stock.objects.filter(is_deleted=False, item__is_deleted=False).select_related("item", "stall")}
+
+        changes = []
+        skipped = 0
+        errors = []
+
+        for row_num, row in enumerate(rows, 2):
+            if len(row) < 8:
+                errors.append({"row": row_num, "error": "Row has fewer than 8 columns."})
+                continue
+
+            try:
+                stock_id = int(row[0]) if row[0] is not None else None
+            except (ValueError, TypeError):
+                errors.append({"row": row_num, "error": "Invalid Stock ID."})
+                continue
+
+            if stock_id is None:
+                continue
+
+            stock = all_stocks.get(stock_id)
+            if not stock:
+                errors.append({"row": row_num, "stock_id": stock_id, "error": "Stock ID not found."})
+                continue
+
+            try:
+                new_qty = Decimal(str(row[5])) if row[5] is not None and str(row[5]).strip() != "" else None
+                new_threshold = Decimal(str(row[6])) if row[6] is not None and str(row[6]).strip() != "" else None
+            except (InvalidOperation, ValueError) as e:
+                errors.append({"row": row_num, "stock_id": stock_id, "error": f"Invalid numeric value: {e}"})
+                continue
+
+            new_track = None
+            if row[7] is not None and str(row[7]).strip() != "":
+                val = str(row[7]).strip().lower()
+                new_track = val in ("true", "1", "yes")
+
+            for label, val in [("quantity", new_qty), ("threshold", new_threshold)]:
+                if val is not None and val < 0:
+                    errors.append({"row": row_num, "stock_id": stock_id, "error": f"{label} cannot be negative."})
+                    break
+            else:
+                item_changes = []
+                if new_qty is not None and new_qty != stock.quantity:
+                    item_changes.append({"field": "Quantity", "old": str(stock.quantity), "new": str(new_qty)})
+                if new_threshold is not None and new_threshold != stock.low_stock_threshold:
+                    item_changes.append({"field": "Low Stock Threshold", "old": str(stock.low_stock_threshold), "new": str(new_threshold)})
+                if new_track is not None and new_track != stock.track_stock:
+                    item_changes.append({"field": "Track Stock", "old": str(stock.track_stock), "new": str(new_track)})
+
+                if item_changes:
+                    changes.append({
+                        "row": row_num,
+                        "stock_id": stock_id,
+                        "sku": stock.item.sku,
+                        "name": stock.item.name,
+                        "stall": stock.stall.name if stock.stall else "",
+                        "changes": item_changes,
+                    })
+                else:
+                    skipped += 1
+
+        return Response({
+            "changes": changes,
+            "skipped": skipped,
+            "errors": errors,
+            "summary": f"{len(changes)} items to update, {skipped} unchanged, {len(errors)} errors.",
+        })
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-update",
+        permission_classes=[IsAdminUser],
+    )
+    def bulk_update(self, request):
+        """
+        Upload an XLSX file to bulk-update stall stock quantities and thresholds.
+        Validates synchronously, processes in background thread, notifies via WebSocket.
+        """
+        import threading
+
+        import openpyxl
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response({"detail": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response({"detail": "Only .xlsx files are supported."}, status=status.HTTP_400_BAD_REQUEST)
+        if xlsx_file.size > 5 * 1024 * 1024:
+            return Response({"detail": "File too large. Maximum 5 MB."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response({"detail": "Could not parse the uploaded file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ws = wb.active
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response({"detail": "The file contains no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user_id = request.user.id
+
+        excluded_rows_raw = request.data.get("excluded_rows", "[]")
+        try:
+            import json as _json
+            excluded_rows = set(_json.loads(excluded_rows_raw))
+        except Exception:
+            excluded_rows = set()
+
+        def _process():
+            try:
+                all_stocks = {
+                    stock.id: stock
+                    for stock in Stock.objects.filter(is_deleted=False, item__is_deleted=False).select_related("item", "stall")
+                }
+
+                updated = []
+                skipped = []
+                errors = []
+
+                for row_num, row in enumerate(rows, 2):
+                    if row_num in excluded_rows:
+                        skipped.append(row[0])
+                        continue
+
+                    if len(row) < 8:
+                        errors.append({"row": row_num, "error": "Row has fewer than 8 columns."})
+                        continue
+
+                    try:
+                        stock_id = int(row[0]) if row[0] is not None else None
+                    except (ValueError, TypeError):
+                        errors.append({"row": row_num, "error": "Invalid Stock ID."})
+                        continue
+
+                    if stock_id is None:
+                        continue
+
+                    stock = all_stocks.get(stock_id)
+                    if not stock:
+                        errors.append({"row": row_num, "stock_id": stock_id, "error": "Stock ID not found."})
+                        continue
+
+                    try:
+                        new_qty = Decimal(str(row[5])) if row[5] is not None and str(row[5]).strip() != "" else None
+                        new_threshold = Decimal(str(row[6])) if row[6] is not None and str(row[6]).strip() != "" else None
+                    except (InvalidOperation, ValueError) as e:
+                        errors.append({"row": row_num, "stock_id": stock_id, "error": f"Invalid numeric value: {e}"})
+                        continue
+
+                    new_track = None
+                    if row[7] is not None and str(row[7]).strip() != "":
+                        val = str(row[7]).strip().lower()
+                        new_track = val in ("true", "1", "yes")
+
+                    for label, val in [("quantity", new_qty), ("threshold", new_threshold)]:
+                        if val is not None and val < 0:
+                            errors.append({"row": row_num, "stock_id": stock_id, "error": f"{label} cannot be negative."})
+                            break
+                    else:
+                        changed = False
+                        if new_qty is not None and new_qty != stock.quantity:
+                            stock.quantity = new_qty
+                            changed = True
+                        if new_threshold is not None and new_threshold != stock.low_stock_threshold:
+                            stock.low_stock_threshold = new_threshold
+                            changed = True
+                        if new_track is not None and new_track != stock.track_stock:
+                            stock.track_stock = new_track
+                            changed = True
+
+                        if changed:
+                            updated.append(stock)
+                        else:
+                            skipped.append(stock_id)
+
+                with transaction.atomic():
+                    for stock in updated:
+                        stock.save(update_fields=["quantity", "low_stock_threshold", "track_stock", "updated_at"])
+
+                detail = f"Updated {len(updated)} stall stock entries, skipped {len(skipped)} unchanged, {len(errors)} errors."
+                _notify_stall_stock_bulk_update(user_id, {
+                    "updated": len(updated),
+                    "skipped": len(skipped),
+                    "errors": errors,
+                    "detail": detail,
+                })
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("Stall stock bulk update failed")
+                _notify_stall_stock_bulk_update_failed(user_id)
+
+        threading.Thread(target=_process, daemon=True).start()
+
+        return Response(
+            {"detail": "Bulk update started. You will be notified when it's done."},
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class StockRoomStockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
@@ -1305,6 +1824,294 @@ class StockRoomStockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             "discrepancy": discrepancy,
             "adjusted": True,
         })
+
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="bulk-template",
+        permission_classes=[IsAdminUser],
+    )
+    def bulk_template(self, request):
+        """Download an XLSX template pre-filled with all active stockroom stock entries."""
+        import openpyxl
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+        stocks = (
+            StockRoomStock.objects.filter(is_deleted=False, item__is_deleted=False)
+            .select_related("item__category")
+            .order_by("item__name")
+        )
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Stockroom Stock"
+
+        headers = ["Stock ID", "SKU", "Item Name", "Category", "Quantity", "Low Stock Threshold"]
+        header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True, size=11)
+        thin_border = Border(
+            left=Side(style="thin"),
+            right=Side(style="thin"),
+            top=Side(style="thin"),
+            bottom=Side(style="thin"),
+        )
+
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+
+        for row_idx, stock in enumerate(stocks, 2):
+            ws.cell(row=row_idx, column=1, value=stock.id).border = thin_border
+            ws.cell(row=row_idx, column=2, value=stock.item.sku).border = thin_border
+            ws.cell(row=row_idx, column=3, value=stock.item.name).border = thin_border
+            ws.cell(row=row_idx, column=4, value=stock.item.category.name if stock.item.category else "").border = thin_border
+            ws.cell(row=row_idx, column=5, value=float(stock.quantity)).border = thin_border
+            ws.cell(row=row_idx, column=6, value=float(stock.low_stock_threshold)).border = thin_border
+
+        for col in ws.columns:
+            max_len = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                if cell.value:
+                    max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = min(max_len + 4, 40)
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        response = HttpResponse(
+            buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = 'attachment; filename="stockroom_stock_template.xlsx"'
+        return response
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-preview",
+        permission_classes=[IsAdminUser],
+    )
+    def bulk_preview(self, request):
+        """
+        Upload an XLSX file to preview stockroom stock changes before applying them.
+        Returns a list of changes (old vs new) without saving anything.
+        """
+        import openpyxl
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response({"detail": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response({"detail": "Only .xlsx files are supported."}, status=status.HTTP_400_BAD_REQUEST)
+        if xlsx_file.size > 5 * 1024 * 1024:
+            return Response({"detail": "File too large. Maximum 5 MB."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response({"detail": "Could not parse the uploaded file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ws = wb.active
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response({"detail": "The file contains no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+
+        all_stocks = {
+            stock.id: stock
+            for stock in StockRoomStock.objects.filter(is_deleted=False, item__is_deleted=False).select_related("item")
+        }
+
+        changes = []
+        skipped = 0
+        errors = []
+
+        for row_num, row in enumerate(rows, 2):
+            if len(row) < 6:
+                errors.append({"row": row_num, "error": "Row has fewer than 6 columns."})
+                continue
+
+            try:
+                stock_id = int(row[0]) if row[0] is not None else None
+            except (ValueError, TypeError):
+                errors.append({"row": row_num, "error": "Invalid Stock ID."})
+                continue
+
+            if stock_id is None:
+                continue
+
+            stock = all_stocks.get(stock_id)
+            if not stock:
+                errors.append({"row": row_num, "stock_id": stock_id, "error": "Stock ID not found."})
+                continue
+
+            try:
+                new_qty = Decimal(str(row[4])) if row[4] is not None and str(row[4]).strip() != "" else None
+                new_threshold = Decimal(str(row[5])) if row[5] is not None and str(row[5]).strip() != "" else None
+            except (InvalidOperation, ValueError) as e:
+                errors.append({"row": row_num, "stock_id": stock_id, "error": f"Invalid numeric value: {e}"})
+                continue
+
+            for label, val in [("quantity", new_qty), ("threshold", new_threshold)]:
+                if val is not None and val < 0:
+                    errors.append({"row": row_num, "stock_id": stock_id, "error": f"{label} cannot be negative."})
+                    break
+            else:
+                item_changes = []
+                if new_qty is not None and new_qty != stock.quantity:
+                    item_changes.append({"field": "Quantity", "old": str(stock.quantity), "new": str(new_qty)})
+                if new_threshold is not None and new_threshold != stock.low_stock_threshold:
+                    item_changes.append({"field": "Low Stock Threshold", "old": str(stock.low_stock_threshold), "new": str(new_threshold)})
+
+                if item_changes:
+                    changes.append({
+                        "row": row_num,
+                        "stock_id": stock_id,
+                        "sku": stock.item.sku,
+                        "name": stock.item.name,
+                        "changes": item_changes,
+                    })
+                else:
+                    skipped += 1
+
+        return Response({
+            "changes": changes,
+            "skipped": skipped,
+            "errors": errors,
+            "summary": f"{len(changes)} items to update, {skipped} unchanged, {len(errors)} errors.",
+        })
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-update",
+        permission_classes=[IsAdminUser],
+    )
+    def bulk_update(self, request):
+        """
+        Upload an XLSX file to bulk-update stockroom stock quantities and thresholds.
+        Validates synchronously, processes in background thread, notifies via WebSocket.
+        """
+        import threading
+
+        import openpyxl
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response({"detail": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response({"detail": "Only .xlsx files are supported."}, status=status.HTTP_400_BAD_REQUEST)
+        if xlsx_file.size > 5 * 1024 * 1024:
+            return Response({"detail": "File too large. Maximum 5 MB."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response({"detail": "Could not parse the uploaded file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ws = wb.active
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response({"detail": "The file contains no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user_id = request.user.id
+
+        excluded_rows_raw = request.data.get("excluded_rows", "[]")
+        try:
+            import json as _json
+            excluded_rows = set(_json.loads(excluded_rows_raw))
+        except Exception:
+            excluded_rows = set()
+
+        def _process():
+            try:
+                all_stocks = {
+                    stock.id: stock
+                    for stock in StockRoomStock.objects.filter(is_deleted=False, item__is_deleted=False).select_related("item")
+                }
+
+                updated = []
+                skipped = []
+                errors = []
+
+                for row_num, row in enumerate(rows, 2):
+                    if row_num in excluded_rows:
+                        skipped.append(row[0])
+                        continue
+
+                    if len(row) < 6:
+                        errors.append({"row": row_num, "error": "Row has fewer than 6 columns."})
+                        continue
+
+                    try:
+                        stock_id = int(row[0]) if row[0] is not None else None
+                    except (ValueError, TypeError):
+                        errors.append({"row": row_num, "error": "Invalid Stock ID."})
+                        continue
+
+                    if stock_id is None:
+                        continue
+
+                    stock = all_stocks.get(stock_id)
+                    if not stock:
+                        errors.append({"row": row_num, "stock_id": stock_id, "error": "Stock ID not found."})
+                        continue
+
+                    try:
+                        new_qty = Decimal(str(row[4])) if row[4] is not None and str(row[4]).strip() != "" else None
+                        new_threshold = Decimal(str(row[5])) if row[5] is not None and str(row[5]).strip() != "" else None
+                    except (InvalidOperation, ValueError) as e:
+                        errors.append({"row": row_num, "stock_id": stock_id, "error": f"Invalid numeric value: {e}"})
+                        continue
+
+                    for label, val in [("quantity", new_qty), ("threshold", new_threshold)]:
+                        if val is not None and val < 0:
+                            errors.append({"row": row_num, "stock_id": stock_id, "error": f"{label} cannot be negative."})
+                            break
+                    else:
+                        changed = False
+                        if new_qty is not None and new_qty != stock.quantity:
+                            stock.quantity = new_qty
+                            changed = True
+                        if new_threshold is not None and new_threshold != stock.low_stock_threshold:
+                            stock.low_stock_threshold = new_threshold
+                            changed = True
+
+                        if changed:
+                            updated.append(stock)
+                        else:
+                            skipped.append(stock_id)
+
+                with transaction.atomic():
+                    for stock in updated:
+                        stock.save(update_fields=["quantity", "low_stock_threshold", "updated_at"])
+
+                detail = f"Updated {len(updated)} stockroom entries, skipped {len(skipped)} unchanged, {len(errors)} errors."
+                _notify_stockroom_bulk_update(user_id, {
+                    "updated": len(updated),
+                    "skipped": len(skipped),
+                    "errors": errors,
+                    "detail": detail,
+                })
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("Stockroom bulk update failed")
+                _notify_stockroom_bulk_update_failed(user_id)
+
+        threading.Thread(target=_process, daemon=True).start()
+
+        return Response(
+            {"detail": "Bulk update started. You will be notified when it's done."},
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class ProductCategoryViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
