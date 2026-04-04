@@ -618,6 +618,47 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         summary = ServicePaymentManager.get_payment_summary(service)
         return Response(summary, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=["post"], url_path=r"void-payment")
+    def void_payment(self, request, pk=None):
+        """
+        Void (delete) a recorded service payment.
+
+        Useful when a service has been reopened and the payment method needs
+        to be corrected. The matching SalesPayment records are also removed
+        from the linked sales transactions (if any still exist).
+
+        Request body:
+        {
+            "payment_id": 42,       // Required: ID of the ServicePayment to void
+            "reason": "Wrong method" // Optional
+        }
+        """
+        from services.models import ServicePayment
+
+        service = self.get_object()
+        payment_id = request.data.get("payment_id")
+        if not payment_id:
+            return Response(
+                {"error": "payment_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            payment = ServicePayment.objects.get(id=payment_id, service=service)
+        except ServicePayment.DoesNotExist:
+            return Response(
+                {"error": "Payment not found for this service."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        reason = request.data.get("reason", "")
+        ServicePaymentManager.void_payment(payment, reason=reason)
+
+        return Response(
+            {"message": "Payment voided successfully."},
+            status=status.HTTP_200_OK,
+        )
+
     @action(detail=True, methods=["post"], url_path="schedule-delivery")
     def schedule_delivery(self, request, pk=None):
         """

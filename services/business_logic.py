@@ -1064,12 +1064,7 @@ class ServiceReopenHandler:
                         update_fields.append('updated_at')
                         unit.save(update_fields=update_fields)
 
-            # ── Step 5: Clear revenue fields ──
-            service.main_stall_revenue = Decimal('0.00')
-            service.sub_stall_revenue = Decimal('0.00')
-            service.total_revenue = Decimal('0.00')
-
-            # ── Step 6: Set status to in_progress ──
+            # ── Step 5: Set status to in_progress ──
             service.status = ServiceStatus.IN_PROGRESS
             if reason:
                 service.remarks = f"{service.remarks or ''}\n\nReopened: {reason}".strip()
@@ -1077,9 +1072,6 @@ class ServiceReopenHandler:
             service.save(update_fields=[
                 'related_transaction',
                 'related_sub_transaction',
-                'main_stall_revenue',
-                'sub_stall_revenue',
-                'total_revenue',
                 'status',
                 'remarks',
                 'updated_at',
@@ -1129,8 +1121,8 @@ class ServiceReopenHandler:
                 except ValidationError:
                     pass
 
-            # ── Step 9: Update payment status ──
-            service.update_payment_status()
+            # ── Step 9: Recalculate revenue (preserves total for payment display) ──
+            RevenueCalculator.calculate_service_revenue(service, save=True)
 
             return {
                 'service_id': service.id,
