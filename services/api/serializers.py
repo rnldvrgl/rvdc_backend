@@ -859,9 +859,9 @@ class TechnicianAssignmentPayloadSerializer(serializers.ModelSerializer):
 
     def validate_technician(self, technician):
         # Ensure the user has an appropriate role regardless of create/update.
-        if technician.role not in ('technician', 'admin', 'manager'):
+        if not technician.is_technician and technician.role not in ('admin', 'manager'):
             raise serializers.ValidationError(
-                f"{technician.get_full_name()} does not have a valid role for assignment."
+                f"{technician.get_full_name()} is not designated as a technician."
             )
         # On create (root has no instance): only active technicians may be newly assigned.
         # On update: allow inactive so existing assignments with deactivated staff can be preserved.

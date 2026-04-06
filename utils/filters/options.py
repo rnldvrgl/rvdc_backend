@@ -54,6 +54,7 @@ def get_client_options(include_number: bool = False) -> List[Dict[str, str]]:
 def get_user_options(
     include_roles: Optional[list] = None,
     exclude_roles: Optional[list] = None,
+    is_technician: Optional[bool] = None,
 ) -> List[Dict[str, str]]:
     qs = CustomUser.objects.filter(is_deleted=False, is_active=True)
 
@@ -61,6 +62,8 @@ def get_user_options(
         qs = qs.filter(role__in=include_roles)
     if exclude_roles:
         qs = qs.exclude(role__in=exclude_roles)
+    if is_technician is not None:
+        qs = qs.filter(is_technician=is_technician)
 
     users = qs.annotate(
         full_name=Concat(F("first_name"), Value(" "), F("last_name"))

@@ -507,7 +507,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         """Get filter options for service list."""
         filters_config = {
             "technician": {
-                "options": lambda: get_user_options(include_roles=["technician"])
+                "options": lambda: get_user_options(is_technician=True)
             },
             "status": {"options": get_service_status_options},
             "payment_status": {"options": get_service_payment_status_options},
@@ -1740,7 +1740,7 @@ class TechnicianAssignmentViewSet(viewsets.ModelViewSet):
     def get_filters(self, request):
         """Get filter options for technician assignments."""
         filters_config = {
-            "technician": {"options": lambda: get_user_options(include_roles=["technician"])},
+            "technician": {"options": lambda: get_user_options(is_technician=True)},
             "assignment_type": {
                 "options": lambda: [
                     {"label": choice[1], "value": choice[0]}

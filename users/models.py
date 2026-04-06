@@ -85,6 +85,11 @@ class CustomUser(AbstractUser):
         help_text="Include employee in cash ban fund contributions"
     )
 
+    is_technician = models.BooleanField(
+        default=False,
+        help_text="Allow this employee to be assigned as a technician in service jobs regardless of their role"
+    )
+
     is_deleted = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
 

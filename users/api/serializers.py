@@ -2,6 +2,7 @@ from rest_framework import serializers
 from django.core.exceptions import ValidationError as DjangoValidationError
 from users.models import CustomUser, SystemSettings, CashAdvanceMovement
 from inventory.api.serializers import StallSerializer
+from inventory.models import Stall
 from drf_extra_fields.fields import Base64ImageField
 
 
@@ -10,6 +11,14 @@ class EmployeesSerializer(serializers.ModelSerializer):
     e_signature = Base64ImageField(required=False, allow_null=True)
     username = serializers.CharField(required=False, allow_blank=True)
     full_name = serializers.SerializerMethodField()
+    assigned_stall = StallSerializer(read_only=True)
+    assigned_stall_id = serializers.PrimaryKeyRelatedField(
+        source="assigned_stall",
+        queryset=Stall.objects.all(),
+        required=False,
+        allow_null=True,
+        write_only=False,
+    )
 
     class Meta:
         model = CustomUser
@@ -41,6 +50,9 @@ class EmployeesSerializer(serializers.ModelSerializer):
             "has_pagibig",
             "has_bir_tax",
             "has_cash_ban",
+            "is_technician",
+            "assigned_stall",
+            "assigned_stall_id",
         ]
         read_only_fields = ("id", "cash_ban_balance")
 
