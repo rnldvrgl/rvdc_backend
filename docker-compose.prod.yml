@@ -21,6 +21,7 @@ services:
             - /srv/rvdc_backend/media:/usr/src/app/media
             - /var/run/docker.sock:/var/run/docker.sock
             - /var/log:/host-logs
+            - /srv/rvdc_backend/go2rtc:/go2rtc-config
         ports:
             - "8000:8000"
         depends_on:
