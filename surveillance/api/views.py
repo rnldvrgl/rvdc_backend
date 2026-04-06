@@ -26,7 +26,7 @@ def _write_go2rtc_yaml() -> bool:
     lines = ["streams:\n"]
     for cam in cameras:
         lines.append(f"  {cam.stream_name}:\n")
-        lines.append(f"    - {cam.xmeye_url}\n")
+        lines.append(f"    - {cam.stream_url}\n")
     if not lines[1:]:
         lines = ["streams: {}\n"]
 
@@ -56,7 +56,7 @@ class CCTVCameraViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, IsSuperAdminUser]
     pagination_class = None  # cameras are always few; no pagination needed
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ["name", "location", "uid"]
+    search_fields = ["name", "location"]
     ordering_fields = ["order", "name", "created_at"]
 
     def get_serializer_class(self):

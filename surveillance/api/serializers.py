@@ -10,10 +10,7 @@ class CCTVCameraSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "name",
-            "uid",
-            "username",
-            "password",
-            "channel",
+            "stream_url",
             "location",
             "notes",
             "is_active",
@@ -23,8 +20,8 @@ class CCTVCameraSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         extra_kwargs = {
-            # Password is write-only on the API — never exposed in responses
-            "password": {"write_only": True},
+            # stream_url contains credentials — write-only, never exposed in list responses
+            "stream_url": {"write_only": True},
         }
 
 
@@ -38,7 +35,6 @@ class CCTVCameraListSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "name",
-            "channel",
             "location",
             "is_active",
             "order",
