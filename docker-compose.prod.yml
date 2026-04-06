@@ -77,9 +77,7 @@ services:
     go2rtc:
         image: alexxit/go2rtc:latest
         restart: unless-stopped
-        ports:
-            # Bind to localhost only — nginx proxies this over HTTPS
-            - "127.0.0.1:19840:1984"
+        network_mode: host
         volumes:
             - /srv/rvdc_backend/go2rtc:/config
         deploy:
