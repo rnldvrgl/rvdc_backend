@@ -1153,6 +1153,57 @@ def _notify_stall_stock_bulk_update_failed(user_id):
         logging.getLogger(__name__).exception("Failed to send stall_stock_bulk_update_failed via WebSocket")
 
 
+def _notify_stall_stock_deduct(user_id, result):
+    """Push stall_stock_deduct complete event via WebSocket."""
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {
+                    "type": "send_notification",
+                    "data": {
+                        "event": "export_ready",
+                        "export_type": "stall_stock_deduct",
+                        "title": "Stock Deduction Complete",
+                        "message": result["detail"],
+                        "result": result,
+                    },
+                },
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send stall_stock_deduct via WebSocket")
+
+
+def _notify_stall_stock_deduct_failed(user_id):
+    """Push stall_stock_deduct_failed event via WebSocket."""
+    try:
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{user_id}",
+                {
+                    "type": "send_notification",
+                    "data": {
+                        "event": "export_failed",
+                        "export_type": "stall_stock_deduct",
+                        "title": "Stock Deduction Failed",
+                        "message": "Failed to process the stock deduction. Please try again.",
+                    },
+                },
+            )
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Failed to send stall_stock_deduct_failed via WebSocket")
+
+
 def _notify_stockroom_bulk_update(user_id, result):
     """Push stockroom_bulk_update_complete event via WebSocket."""
     try:
@@ -1831,6 +1882,399 @@ class StockViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         return Response(
             {"detail": "Bulk update started. You will be notified when it's done."},
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    # ── Stock Usage Export ──────────────────────────────────────────────────
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="usage-export",
+        permission_classes=[IsAdminUser],
+    )
+    def usage_export(self, request):
+        """
+        Export XLSX showing stock quantities consumed within a date range.
+        Covers sales transactions and / or service parts.
+        The resulting file can be uploaded back via bulk-deduct to apply the
+        deductions to current stall stock.
+
+        Query params:
+          date_from        – YYYY-MM-DD (inclusive, optional)
+          date_to          – YYYY-MM-DD (inclusive, optional)
+          include_sales    – 'true'/'false' (default true)
+          include_services – 'true'/'false' (default true)
+        """
+        import openpyxl
+        from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from django.db.models import DecimalField, Sum, Value
+        from django.db.models.functions import Coalesce
+        from sales.models import SalesItem
+        from services.models import ServiceItemUsed
+
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+        include_sales = request.query_params.get("include_sales", "true").lower() != "false"
+        include_services = request.query_params.get("include_services", "true").lower() != "false"
+
+        # ── Collect sales quantities by (item_id, stall_id) ──
+        sales_map: dict[tuple, Decimal] = {}
+        if include_sales:
+            sales_qs = (
+                SalesItem.objects
+                .filter(
+                    item__isnull=False,
+                    transaction__voided=False,
+                    transaction__is_deleted=False,
+                )
+            )
+            if date_from:
+                sales_qs = sales_qs.filter(transaction__created_at__date__gte=date_from)
+            if date_to:
+                sales_qs = sales_qs.filter(transaction__created_at__date__lte=date_to)
+            for row in (
+                sales_qs
+                .values("item_id", "transaction__stall_id")
+                .annotate(total=Sum("quantity"))
+            ):
+                key = (row["item_id"], row["transaction__stall_id"])
+                sales_map[key] = sales_map.get(key, Decimal("0")) + (row["total"] or Decimal("0"))
+
+        # ── Collect service quantities by (item_id, stall_id) ──
+        service_map: dict[tuple, Decimal] = {}
+        if include_services:
+            service_qs = (
+                ServiceItemUsed.objects
+                .filter(
+                    item__isnull=False,
+                    stall_stock__isnull=False,
+                    is_cancelled=False,
+                )
+            )
+            if date_from:
+                service_qs = service_qs.filter(service__created_at__date__gte=date_from)
+            if date_to:
+                service_qs = service_qs.filter(service__created_at__date__lte=date_to)
+            for row in (
+                service_qs
+                .values("item_id", "stall_stock__stall_id")
+                .annotate(total=Sum("quantity"))
+            ):
+                key = (row["item_id"], row["stall_stock__stall_id"])
+                service_map[key] = service_map.get(key, Decimal("0")) + (row["total"] or Decimal("0"))
+
+        # ── Merge keys ──
+        all_keys = set(sales_map.keys()) | set(service_map.keys())
+        if not all_keys:
+            return Response({"detail": "No stock usage found for the given date range and filters."}, status=status.HTTP_404_NOT_FOUND)
+
+        # ── Fetch item / stall info ──
+        item_ids = {k[0] for k in all_keys}
+        stall_ids = {k[1] for k in all_keys}
+        items_by_id = {i.id: i for i in Item.objects.filter(id__in=item_ids)}
+        stalls_by_id = {s.id: s for s in Stall.objects.filter(id__in=stall_ids)}
+
+        # ── Build rows sorted by item name then stall ──
+        rows_data = []
+        for (item_id, stall_id) in all_keys:
+            item = items_by_id.get(item_id)
+            stall = stalls_by_id.get(stall_id)
+            if not item or not stall:
+                continue
+            sales_qty = sales_map.get((item_id, stall_id), Decimal("0"))
+            svc_qty = service_map.get((item_id, stall_id), Decimal("0"))
+            total_qty = sales_qty + svc_qty
+            rows_data.append((item.name, item.sku, stall.name, sales_qty, svc_qty, total_qty))
+
+        rows_data.sort(key=lambda r: (r[0].lower(), r[2].lower()))
+
+        # ── Build workbook ──
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Stocks Used"
+
+        header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+        info_fill = PatternFill(start_color="2E4057", end_color="2E4057", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True, size=11)
+        thin_border = Border(
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"), bottom=Side(style="thin"),
+        )
+
+        headers = [
+            "SKU", "Item Name", "Stall",
+            "Sales Qty Used", "Service Qty Used", "Total Qty Used",
+        ]
+        notes = [
+            "(read-only)", "(read-only)", "(read-only)",
+            "(read-only)", "(read-only)", "← edit this column before uploading for deduction",
+        ]
+
+        for col_idx, header in enumerate(headers, 1):
+            fill = info_fill if col_idx < 6 else header_fill
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.fill = fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+
+        for col_idx, note in enumerate(notes, 1):
+            cell = ws.cell(row=2, column=col_idx, value=note)
+            cell.fill = info_fill if col_idx < 6 else PatternFill(start_color="4F3B7A", end_color="4F3B7A", fill_type="solid")
+            cell.font = Font(color="AAAAAA", italic=True, size=9)
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+
+        for row_idx, (name, sku, stall_name, sales_qty, svc_qty, total_qty) in enumerate(rows_data, 3):
+            ws.cell(row=row_idx, column=1, value=sku).border = thin_border
+            ws.cell(row=row_idx, column=2, value=name).border = thin_border
+            ws.cell(row=row_idx, column=3, value=stall_name).border = thin_border
+            ws.cell(row=row_idx, column=4, value=float(sales_qty)).border = thin_border
+            ws.cell(row=row_idx, column=5, value=float(svc_qty)).border = thin_border
+            total_cell = ws.cell(row=row_idx, column=6, value=float(total_qty))
+            total_cell.border = thin_border
+            total_cell.font = Font(bold=True)
+
+        for col in ws.columns:
+            max_len = max((len(str(c.value)) for c in col if c.value), default=10)
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 50)
+
+        date_label = ""
+        if date_from or date_to:
+            date_label = f"_{date_from or 'start'}_{date_to or 'end'}"
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        response = HttpResponse(
+            buf.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="stocks_used{date_label}.xlsx"'
+        return response
+
+    # ── Bulk Deduct Preview ─────────────────────────────────────────────────
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-deduct-preview",
+        permission_classes=[IsAdminUser],
+    )
+    def bulk_deduct_preview(self, request):
+        """
+        Upload the stocks-used XLSX to preview what will be deducted
+        from each stall stock before committing.
+        Expected columns: SKU | Item Name | Stall | Sales Qty | Service Qty | Total Qty
+        Quantity deducted = Total Qty Used (col 6).
+        """
+        import openpyxl
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response({"detail": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response({"detail": "Only .xlsx files are supported."}, status=status.HTTP_400_BAD_REQUEST)
+        if xlsx_file.size > 10 * 1024 * 1024:
+            return Response({"detail": "File too large. Maximum 10 MB."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response({"detail": "Could not parse the uploaded file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ws = wb.active
+        # Skip row 1 (header) and row 2 (notes), data starts at row 3
+        rows = list(ws.iter_rows(min_row=3, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response({"detail": "The file contains no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+
+        changes, skipped, errors = [], 0, []
+
+        for row_num, row in enumerate(rows, 3):
+            if not any(row):
+                continue
+            if len(row) < 6:
+                errors.append({"row": row_num, "error": "Row has fewer than 6 columns."})
+                continue
+
+            sku = str(row[0] or "").strip()
+            stall_name = str(row[2] or "").strip()
+
+            try:
+                qty_to_deduct = Decimal(str(row[5]).strip()) if row[5] is not None and str(row[5]).strip() not in ("", "(read-only)") else None
+            except (InvalidOperation, ValueError):
+                errors.append({"row": row_num, "sku": sku, "error": "Invalid quantity in Total Qty Used column."})
+                continue
+
+            if qty_to_deduct is None or qty_to_deduct <= 0:
+                skipped += 1
+                continue
+
+            if not sku:
+                errors.append({"row": row_num, "error": "SKU is required."})
+                continue
+            if not stall_name:
+                errors.append({"row": row_num, "sku": sku, "error": "Stall is required."})
+                continue
+
+            # Look up Stock
+            stock = (
+                Stock.objects
+                .filter(
+                    item__sku=sku,
+                    item__is_deleted=False,
+                    stall__name__iexact=stall_name,
+                    is_deleted=False,
+                )
+                .select_related("item", "stall")
+                .first()
+            )
+
+            if not stock:
+                # Check if item exists at all
+                item_exists = Item.objects.filter(sku=sku, is_deleted=False).exists()
+                if not item_exists:
+                    errors.append({"row": row_num, "sku": sku, "error": f"Item with SKU '{sku}' not found."})
+                else:
+                    errors.append({"row": row_num, "sku": sku, "error": f"No stock record found for SKU '{sku}' in stall '{stall_name}'."})
+                continue
+
+            new_qty = stock.quantity - qty_to_deduct
+            changes.append({
+                "row": row_num,
+                "sku": sku,
+                "name": stock.item.name,
+                "action": "update",
+                "changes": [
+                    {
+                        "field": f"Qty in {stock.stall.name}",
+                        "old": str(stock.quantity),
+                        "new": str(new_qty),
+                    }
+                ],
+            })
+
+        updates = len(changes)
+        return Response({
+            "changes": changes,
+            "skipped": skipped,
+            "errors": errors,
+            "summary": f"{updates} stock(s) to deduct, {skipped} skipped (zero/blank qty), {len(errors)} errors.",
+        })
+
+    # ── Bulk Deduct (apply) ─────────────────────────────────────────────────
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="bulk-deduct",
+        permission_classes=[IsAdminUser],
+    )
+    def bulk_deduct(self, request):
+        """
+        Upload the stocks-used XLSX to deduct quantities from stall stocks.
+        Runs asynchronously and delivers results via WebSocket.
+        """
+        import json as _json
+        import threading
+        import openpyxl
+
+        xlsx_file = request.FILES.get("file")
+        if not xlsx_file:
+            return Response({"detail": "No file uploaded."}, status=status.HTTP_400_BAD_REQUEST)
+        if not xlsx_file.name.endswith((".xlsx", ".xlsm")):
+            return Response({"detail": "Only .xlsx files are supported."}, status=status.HTTP_400_BAD_REQUEST)
+        if xlsx_file.size > 10 * 1024 * 1024:
+            return Response({"detail": "File too large. Maximum 10 MB."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            wb = openpyxl.load_workbook(xlsx_file, read_only=True, data_only=True)
+        except Exception:
+            return Response({"detail": "Could not parse the uploaded file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        ws = wb.active
+        rows = list(ws.iter_rows(min_row=3, values_only=True))
+        wb.close()
+
+        if not rows:
+            return Response({"detail": "The file contains no data rows."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user_id = request.user.id
+        excluded_rows_raw = request.data.get("excluded_rows", "[]")
+        try:
+            excluded_rows = set(_json.loads(excluded_rows_raw))
+        except Exception:
+            excluded_rows = set()
+
+        def _process():
+            try:
+                updated_stocks, skipped, errors = [], 0, []
+
+                with transaction.atomic():
+                    for row_num, row in enumerate(rows, 3):
+                        if row_num in excluded_rows or not any(row):
+                            skipped += 1
+                            continue
+                        if len(row) < 6:
+                            errors.append({"row": row_num, "error": "Row has fewer than 6 columns."})
+                            continue
+
+                        sku = str(row[0] or "").strip()
+                        stall_name = str(row[2] or "").strip()
+
+                        try:
+                            qty_to_deduct = Decimal(str(row[5]).strip()) if row[5] is not None and str(row[5]).strip() not in ("", "(read-only)") else None
+                        except (InvalidOperation, ValueError):
+                            errors.append({"row": row_num, "sku": sku, "error": "Invalid quantity."})
+                            continue
+
+                        if qty_to_deduct is None or qty_to_deduct <= 0:
+                            skipped += 1
+                            continue
+
+                        if not sku or not stall_name:
+                            skipped += 1
+                            continue
+
+                        stock = (
+                            Stock.objects
+                            .select_for_update()
+                            .filter(
+                                item__sku=sku,
+                                item__is_deleted=False,
+                                stall__name__iexact=stall_name,
+                                is_deleted=False,
+                            )
+                            .first()
+                        )
+
+                        if not stock:
+                            errors.append({"row": row_num, "sku": sku, "error": f"Stock not found for stall '{stall_name}'."})
+                            continue
+
+                        stock.quantity = max(stock.quantity - qty_to_deduct, Decimal("0"))
+                        stock.save(update_fields=["quantity", "updated_at"])
+                        updated_stocks.append(sku)
+
+                detail = (
+                    f"Deducted stock for {len(updated_stocks)} item(s), "
+                    f"skipped {skipped}, {len(errors)} error(s)."
+                )
+                _notify_stall_stock_deduct(user_id, {
+                    "updated": len(updated_stocks),
+                    "skipped": skipped,
+                    "errors": errors,
+                    "detail": detail,
+                })
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception("Bulk stock deduct failed")
+                _notify_stall_stock_deduct_failed(user_id)
+
+        threading.Thread(target=_process, daemon=True).start()
+        return Response(
+            {"detail": "Bulk deduction started. You will be notified when it's done."},
             status=status.HTTP_202_ACCEPTED,
         )
 
