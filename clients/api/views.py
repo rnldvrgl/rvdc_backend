@@ -100,6 +100,121 @@ class ClientViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         serializer.save(contact_number=contact_number)
 
     @action(
+        detail=True,
+        methods=["post"],
+        url_path="merge",
+        permission_classes=[permissions.IsAdminUser],
+    )
+    def merge(self, request, pk=None):
+        """
+        Merge a source client into this (target) client.
+
+        Body:
+            source_client_id – ID of the client to be absorbed and soft-deleted.
+
+        All FK references are re-pointed to the target client; the source
+        is then soft-deleted with its full_name prefixed by "MERGED-".
+        """
+        from django.db import transaction as db_transaction
+        from django.utils import timezone as tz
+
+        target = self.get_object()
+
+        source_id = request.data.get("source_client_id")
+        if not source_id:
+            return Response(
+                {"detail": "source_client_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            source_id = int(source_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "source_client_id must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if source_id == target.pk:
+            return Response(
+                {"detail": "Source and target clients must be different."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            source = Client.all_objects.get(pk=source_id, is_deleted=False)
+        except Client.DoesNotExist:
+            return Response(
+                {"detail": "Source client not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        with db_transaction.atomic():
+            from sales.models import SalesTransaction
+            from services.models import Service, CompanyAsset
+            from schedules.models import Schedule
+
+            sales_count = SalesTransaction.objects.filter(client=source).update(client=target)
+            service_count = Service.objects.filter(client=source).update(client=target)
+            asset_count = CompanyAsset.objects.filter(sold_to=source).update(sold_to=target)
+            schedule_count = Schedule.objects.filter(client=source).update(client=target)
+
+            # Optional apps — import safely
+            cheque_count = 0
+            quotation_count = 0
+            aircon_count = 0
+            fb_count = 0
+
+            try:
+                from receivables.models import ChequeCollection
+                cheque_count = ChequeCollection.objects.filter(client=source).update(client=target)
+            except ImportError:
+                pass
+
+            try:
+                from quotations.models import Quotation
+                quotation_count = Quotation.objects.filter(client=source).update(client=target)
+            except ImportError:
+                pass
+
+            try:
+                from installations.models import AirconUnit
+                aircon_count = AirconUnit.objects.filter(reserved_by=source).update(reserved_by=target)
+            except ImportError:
+                pass
+
+            try:
+                from messaging.models import FBConversation
+                fb_count = FBConversation.objects.filter(client=source).update(client=target)
+            except ImportError:
+                pass
+
+            # Nullify source contact_number before soft-delete to avoid unique collision
+            source.contact_number = None
+            source.is_deleted = True
+            source.deleted_at = tz.now()
+            source.full_name = f"MERGED-{source.full_name}"
+            source.save(update_fields=["contact_number", "is_deleted", "deleted_at", "full_name"])
+
+        serializer = self.get_serializer(target)
+        return Response(
+            {
+                "target_client": serializer.data,
+                "merged": {
+                    "sales_updated": sales_count,
+                    "services_updated": service_count,
+                    "assets_updated": asset_count,
+                    "schedules_updated": schedule_count,
+                    "cheques_updated": cheque_count,
+                    "quotations_updated": quotation_count,
+                    "aircon_units_updated": aircon_count,
+                    "fb_conversations_updated": fb_count,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(
         detail=False,
         methods=["get"],
         url_path="bulk-template",
