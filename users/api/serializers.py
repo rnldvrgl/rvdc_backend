@@ -78,7 +78,7 @@ class EmployeesSerializer(serializers.ModelSerializer):
         first_name = validated_data.get("first_name", "")
         last_name = validated_data.get("last_name", "")
         username = validated_data.get("username", "").strip()
-        
+
         # If username not provided or empty, generate from initials
         if not username:
             # Generate username from initials
@@ -89,7 +89,7 @@ class EmployeesSerializer(serializers.ModelSerializer):
             for part in name_parts:
                 if part:
                     username_base += part[0]
-            
+
             # Make sure username is unique by adding numbers if needed
             username = username_base
             counter = 1
@@ -102,19 +102,19 @@ class EmployeesSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"username": "This username is already taken. Please choose another one."}
                 )
-        
+
         validated_data["username"] = username
-        
+
         # Set default password: rvdc12
         user = CustomUser(**validated_data)
         user.set_password("rvdc12")
-        
+
         try:
             user.save()
         except DjangoValidationError as e:
             # Convert Django ValidationError to DRF ValidationError
             raise serializers.ValidationError({"role": e.messages})
-        
+
         return user
 
 
@@ -228,7 +228,7 @@ class UserSerializer(serializers.ModelSerializer):
 
 class SystemSettingsSerializer(serializers.ModelSerializer):
     """Serializer for system-wide settings"""
-    
+
     class Meta:
         model = SystemSettings
         fields = [
@@ -242,6 +242,8 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             'birthday_greeting_male_emojis',
             'birthday_greeting_female_emojis',
             'birthday_greeting_variant',
+            'maintenance_mode',
+            'check_stock_on_sale',
             'updated_at',
         ]
         read_only_fields = ['id', 'updated_at']

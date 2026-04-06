@@ -17,7 +17,7 @@ class CustomUser(AbstractUser):
         ("clerk", "Clerk"),
         ("technician", "Technician"),
     )
-    
+
     GENDER_CHOICES = (
         ("male", "Male"),
         ("female", "Female"),
@@ -62,7 +62,7 @@ class CustomUser(AbstractUser):
         default=True,
         help_text="Include this employee in payroll generation"
     )
-    
+
     # Individual government benefit flags for selective application
     has_sss = models.BooleanField(
         default=True,
@@ -84,7 +84,7 @@ class CustomUser(AbstractUser):
         default=True,
         help_text="Include employee in cash ban fund contributions"
     )
-    
+
     is_deleted = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
@@ -115,7 +115,7 @@ class SystemSettings(models.Model):
     System-wide settings for various features.
     Only one instance should exist (singleton pattern).
     """
-    
+
     # Birthday Greeting Settings
     birthday_greeting_enabled = models.BooleanField(
         default=True,
@@ -153,7 +153,7 @@ class SystemSettings(models.Model):
         default="🎈,🎊,🎁,🎉,💐",
         help_text="Comma-separated list of emojis for female employees (e.g., 🎈,🎊,🎁,🎉,💐)"
     )
-    
+
     VARIANT_CHOICES = [
         ('default', 'Default'),
         ('minimalist', 'Modern Minimalist'),
@@ -161,20 +161,30 @@ class SystemSettings(models.Model):
         ('elegant', 'Elegant Professional'),
         ('playful', 'Playful & Fun'),
     ]
-    
+
     birthday_greeting_variant = models.CharField(
         max_length=20,
         choices=VARIANT_CHOICES,
         default='default',
         help_text="Design variant for birthday greeting card"
     )
-    
+
+    # Business Operations
+    maintenance_mode = models.BooleanField(
+        default=False,
+        help_text="Enable maintenance mode — non-admin users will see the maintenance screen"
+    )
+    check_stock_on_sale = models.BooleanField(
+        default=True,
+        help_text="Check and deduct stock when creating or editing a sales transaction"
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     class Meta:
         verbose_name = "System Settings"
         verbose_name_plural = "System Settings"
-    
+
     def save(self, *args, **kwargs):
         # Ensure only one instance exists (singleton)
         if not self.pk and SystemSettings.objects.exists():
@@ -182,13 +192,13 @@ class SystemSettings(models.Model):
             existing = SystemSettings.objects.first()
             self.pk = existing.pk
         super().save(*args, **kwargs)
-    
+
     @classmethod
     def get_settings(cls):
         """Get or create system settings instance"""
         settings, created = cls.objects.get_or_create(pk=1)
         return settings
-    
+
     def __str__(self):
         return "System Settings"
 
@@ -289,12 +299,12 @@ class CashAdvanceMovement(models.Model):
                 # This will be updated to the actual balance after when applied
                 self.balance_after = self.employee.cash_ban_balance
         super().save(*args, **kwargs)
-    
+
     def apply_to_balance(self):
         """Apply this pending movement to the employee's balance."""
         if not self.is_pending:
             return  # Already applied
-        
+
         if self.movement_type == self.MovementType.CREDIT:
             self.employee.cash_ban_balance += self.amount
         else:

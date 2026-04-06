@@ -8,6 +8,7 @@ from sales.models import SalesTransaction, SalesItem, SalesPayment
 from inventory.api.serializers import ItemSerializer, StallSerializer
 from clients.api.serializers import ClientSerializer
 from inventory.models import Item
+from users.models import SystemSettings
 
 
 class SalesItemSerializer(serializers.ModelSerializer):
@@ -135,24 +136,27 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
         if not stall:
             raise ValidationError("Stall is required for this sales transaction.")
 
+        check_stock = SystemSettings.get_settings().check_stock_on_sale
+
         with transaction.atomic():
             # Check stock availability with row-level lock
-            for item_data in items_data:
-                item = item_data.get("item")
-                if not item:
-                    continue
-                qty = item_data["quantity"]
-                stock = Stock.objects.select_for_update().filter(
-                    stall=stall, item=item
-                ).first()
-                # Skip validation for untracked stock
-                if stock and not stock.track_stock:
-                    continue
-                if not stock or stock.quantity < qty:
-                    raise ValidationError(
-                        f"Not enough stock of {item.name} in {stall.name}. "
-                        f"Available: {stock.quantity if stock else 0}, Needed: {qty}"
-                    )
+            if check_stock:
+                for item_data in items_data:
+                    item = item_data.get("item")
+                    if not item:
+                        continue
+                    qty = item_data["quantity"]
+                    stock = Stock.objects.select_for_update().filter(
+                        stall=stall, item=item
+                    ).first()
+                    # Skip validation for untracked stock
+                    if stock and not stock.track_stock:
+                        continue
+                    if not stock or stock.quantity < qty:
+                        raise ValidationError(
+                            f"Not enough stock of {item.name} in {stall.name}. "
+                            f"Available: {stock.quantity if stock else 0}, Needed: {qty}"
+                        )
 
             sale_txn = SalesTransaction.objects.create(**validated_data)
 
@@ -161,10 +165,10 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
                 item = item_data.get("item")
                 qty = item_data["quantity"]
 
-                if item:
-                    stock = Stock.objects.select_for_update().get(stall=stall, item=item)
+                if item and check_stock:
+                    stock = Stock.objects.select_for_update().filter(stall=stall, item=item).first()
                     # Only deduct for tracked stock
-                    if stock.track_stock:
+                    if stock and stock.track_stock:
                         stock.quantity -= qty
                         stock.save(update_fields=["quantity", "updated_at"])
 
@@ -217,29 +221,33 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
                             net_changes.get(old_item.item, 0) - old_item.quantity
                         )
 
+                check_stock = SystemSettings.get_settings().check_stock_on_sale
+
                 # Validate before applying changes
-                for item, change in net_changes.items():
-                    if change > 0:
-                        stock = Stock.objects.filter(stall=stall, item=item).first()
-                        # Skip validation for untracked stock
-                        if stock and not stock.track_stock:
-                            continue
-                        if not stock or stock.quantity < change:
-                            raise ValidationError(
-                                f"Not enough stock of {item.name} in {stall.name}. "
-                                f"Available: {stock.quantity if stock else 0}, Needed additional: {change}"
-                            )
+                if check_stock:
+                    for item, change in net_changes.items():
+                        if change > 0:
+                            stock = Stock.objects.filter(stall=stall, item=item).first()
+                            # Skip validation for untracked stock
+                            if stock and not stock.track_stock:
+                                continue
+                            if not stock or stock.quantity < change:
+                                raise ValidationError(
+                                    f"Not enough stock of {item.name} in {stall.name}. "
+                                    f"Available: {stock.quantity if stock else 0}, Needed additional: {change}"
+                                )
 
                 # Adjust stocks
-                for item, change in net_changes.items():
-                    if change != 0:
-                        stock, _ = Stock.objects.get_or_create(
-                            stall=stall, item=item, defaults={"quantity": 0}
-                        )
-                        # Only adjust tracked stock
-                        if stock.track_stock:
-                            stock.quantity -= change
-                            stock.save()
+                if check_stock:
+                    for item, change in net_changes.items():
+                        if change != 0:
+                            stock, _ = Stock.objects.get_or_create(
+                                stall=stall, item=item, defaults={"quantity": 0}
+                            )
+                            # Only adjust tracked stock
+                            if stock.track_stock:
+                                stock.quantity -= change
+                                stock.save()
 
             # Apply basic field updates
             for attr, value in validated_data.items():
