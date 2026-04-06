@@ -191,6 +191,13 @@ echo ""
 # =============================================================================
 step "Step 6: ${ICON_CODE} Starting API and go2rtc containers..."
 
+# Ensure go2rtc config dir and initial yaml exist (required for stream registration)
+mkdir -p "${PROJECT_DIR}/go2rtc"
+if [ ! -f "${PROJECT_DIR}/go2rtc/go2rtc.yaml" ]; then
+    echo "streams: {}" > "${PROJECT_DIR}/go2rtc/go2rtc.yaml"
+    log "Created initial go2rtc.yaml"
+fi
+
 # Remove any stale go2rtc container that may be holding port 1984
 docker rm -f rvdc_backend-go2rtc-1 2>/dev/null || true
 
