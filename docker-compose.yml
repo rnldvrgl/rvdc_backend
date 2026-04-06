@@ -42,3 +42,7 @@ services:
 
 volumes:
     postgres_data:
+
+networks:
+    default:
+        name: rvdc_net
