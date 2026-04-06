@@ -191,6 +191,9 @@ echo ""
 # =============================================================================
 step "Step 6: ${ICON_CODE} Starting API and go2rtc containers..."
 
+# Remove any stale go2rtc container that may be holding port 1984
+docker rm -f rvdc_backend-go2rtc-1 2>/dev/null || true
+
 ${COMPOSE} up -d api go2rtc
 
 log "Waiting for API to initialize..."
