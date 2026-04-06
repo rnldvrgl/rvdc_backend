@@ -488,7 +488,7 @@ class ServerMaintenanceView(APIView):
         if action_type == "container_logs":
             container = request.data.get("container", "rvdc_backend-api-1")
             tail_lines = min(int(request.data.get("lines", 100)), 500)
-            allowed_containers = ["rvdc_backend-api-1", "rvdc_backend-redis-1", "rvdc_backend-db-1"]
+            allowed_containers = ["rvdc_backend-api-1", "rvdc_backend-redis-1", "rvdc_backend-db-1", "rvdc_backend-go2rtc-1"]
             if container not in allowed_containers:
                 return Response(
                     {"error": f"Container not allowed. Allowed: {allowed_containers}"},
@@ -739,7 +739,7 @@ class ServerMaintenanceView(APIView):
 
             # Restart containers
             if action_type == "restart_containers":
-                allowed_containers = ["rvdc_backend-api-1", "rvdc_backend-redis-1", "rvdc_backend-db-1"]
+                allowed_containers = ["rvdc_backend-api-1", "rvdc_backend-redis-1", "rvdc_backend-db-1", "rvdc_backend-go2rtc-1"]
                 targets = [container_arg] if container_arg and container_arg in allowed_containers else (
                     allowed_containers if not container_arg else []
                 )

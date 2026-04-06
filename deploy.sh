@@ -187,16 +187,16 @@ success "Database is ready"
 echo ""
 
 # =============================================================================
-# Step 6: Start API container
+# Step 6: Start API and go2rtc containers
 # =============================================================================
-step "Step 6: ${ICON_CODE} Starting API container..."
+step "Step 6: ${ICON_CODE} Starting API and go2rtc containers..."
 
-${COMPOSE} up -d api
+${COMPOSE} up -d api go2rtc
 
 log "Waiting for API to initialize..."
 sleep 5
 
-success "API container started"
+success "API and go2rtc containers started"
 echo ""
 
 # =============================================================================
@@ -296,10 +296,12 @@ echo -e "${CYAN}═════════════════════�
 echo ""
 header "Services are running at:"
 echo -e "  ${GREEN}•${NC} API: ${CYAN}http://localhost:8000${NC}"
+echo -e "  ${GREEN}•${NC} go2rtc: ${CYAN}http://localhost:1984${NC}"
 echo -e "  ${GREEN}•${NC} Database: ${CYAN}localhost:5432${NC}"
 echo ""
 header "Useful commands:"
 echo -e "  ${GREEN}•${NC} View logs: ${YELLOW}docker compose logs -f api${NC}"
+echo -e "  ${GREEN}•${NC} View go2rtc logs: ${YELLOW}docker compose logs -f go2rtc${NC}"
 echo -e "  ${GREEN}•${NC} Check status: ${YELLOW}docker compose ps${NC}"
 echo -e "  ${GREEN}•${NC} Restart API: ${YELLOW}docker compose restart api${NC}"
 echo -e "  ${GREEN}•${NC} Shell access: ${YELLOW}docker compose exec api bash${NC}"
