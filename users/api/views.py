@@ -188,9 +188,12 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
         return SystemSettings.get_settings()
 
     def get_permissions(self):
-        """Allow any authenticated user to view, but only admins to update"""
+        """Allow any authenticated user to view, but restrict updates by field sensitivity"""
         if self.request.method in ['PUT', 'PATCH']:
-            return [permissions.IsAdminUser()]
+            sensitive_fields = {'maintenance_mode', 'check_stock_on_sale'}
+            if sensitive_fields & set(self.request.data.keys()):
+                return [IsSuperAdminUser()]
+            return [IsAdminOrManager()]
         return [permissions.IsAuthenticated()]
 
 
@@ -248,9 +251,17 @@ class CashAdvanceMovementViewSet(viewsets.ModelViewSet):
 
 
 class IsAdminOrManager(permissions.BasePermission):
-    """Permission class to check if user is admin or manager"""
+    """Permission class to check if user is admin or manager."""
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role in ['admin', 'manager']
+        return request.user.is_authenticated and (
+            request.user.role in ['admin', 'manager']
+        )
+
+
+class IsSuperAdminUser(permissions.BasePermission):
+    """Permission class for Django superusers only."""
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.is_superuser
 
 
 class ServerMaintenanceView(APIView):
@@ -259,7 +270,7 @@ class ServerMaintenanceView(APIView):
     GET  — Disk, memory, Docker stats, container info, cron jobs, management commands
     POST — Cleanup actions, restart containers, view logs, run management commands
     """
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsSuperAdminUser]
 
     # Defined cron schedule (runs on host, not in container)
     CRON_JOBS = [

@@ -170,18 +170,18 @@ class AirconUnitSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = [
-            "stall", 
-            "is_sold", 
-            "sale_price", 
-            "reserved_by", 
-            "reserved_at", 
-            "sale", 
-            "installation_service", 
+            "stall",
+            "is_sold",
+            "sale_price",
+            "reserved_by",
+            "reserved_at",
+            "sale",
+            "installation_service",
             "warranty_start_date",
             "free_cleaning_redeemed",
             "free_cleaning_service",
         ]
-    
+
     def get_client_name(self, obj):
         """Get client name from sale, installation service, or reservation."""
         if obj.sale and obj.sale.client:
@@ -210,39 +210,39 @@ class AirconUnitSerializer(serializers.ModelSerializer):
     def validate_serial_number(self, value):
         """Ensure indoor serial number is unique and uppercase"""
         value = value.upper()
-        
+
         # Check for uniqueness, excluding current instance if updating
         qs = AirconUnit.objects.filter(serial_number=value)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
-        
+
         if qs.exists():
             raise serializers.ValidationError("A unit with this indoor serial number already exists.")
-        
+
         return value
-    
+
     def validate_outdoor_serial_number(self, value):
         """Ensure outdoor serial number is unique and uppercase if provided"""
         if not value:
             return value
-            
+
         value = value.upper()
-        
+
         # Check for uniqueness, excluding current instance if updating
         qs = AirconUnit.objects.filter(outdoor_serial_number=value)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
-        
+
         if qs.exists():
             raise serializers.ValidationError("A unit with this outdoor serial number already exists.")
-        
+
         return value
-    
+
     def create(self, validated_data):
         """Create unit with automatic stall assignment based on user role"""
         request = self.context.get('request')
         user = request.user if request else None
-        
+
         # Auto-assign stall based on user role
         if user:
             if user.role in ['manager', 'clerk'] and user.assigned_stall:
@@ -254,7 +254,7 @@ class AirconUnitSerializer(serializers.ModelSerializer):
                 ).first()
                 if main_stall:
                     validated_data['stall'] = main_stall
-            elif user.role == 'admin':
+            elif user.role == "admin":
                 # For admin, use the main stall
                 from inventory.models import Stall
                 main_stall = Stall.objects.filter(
@@ -263,7 +263,7 @@ class AirconUnitSerializer(serializers.ModelSerializer):
                 ).first()
                 if main_stall:
                     validated_data['stall'] = main_stall
-        
+
         return super().create(validated_data)
 
     def validate_free_cleaning_redeemed(self, value):
@@ -413,12 +413,12 @@ class AirconReservationSerializer(serializers.Serializer):
 class AirconInstallationCreateSerializer(serializers.Serializer):
     """
     Serializer for creating an installation service for an aircon unit.
-    
+
     Workflow:
     - If unit not sold and sell_unit_now=False: Unit is RESERVED for the client
     - If unit not sold and sell_unit_now=True: Unit is SOLD first, then installation scheduled
     - If unit already sold: Installation is scheduled directly
-    
+
     Note: Units don't need to be sold before installation - they can be reserved.
     """
 
@@ -467,21 +467,21 @@ class AirconInstallationCreateSerializer(serializers.Serializer):
     def validate(self, data):
         """Validate the complete installation request."""
         from installations.models import AirconUnit
-        
+
         unit = AirconUnit.objects.get(id=data['unit_id'])
-        
+
         # If selling unit now, it shouldn't already be sold
         if data.get('sell_unit_now') and unit.is_sold:
             raise serializers.ValidationError(
                 {"sell_unit_now": "Unit is already sold. Set sell_unit_now to False."}
             )
-        
+
         # If not selling, client_id is required to reserve the unit
         if not data.get('sell_unit_now') and not unit.is_sold and not data.get('client_id'):
             raise serializers.ValidationError(
                 {"client_id": "Client ID is required to reserve unit for installation."}
             )
-        
+
         return data
 
     def save(self):
@@ -494,7 +494,7 @@ class AirconInstallationCreateSerializer(serializers.Serializer):
         unit = AirconUnit.objects.get(id=unit_id)
 
         user = self.context.get('request').user if self.context.get('request') else None
-        
+
         # Determine client
         if unit.is_sold and unit.sale:
             client = unit.sale.client

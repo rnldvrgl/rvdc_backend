@@ -148,6 +148,7 @@ class UserSerializer(serializers.ModelSerializer):
             "last_name",
             "full_name",
             "role",
+            "is_superuser",
             "gender",
             "birthday",
             "address",
@@ -169,7 +170,7 @@ class UserSerializer(serializers.ModelSerializer):
             "has_bir_tax",
             "has_cash_ban",
         ]
-        read_only_fields = ("id", "cash_ban_balance")
+        read_only_fields = ("id", "is_superuser", "cash_ban_balance")
 
     def get_full_name(self, obj):
         return obj.get_full_name()

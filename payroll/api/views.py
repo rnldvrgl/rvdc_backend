@@ -1661,7 +1661,7 @@ class ManualDeductionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         queryset = ManualDeduction.objects.filter(is_deleted=False).select_related("employee", "created_by")
 
         user = self.request.user
-        if not user.role or user.role not in ["admin"]:
+        if not user.role or user.role != "admin":
             # Regular employees see only their own per_employee deductions
             queryset = queryset.filter(employee=user)
 
@@ -1917,7 +1917,7 @@ class EmployeeBenefitOverrideViewSet(viewsets.ModelViewSet):
         queryset = EmployeeBenefitOverride.objects.select_related('employee').all()
 
         # Admin sees all, others see their own only
-        if not self.request.user.is_staff and self.request.user.role != 'admin':
+        if not self.request.user.is_staff and self.request.user.role != "admin":
             queryset = queryset.filter(employee=self.request.user)
 
         return queryset

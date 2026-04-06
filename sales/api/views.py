@@ -217,7 +217,7 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         ).filter(is_deleted=False, voided=True).order_by('-created_at')
 
         user = request.user
-        if user.role == 'admin':
+        if (user.role == "admin"):
             pass
         elif user.role in ('manager', 'clerk') and getattr(user, 'assigned_stall', None):
             qs = qs.filter(stall=user.assigned_stall)
@@ -243,7 +243,7 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         ).filter(effective_date=today)
 
         user = request.user
-        if user.role == "admin":
+        if (user.role == "admin"):
             pass
         elif user.role in ("manager", "clerk") and getattr(user, "assigned_stall", None):
             qs = qs.filter(stall=user.assigned_stall)

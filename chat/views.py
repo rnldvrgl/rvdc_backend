@@ -41,8 +41,7 @@ class ChatUsersView(APIView):
             User.objects.filter(
                 is_active=True,
                 is_deleted=False,
-                role__in=["admin", "manager", "clerk"],
-            )
+            ).filter(role__in=["admin", "manager", "clerk"])
             .exclude(pk=user.pk)
             .values("id", "first_name", "last_name", "role", "profile_image")
         )

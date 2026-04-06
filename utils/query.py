@@ -35,7 +35,7 @@ def filter_by_date_range(request, queryset, date_field="created_at"):
 def get_role_filtered_queryset(request, base_queryset, date_field="created_at", stall_field="stall"):
     """
     Filter queryset based on user role and assigned stall.
-    
+
     Args:
         request: The HTTP request object
         base_queryset: The base queryset to filter

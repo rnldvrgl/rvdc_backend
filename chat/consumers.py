@@ -427,8 +427,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         User = get_user_model()
         users = User.objects.filter(
             is_active=True, is_deleted=False,
-            role__in=["admin", "manager", "clerk"],
-        ).values("id", "first_name", "last_name", "role", "profile_image")
+        ).filter(role__in=["admin", "manager", "clerk"]).values("id", "first_name", "last_name", "role", "profile_image")
         return list(users)
 
     @staticmethod

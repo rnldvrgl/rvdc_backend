@@ -59,7 +59,7 @@ def get_stall_filter(request):
     user = request.user
     stall_param = request.query_params.get("stall")
 
-    if user.is_superuser or user.role == "admin":
+    if user.role == "admin":
         return {} if not stall_param else {"stall_id": stall_param}
 
     if user.role in ["manager", "clerk"]:
@@ -121,7 +121,7 @@ class SummaryStatsView(APIView):
 
         # Stock inventory
         user = request.user
-        is_admin = user.is_superuser or user.role == "admin"
+        is_admin = user.role == "admin"
 
         if is_admin:
             stock_qs = StockRoomStock.objects.filter(is_deleted=False)

@@ -45,7 +45,7 @@ class IsAdminOnly(IsAuthenticated):
     def has_permission(self, request, view):
         if not super().has_permission(request, view):
             return False
-        return request.user.role == 'admin'
+        return request.user.role == "admin"
 
 
 class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
@@ -81,7 +81,7 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         ordering = query_params.get('ordering')
 
         # Only admin can see all attendance
-        if user.role == 'admin':
+        if user.role == "admin":
             employee_id = query_params.get('employee_id')
 
             if employee_id:
@@ -133,7 +133,7 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         """Only admin can create attendance records."""
-        if request.user.role != 'admin':
+        if request.user.role != "admin":
             return Response(
                 {'detail': 'Only admin can create attendance records.'},
                 status=status.HTTP_403_FORBIDDEN
@@ -142,7 +142,7 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         """Only admin can update attendance records."""
-        if request.user.role != 'admin':
+        if request.user.role != "admin":
             return Response(
                 {'detail': 'Only admin can update attendance records.'},
                 status=status.HTTP_403_FORBIDDEN
@@ -151,7 +151,7 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         """Only admin can partially update attendance records."""
-        if request.user.role != 'admin':
+        if request.user.role != "admin":
             return Response(
                 {'detail': 'Only admin can update attendance records.'},
                 status=status.HTTP_403_FORBIDDEN
@@ -160,7 +160,7 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         """Soft delete: Only admin can delete."""
-        if request.user.role != 'admin':
+        if request.user.role != "admin":
             return Response(
                 {'detail': 'Only admin can delete attendance records.'},
                 status=status.HTTP_403_FORBIDDEN
@@ -490,11 +490,11 @@ class DailyAttendanceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     def mark_absent(self, request):
         """
         Manually mark one or more employees as absent for a given date.
-        
+
         Required fields:
         - employee_ids: List of employee IDs to mark absent
         - date: Date to mark absent for (YYYY-MM-DD)
-        
+
         Optional fields:
         - reason: 'shop_closed' to mark as Shop Closed (no AWOL counting)
         """
@@ -640,7 +640,7 @@ class LeaveBalanceViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = LeaveBalance.objects.all()
 
         # Only admin can see all balances
-        if user.role == 'admin':
+        if user.role == "admin":
             employee_id = self.request.query_params.get('employee_id')
             year = self.request.query_params.get('year')
 
@@ -741,7 +741,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         validated_data = serializer.validated_data
 
         # Set employee for non-admin users
-        if request.user.role not in ['admin']:
+        if request.user.role != "admin":
             validated_data['employee'] = request.user
 
         employee = validated_data.get('employee')
@@ -756,7 +756,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         if not start_date:
             start_date = validated_data.get('date')
             end_date = start_date
-        
+
         if not start_date:
             return Response(
                 {'detail': 'Start date is required.'},
@@ -866,7 +866,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         """
         from decimal import Decimal
 
-        if request.user.role != 'admin':
+        if request.user.role != "admin":
             return Response(
                 {'detail': 'Only admins can edit leave requests.'},
                 status=status.HTTP_403_FORBIDDEN
@@ -1099,7 +1099,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"])
     def pending_approvals(self, request):
         """Get all pending attendance records (admin only)."""
-        if request.user.role not in ["admin"]:
+        if request.user.role != "admin":
             return Response(
                 {"detail": "Only admin can view pending approvals."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -1130,7 +1130,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         leave_request = self.get_object()
 
         # Only the employee or admin can cancel
-        if leave_request.employee != request.user and request.user.role not in ['admin']:
+        if leave_request.employee != request.user and request.user.role != "admin":
             return Response(
                 {'detail': 'You do not have permission to cancel this leave request.'},
                 status=status.HTTP_403_FORBIDDEN
@@ -1158,7 +1158,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         """
         Validate leave balance before submitting a leave request.
         Returns remaining balance and whether the request can be fulfilled.
-        
+
         Required fields:
         - leave_type: 'SICK' or 'EMERGENCY'
         - start_date: Start date (YYYY-MM-DD)
@@ -1180,7 +1180,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
         # Determine employee
         employee_id = data.get('employee')
-        if request.user.role not in ['admin'] or not employee_id:
+        if request.user.role != "admin" or not employee_id:
             employee = request.user
         else:
             from users.models import CustomUser
@@ -1272,7 +1272,7 @@ class OffenseViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         queryset = Offense.objects.select_related('employee', 'created_by').filter(is_deleted=False)
 
         # Only admin can see all offenses
-        if user.role == 'admin':
+        if user.role == "admin":
             # Optional filters
             employee_id = self.request.query_params.get('employee_id')
             offense_type = self.request.query_params.get('offense_type')
@@ -1298,7 +1298,7 @@ class OffenseViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         """Only admin can create offenses."""
-        if request.user.role != 'admin':
+        if request.user.role != "admin":
             return Response(
                 {'detail': 'Only admin can create offenses.'},
                 status=status.HTTP_403_FORBIDDEN
@@ -1313,7 +1313,7 @@ class OffenseViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         """Only admin can update offenses."""
-        if request.user.role != 'admin':
+        if request.user.role != "admin":
             return Response(
                 {'detail': 'Only admin can update offenses.'},
                 status=status.HTTP_403_FORBIDDEN
@@ -1322,7 +1322,7 @@ class OffenseViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         """Only admin can delete offenses."""
-        if request.user.role != 'admin':
+        if request.user.role != "admin":
             return Response(
                 {'detail': 'Only admin can delete offenses.'},
                 status=status.HTTP_403_FORBIDDEN
@@ -1425,7 +1425,7 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
         queryset = OvertimeRequest.objects.all().select_related("employee", "approved_by")
 
         # Filter by employee for non-admin users
-        if user.role != 'admin':
+        if user.role != "admin":
             queryset = queryset.filter(employee=user)
 
         # Filter parameters
@@ -1449,7 +1449,7 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
         """Create overtime request for the current user if not specified"""
         user = self.request.user
         # If employee not specified and user is not admin, use current user
-        if 'employee' not in serializer.validated_data and user.role != 'admin':
+        if 'employee' not in serializer.validated_data and user.role != "admin":
             serializer.save(employee=user)
         else:
             serializer.save()
@@ -1460,7 +1460,7 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
         overtime_request = self.get_object()
 
         # Only admin can approve
-        if request.user.role != 'admin':
+        if request.user.role != "admin":
             return Response(
                 {"detail": "You don't have permission to approve overtime requests."},
                 status=status.HTTP_403_FORBIDDEN
@@ -1504,14 +1504,14 @@ class OvertimeRequestViewSet(viewsets.ModelViewSet):
 class HalfDayScheduleViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing half-day schedules.
-    
+
     Admin can mark specific dates as forced half-days.
     On those dates, all employees' attendance will be capped at 4 paid hours.
-    
+
     Permissions:
     - Admin/Manager: Full access (create, update, delete, view all)
     - Others: Read-only access
-    
+
     Endpoints:
     - GET /api/attendance/half-day-schedules/ - List all half-day schedules
     - POST /api/attendance/half-day-schedules/ - Create (admin/manager only)
@@ -1522,30 +1522,30 @@ class HalfDayScheduleViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     allow_hard_delete = True
     serializer_class = HalfDayScheduleSerializer
     permission_classes = [IsAuthenticated]
-    
+
     def get_queryset(self):
         """Get non-deleted half-day schedules."""
         queryset = HalfDaySchedule.objects.filter(is_deleted=False).select_related('created_by')
-        
+
         # Filter by schedule type if provided
         schedule_type = self.request.query_params.get('schedule_type')
         if schedule_type:
             queryset = queryset.filter(schedule_type=schedule_type)
-        
+
         # Filter by date range if provided
         start_date = self.request.query_params.get('start_date')
         end_date = self.request.query_params.get('end_date')
         date = self.request.query_params.get('date')
-        
+
         if date:
             queryset = queryset.filter(date=date)
         if start_date:
             queryset = queryset.filter(date__gte=start_date)
         if end_date:
             queryset = queryset.filter(date__lte=end_date)
-        
+
         return queryset
-    
+
     def get_permissions(self):
         """Only admin can create, update, delete."""
         if self.action in ['create', 'update', 'partial_update', 'destroy']:
