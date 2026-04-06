@@ -299,7 +299,7 @@ echo -e "${CYAN}═════════════════════�
 echo ""
 header "Services are running at:"
 echo -e "  ${GREEN}•${NC} API: ${CYAN}http://localhost:8000${NC}"
-echo -e "  ${GREEN}•${NC} go2rtc: ${CYAN}http://localhost:1984${NC}"
+echo -e "  ${GREEN}•${NC} go2rtc: ${CYAN}http://localhost:19840${NC}"
 echo -e "  ${GREEN}•${NC} Database: ${CYAN}localhost:5432${NC}"
 echo ""
 header "Useful commands:"
