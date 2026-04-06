@@ -55,6 +55,7 @@ def _delete_from_go2rtc(camera: CCTVCamera) -> bool:
 class CCTVCameraViewSet(viewsets.ModelViewSet):
     queryset = CCTVCamera.objects.all()
     permission_classes = [IsAuthenticated, IsSuperAdminUser]
+    pagination_class = None  # cameras are always few; no pagination needed
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["name", "location", "uid"]
     ordering_fields = ["order", "name", "created_at"]
@@ -120,7 +121,7 @@ class CCTVCameraViewSet(viewsets.ModelViewSet):
             resp = requests.get(f"{base}/api/streams", timeout=5)
             return Response({"configured": True, "streams": resp.json()})
         except Exception as exc:
+            # Always return 200 — the UI shows "offline" state, not an error
             return Response(
-                {"configured": True, "streams": {}, "error": str(exc)},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                {"configured": True, "streams": {}, "error": str(exc)}
             )
