@@ -144,6 +144,130 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         return Response(serializer.data)
 
     @action(
+        detail=True,
+        methods=["post"],
+        url_path="merge",
+        permission_classes=[IsAdminUser],
+    )
+    def merge(self, request, pk=None):
+        """
+        Merge a source item into this (target) item.
+
+        Body:
+            source_item_id  – ID of the item to be absorbed and soft-deleted.
+
+        All transaction references (SalesItem, ApplianceItemUsed,
+        ServiceItemUsed, ExpenseItem, StockRequest) are re-pointed to the
+        target item.  Stall stock and stockroom stock quantities are summed.
+        The source item is then soft-deleted.
+        """
+        from django.db import transaction as db_transaction
+        from django.utils import timezone as tz
+        from sales.models import SalesItem
+        from services.models import ApplianceItemUsed, ServiceItemUsed
+        from expenses.models import ExpenseItem
+
+        target = self.get_object()
+
+        source_id = request.data.get("source_item_id")
+        if not source_id:
+            return Response(
+                {"detail": "source_item_id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            source_id = int(source_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "source_item_id must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if source_id == target.pk:
+            return Response(
+                {"detail": "Source and target items must be different."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            source = Item.objects.get(pk=source_id, is_deleted=False)
+        except Item.DoesNotExist:
+            return Response(
+                {"detail": "Source item not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        with db_transaction.atomic():
+            # ── FK re-assignments ────────────────────────────────────────
+            sales_count = SalesItem.objects.filter(item=source).update(item=target)
+            appliance_count = ApplianceItemUsed.objects.filter(item=source).update(item=target)
+            service_count = ServiceItemUsed.objects.filter(item=source).update(item=target)
+            expense_count = ExpenseItem.objects.filter(item=source).update(item=target)
+            request_count = StockRequest.objects.filter(item=source).update(item=target)
+
+            # ── Merge stall stock ────────────────────────────────────────
+            source_stocks = Stock.objects.filter(item=source, is_deleted=False)
+            stocks_merged = 0
+            for src_stock in source_stocks:
+                target_stock, _ = Stock.objects.get_or_create(
+                    item=target,
+                    stall=src_stock.stall,
+                    defaults={
+                        "quantity": 0,
+                        "reserved_quantity": 0,
+                        "low_stock_threshold": src_stock.low_stock_threshold,
+                        "track_stock": src_stock.track_stock,
+                    },
+                )
+                target_stock.quantity += src_stock.quantity
+                target_stock.reserved_quantity += src_stock.reserved_quantity
+                target_stock.save(update_fields=["quantity", "reserved_quantity", "updated_at"])
+                src_stock.is_deleted = True
+                src_stock.deleted_at = tz.now()
+                src_stock.save(update_fields=["is_deleted", "deleted_at"])
+                stocks_merged += 1
+
+            # ── Merge stockroom stock ────────────────────────────────────
+            stockroom_merged = False
+            try:
+                src_room = StockRoomStock.objects.get(item=source)
+                try:
+                    target_room = StockRoomStock.objects.get(item=target)
+                    target_room.quantity += src_room.quantity
+                    target_room.save(update_fields=["quantity", "updated_at"])
+                except StockRoomStock.DoesNotExist:
+                    src_room.item = target
+                    src_room.save(update_fields=["item"])
+                stockroom_merged = True
+            except StockRoomStock.DoesNotExist:
+                pass
+
+            # ── Soft-delete source ───────────────────────────────────────
+            source.is_deleted = True
+            source.deleted_at = tz.now()
+            # Prefix SKU so the unique constraint does not block future items
+            source.sku = f"MERGED-{source.sku}"
+            source.save(update_fields=["is_deleted", "deleted_at", "sku"])
+
+        serializer = self.get_serializer(target)
+        return Response(
+            {
+                "target_item": serializer.data,
+                "merged": {
+                    "sales_items_updated": sales_count,
+                    "appliance_items_updated": appliance_count,
+                    "service_items_updated": service_count,
+                    "expense_items_updated": expense_count,
+                    "stock_requests_updated": request_count,
+                    "stall_stocks_merged": stocks_merged,
+                    "stockroom_merged": stockroom_merged,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @action(
         detail=False,
         methods=["get"],
         url_path="bulk-template",
