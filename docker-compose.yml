@@ -32,5 +32,13 @@ services:
             - /srv/rvdc_backend/staticfiles:/app/staticfiles  # Map static files to host
             - /srv/rvdc_backend/backups:/app/backups  # Database backups
 
+    go2rtc:
+        image: alexxit/go2rtc:latest
+        restart: unless-stopped
+        ports:
+            - "1984:1984"   # go2rtc web UI + REST API (accessible from browser for HLS/WebRTC)
+        volumes:
+            - /srv/rvdc_backend/go2rtc:/config  # Persist go2rtc config / state
+
 volumes:
     postgres_data:

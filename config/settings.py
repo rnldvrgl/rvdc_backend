@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     "attendance",
     "quotations",
     "messaging",
+    "surveillance",
 ]
 
 
@@ -247,6 +248,13 @@ CHANNEL_LAYERS = {
 VAPID_PUBLIC_KEY = config("VAPID_PUBLIC_KEY", default="")
 VAPID_PRIVATE_KEY = config("VAPID_PRIVATE_KEY", default="")
 VAPID_ADMIN_EMAIL = config("VAPID_ADMIN_EMAIL", default="admin@example.com")
+
+# ------------------------------------------------------------------------------
+# SURVEILLANCE (go2rtc)
+# ------------------------------------------------------------------------------
+# go2rtc REST API base URL — accessible from within the Docker network.
+# Set to empty string to disable go2rtc sync.
+GO2RTC_URL = config("GO2RTC_URL", default="http://go2rtc:1984")
 
 # UNCOMMENT THE FOLLOWING LINE IF USING A REVERSE PROXY WITH HTTPS
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')

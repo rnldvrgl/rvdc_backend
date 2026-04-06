@@ -24,4 +24,5 @@ urlpatterns = [
     path("api/quotations/", include("quotations.api.urls"), name="quotations"),
     path("api/messaging/", include("messaging.api.urls"), name="messaging"),
     path("api/chat/", include("chat.urls"), name="chat"),
+    path("api/surveillance/", include("surveillance.api.urls"), name="surveillance"),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
