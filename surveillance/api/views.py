@@ -1,7 +1,6 @@
 import logging
 import os
 import subprocess
-from urllib.parse import quote
 
 from django.conf import settings
 from rest_framework import filters, viewsets
@@ -29,20 +28,16 @@ GO2RTC_AUTO_RESTART = getattr(settings, "GO2RTC_AUTO_RESTART", True)
 
 def build_rtsp_url(cam: CCTVCamera) -> str:
     """
-    Normalize RTSP URL:
-    - inject credentials if provided
-    - enforce TCP transport
+    Normalize RTSP URL: enforce TCP transport via rtsptcp:// scheme.
+    Credentials are already embedded in stream_url by the user.
     """
     url = cam.stream_url.strip()
 
-    # Inject credentials if not already present
-    if "@" not in url and cam.username and cam.password:
-        password = quote(cam.password)
-        url = url.replace("rtsp://", f"rtsp://{cam.username}:{password}@")
-
-    # Force TCP transport (correct way for go2rtc)
-    if "#rtsp_transport=" not in url:
-        url += "#rtsp_transport=tcp"
+    # Force TCP transport using go2rtc's rtsptcp:// scheme
+    if url.startswith("rtsp://"):
+        url = "rtsptcp://" + url[len("rtsp://"):]
+    elif url.startswith("rtsps://"):
+        url = "rtsptcps://" + url[len("rtsps://"):]
 
     return url
 
