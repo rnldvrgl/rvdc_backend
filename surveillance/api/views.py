@@ -28,16 +28,14 @@ GO2RTC_AUTO_RESTART = getattr(settings, "GO2RTC_AUTO_RESTART", True)
 
 def build_rtsp_url(cam: CCTVCamera) -> str:
     """
-    Normalize RTSP URL: enforce TCP transport via rtsptcp:// scheme.
+    Normalize RTSP URL for go2rtc.
     Credentials are already embedded in stream_url by the user.
+    go2rtc RTSP client uses fragment options, so force TCP with #transport=tcp.
     """
     url = cam.stream_url.strip()
 
-    # Force TCP transport using go2rtc's rtsptcp:// scheme
-    if url.startswith("rtsp://"):
-        url = "rtsptcp://" + url[len("rtsp://"):]
-    elif url.startswith("rtsps://"):
-        url = "rtsptcps://" + url[len("rtsps://"):]
+    if (url.startswith("rtsp://") or url.startswith("rtsps://")) and "#transport=" not in url:
+        url += "#transport=tcp"
 
     return url
 
