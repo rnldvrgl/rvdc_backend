@@ -30,26 +30,24 @@ def build_rtsp_url(cam: CCTVCamera) -> str:
     """
     Normalize RTSP URL for go2rtc.
     Credentials are already embedded in stream_url by the user.
-    go2rtc RTSP client uses fragment options, so force TCP with #transport=tcp.
     """
-    url = cam.stream_url.strip()
-
-    if (url.startswith("rtsp://") or url.startswith("rtsps://")) and "#transport=" not in url:
-        url += "#transport=tcp"
-
-    return url
+    return cam.stream_url.strip()
 
 
 def build_stream_entry(cam: CCTVCamera) -> str:
     """
     Build final stream line.
-    Optional: support ffmpeg fallback later if needed.
+    RTSP inputs are routed through go2rtc's ffmpeg source because native RTSP
+    client requests to the shop PC source are timing out over the tunnel, while
+    ffmpeg with prefer_tcp succeeds from the same container.
     """
     url = build_rtsp_url(cam)
 
-    # Optional: if you later add a flag like cam.force_transcode
-    if getattr(cam, "force_transcode", False):
-        url = f"ffmpeg:{url}#video=h264"
+    if url.startswith("rtsp://") or url.startswith("rtsps://"):
+        if getattr(cam, "force_transcode", False):
+            url = f"ffmpeg:{url}#video=h264"
+        else:
+            url = f"ffmpeg:{url}#video=copy"
 
     return f"  {cam.stream_name}:\n    - {url}\n"
 
