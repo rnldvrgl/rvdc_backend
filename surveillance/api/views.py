@@ -1,13 +1,18 @@
 import logging
 import os
 import subprocess
+from urllib.parse import quote
 
 from django.conf import settings
-from rest_framework import filters, status, viewsets
+from rest_framework import filters, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from surveillance.api.serializers import CCTVCameraListSerializer, CCTVCameraSerializer
+
+from surveillance.api.serializers import (
+    CCTVCameraListSerializer,
+    CCTVCameraSerializer,
+)
 from surveillance.models import CCTVCamera
 from users.api.views import IsSuperAdminUser
 
@@ -15,57 +20,108 @@ logger = logging.getLogger(__name__)
 
 GO2RTC_CONFIG_PATH = getattr(settings, "GO2RTC_CONFIG_PATH", "/go2rtc-config/go2rtc.yaml")
 GO2RTC_CONTAINER = getattr(settings, "GO2RTC_CONTAINER", "rvdc_backend-go2rtc-1")
+GO2RTC_AUTO_RESTART = getattr(settings, "GO2RTC_AUTO_RESTART", True)
 
 
-def _write_go2rtc_yaml() -> bool:
+# ─────────────────────────────────────────────────────────────
+# 🔧 Core Helpers
+# ─────────────────────────────────────────────────────────────
+
+def build_rtsp_url(cam: CCTVCamera) -> str:
     """
-    Write go2rtc.yaml from all active cameras, then restart the go2rtc container.
-    Returns True if the file was written and the restart was triggered.
+    Normalize RTSP URL:
+    - inject credentials if provided
+    - enforce TCP transport
+    """
+    url = cam.stream_url.strip()
+
+    # Inject credentials if not already present
+    if "@" not in url and cam.username and cam.password:
+        password = quote(cam.password)
+        url = url.replace("rtsp://", f"rtsp://{cam.username}:{password}@")
+
+    # Force TCP transport (correct way for go2rtc)
+    if "#rtsp_transport=" not in url:
+        url += "#rtsp_transport=tcp"
+
+    return url
+
+
+def build_stream_entry(cam: CCTVCamera) -> str:
+    """
+    Build final stream line.
+    Optional: support ffmpeg fallback later if needed.
+    """
+    url = build_rtsp_url(cam)
+
+    # Optional: if you later add a flag like cam.force_transcode
+    if getattr(cam, "force_transcode", False):
+        url = f"ffmpeg:{url}#video=h264"
+
+    return f"  {cam.stream_name}:\n    - {url}\n"
+
+
+def generate_go2rtc_config() -> str:
+    """
+    Generate full go2rtc.yaml content.
     """
     cameras = CCTVCamera.objects.filter(is_active=True)
-    stream_lines = []
+
+    lines = [
+        "log:\n",
+        "  level: info\n",
+        "\n",
+        "hls:\n",
+        "  window_duration: 30\n",
+        "\n",
+        "streams:\n",
+    ]
+
+    if not cameras.exists():
+        lines.append("  {}\n")
+        return "".join(lines)
+
     for cam in cameras:
-        url = cam.stream_url
-        # Force TCP transport (rtsptcp://) so go2rtc uses interleaved RTSP over the single
-        # TCP connection it opens to the shop PC. Without this, go2rtc defaults to UDP for
-        # media delivery which silently fails through the Docker bridge / WireGuard tunnel.
-        if url.startswith("rtsp://"):
-            url = "rtsptcp://" + url[len("rtsp://"):]
-        elif url.startswith("rtsps://"):
-            url = "rtsptcps://" + url[len("rtsps://"):]
-        stream_lines.append(f"  {cam.stream_name}:\n")
-        stream_lines.append(f"    - {url}\n")
-    hls_config = ["hls:\n", "  window_duration: 30\n", "\n"]
-    if stream_lines:
-        lines = hls_config + ["streams:\n"] + stream_lines
-    else:
-        lines = hls_config + ["streams: {}\n"]
+        lines.append(build_stream_entry(cam))
+
+    return "".join(lines)
+
+
+def write_go2rtc_config() -> bool:
+    """
+    Write config file + optionally restart container
+    """
+    config_content = generate_go2rtc_config()
 
     try:
         os.makedirs(os.path.dirname(GO2RTC_CONFIG_PATH), exist_ok=True)
         with open(GO2RTC_CONFIG_PATH, "w") as f:
-            f.writelines(lines)
+            f.write(config_content)
     except OSError as exc:
-        logger.warning("Failed to write go2rtc.yaml: %s", exc)
+        logger.error("Failed to write go2rtc.yaml: %s", exc)
         return False
 
-    # Restart go2rtc so it picks up the new config (Docker socket is mounted)
-    try:
-        subprocess.run(
-            ["docker", "restart", GO2RTC_CONTAINER],
-            capture_output=True,
-            timeout=20,
-        )
-    except Exception as exc:
-        logger.warning("Failed to restart go2rtc container: %s", exc)
+    if GO2RTC_AUTO_RESTART:
+        try:
+            subprocess.run(
+                ["docker", "restart", GO2RTC_CONTAINER],
+                capture_output=True,
+                timeout=20,
+            )
+        except Exception as exc:
+            logger.warning("Failed to restart go2rtc: %s", exc)
 
     return True
 
 
+# ─────────────────────────────────────────────────────────────
+# 📦 ViewSet
+# ─────────────────────────────────────────────────────────────
+
 class CCTVCameraViewSet(viewsets.ModelViewSet):
     queryset = CCTVCamera.objects.all()
     permission_classes = [IsAuthenticated, IsSuperAdminUser]
-    pagination_class = None  # cameras are always few; no pagination needed
+    pagination_class = None
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["name", "location"]
     ordering_fields = ["order", "name", "created_at"]
@@ -75,56 +131,59 @@ class CCTVCameraViewSet(viewsets.ModelViewSet):
             return CCTVCameraListSerializer
         return CCTVCameraSerializer
 
-    # ── Write hooks – keep go2rtc in sync ──────────────────────────────────
+    # ── Auto sync hooks ───────────────────────────────────────
 
     def perform_create(self, serializer):
         serializer.save()
-        _write_go2rtc_yaml()
+        write_go2rtc_config()
 
     def perform_update(self, serializer):
         serializer.save()
-        _write_go2rtc_yaml()
+        write_go2rtc_config()
 
     def perform_destroy(self, instance):
         instance.delete()
-        _write_go2rtc_yaml()
+        write_go2rtc_config()
 
-    # ── Extra actions ───────────────────────────────────────────────────────
+    # ── Actions ──────────────────────────────────────────────
 
     @action(detail=False, methods=["post"], url_path="sync-all")
     def sync_all(self, request):
-        """Rewrite go2rtc.yaml with all active cameras and restart go2rtc."""
-        ok = _write_go2rtc_yaml()
-        cameras = CCTVCamera.objects.filter(is_active=True)
+        ok = write_go2rtc_config()
+        count = CCTVCamera.objects.filter(is_active=True).count()
+
         return Response({
             "ok": ok,
-            "synced": cameras.count() if ok else 0,
-            "total": cameras.count(),
+            "synced": count if ok else 0,
+            "total": count,
         })
 
     @action(detail=True, methods=["post"], url_path="sync")
     def sync_one(self, request, pk=None):
-        """Sync all cameras (go2rtc.yaml is always written in full)."""
-        ok = _write_go2rtc_yaml()
+        ok = write_go2rtc_config()
         camera = self.get_object()
-        return Response({"ok": ok, "stream_name": camera.stream_name})
+
+        return Response({
+            "ok": ok,
+            "stream_name": camera.stream_name
+        })
 
     @action(detail=False, methods=["get"], url_path="go2rtc-status")
     def go2rtc_status(self, request):
-        """Check go2rtc health by reading the config file and container state."""
         config_exists = os.path.exists(GO2RTC_CONFIG_PATH)
+
         try:
             result = subprocess.run(
                 ["docker", "inspect", "--format", "{{.State.Status}}", GO2RTC_CONTAINER],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
-            container_state = result.stdout.strip()
-            running = container_state == "running"
+            running = result.stdout.strip() == "running"
         except Exception:
             running = False
 
         return Response({
             "configured": config_exists,
             "running": running,
-            "streams": {},
         })
