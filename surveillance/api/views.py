@@ -37,17 +37,24 @@ def build_rtsp_url(cam: CCTVCamera) -> str:
 def build_stream_entry(cam: CCTVCamera) -> str:
     """
     Build final stream line.
-    RTSP inputs are routed through go2rtc's ffmpeg source because native RTSP
-    client requests to the shop PC source are timing out over the tunnel, while
-    ffmpeg with prefer_tcp succeeds from the same container.
+    RTSP inputs are routed through an exec-based ffmpeg source because the
+    shop PC go2rtc RTSP server works with a plain ffmpeg command, but fails
+    with go2rtc's built-in ffmpeg wrapper arguments.
     """
     url = build_rtsp_url(cam)
 
     if url.startswith("rtsp://") or url.startswith("rtsps://"):
         if getattr(cam, "force_transcode", False):
-            url = f"ffmpeg:{url}#video=h264"
+            url = (
+                f"exec:ffmpeg -hide_banner -rtsp_transport tcp -i {url} "
+                f"-c:v libx264 -an -preset superfast -tune zerolatency "
+                f"-pix_fmt yuv420p -rtsp_transport tcp -f rtsp {{output}}"
+            )
         else:
-            url = f"ffmpeg:{url}#video=copy"
+            url = (
+                f"exec:ffmpeg -hide_banner -rtsp_transport tcp -i {url} "
+                f"-c:v copy -an -rtsp_transport tcp -f rtsp {{output}}"
+            )
 
     return f"  {cam.stream_name}:\n    - {url}\n"
 
