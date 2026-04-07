@@ -23,16 +23,20 @@ def _write_go2rtc_yaml() -> bool:
     Returns True if the file was written and the restart was triggered.
     """
     cameras = CCTVCamera.objects.filter(is_active=True)
-    lines = ["streams:\n"]
+    # Force TCP transport globally so RTP travels reliably over WireGuard tunnel
+    header = ['ffmpeg:\n', '  global: "-rtsp_transport tcp"\n', "\n"]
+    stream_lines = []
     for cam in cameras:
         url = cam.stream_url
         # VPS ffmpeg transcodes H.265 from shop PC RTSP → H.264 for HLS.js
         if url.startswith("rtsp://") or url.startswith("rtsps://"):
             url = f"ffmpeg:{url}#video=h264#audio=aac"
-        lines.append(f"  {cam.stream_name}:\n")
-        lines.append(f"    - {url}\n")
-    if not lines[1:]:
-        lines = ["streams: {}\n"]
+        stream_lines.append(f"  {cam.stream_name}:\n")
+        stream_lines.append(f"    - {url}\n")
+    if stream_lines:
+        lines = header + ["streams:\n"] + stream_lines
+    else:
+        lines = header + ["streams: {}\n"]
 
     try:
         os.makedirs(os.path.dirname(GO2RTC_CONFIG_PATH), exist_ok=True)
