@@ -26,6 +26,9 @@ def _write_go2rtc_yaml() -> bool:
     lines = ["streams:\n"]
     for cam in cameras:
         url = cam.stream_url
+        # VPS ffmpeg transcodes H.265 from shop PC RTSP → H.264 for HLS.js
+        if url.startswith("rtsp://") or url.startswith("rtsps://"):
+            url = f"ffmpeg:{url}#video=h264#audio=aac"
         lines.append(f"  {cam.stream_name}:\n")
         lines.append(f"    - {url}\n")
     if not lines[1:]:
