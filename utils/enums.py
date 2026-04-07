@@ -9,7 +9,7 @@ class AirconType(models.TextChoices):
     CASSETTE = "cassette", _("Cassette Type")
     PORTABLE = "portable", _("Portable")
     CENTRALIZED = "centralized", _("Centralized")
-    CEILING_SUSPENDED_FLOOR_TYPE = "ceiling_suspended_floor", _("Ceiling Suspended / Floor Type")
+    CEILING_SUSPENDED_FLOOR = "ceiling_suspended_floor", _("Ceiling Suspended / Floor Type")
 
 
 class HorsePower(models.TextChoices):
