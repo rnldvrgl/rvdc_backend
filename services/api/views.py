@@ -19,6 +19,7 @@ from services.api.serializers import (
     ApplianceItemUsedSerializer,
     ApplianceTypeSerializer,
     CompanyAssetSerializer,
+    ServiceExtraChargeSerializer,
     ServiceItemUsedSerializer,
     CreateServicePaymentSerializer,
     JobOrderTemplatePrintSerializer,
@@ -41,6 +42,7 @@ from services.models import (
     JobOrderTemplatePrint,
     Service,
     ServiceAppliance,
+    ServiceExtraCharge,
     ServiceItemUsed,
     ServiceReceipt,
     TechnicianAssignment,
@@ -127,6 +129,7 @@ class ServiceViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
                 "technician_assignments__technician",
                 "payments",
                 "refunds",
+                "extra_charges__created_by",
                 "installation_units__model__brand",
                 "schedules",
             )
@@ -1940,3 +1943,37 @@ class CompanyAssetViewSet(viewsets.ModelViewSet):
 
         asset.save()
         return Response(CompanyAssetSerializer(asset).data)
+
+
+# --------------------------
+# Service Extra Charge ViewSet
+# --------------------------
+class ServiceExtraChargeViewSet(viewsets.ModelViewSet):
+    """
+    CRUD for extra charges on a service (e.g. dismantle fee, site survey).
+
+    Endpoints:
+    - GET  /service-extra-charges/?service=<id>  — list charges for a service
+    - POST /service-extra-charges/               — create a charge
+    - PATCH/PUT /service-extra-charges/<id>/     — update a charge
+    - DELETE /service-extra-charges/<id>/        — delete a charge
+    """
+
+    serializer_class = ServiceExtraChargeSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ["service"]
+
+    def get_queryset(self):
+        return ServiceExtraCharge.objects.select_related("service", "created_by").all()
+
+    def perform_destroy(self, instance):
+        service_id = instance.service_id
+        instance.delete()
+        # Recalculate revenue after deletion
+        from services.business_logic import RevenueCalculator
+        try:
+            svc = Service.objects.get(pk=service_id)
+            RevenueCalculator.calculate_service_revenue(svc)
+        except Service.DoesNotExist:
+            pass

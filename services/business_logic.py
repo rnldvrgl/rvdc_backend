@@ -266,6 +266,12 @@ class RevenueCalculator:
         for item_used in service.service_items.all():
             sub_revenue += item_used.line_total
 
+        # Include extra charges (e.g. dismantle fee, site survey)
+        extra_charges_total = sum(
+            Decimal(str(ec.amount)) for ec in service.extra_charges.all()
+        )
+        main_revenue += extra_charges_total
+
         total_revenue = main_revenue + sub_revenue
 
         # Apply service-level discount (percentage or fixed amount) to main stall only

@@ -6,9 +6,18 @@ from .models import (
     JobOrderTemplatePrint,
     Service,
     ServiceAppliance,
+    ServiceExtraCharge,
     ServicePayment,
     TechnicianAssignment,
 )
+
+
+@admin.register(ServiceExtraCharge)
+class ServiceExtraChargeAdmin(admin.ModelAdmin):
+    list_display = ("id", "service", "description", "amount", "created_by", "created_at")
+    list_filter = ("created_at",)
+    search_fields = ("description", "service__id")
+    raw_id_fields = ("service", "created_by")
 
 
 @admin.register(Service)

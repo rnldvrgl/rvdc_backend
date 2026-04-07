@@ -34,6 +34,7 @@ from services.models import (
     PaymentType,
     Service,
     ServiceAppliance,
+    ServiceExtraCharge,
     ServiceItemUsed,
     ServicePayment,
     ServiceReceipt,
@@ -1366,6 +1367,36 @@ class NestedStallSerializer(serializers.ModelSerializer):
         fields = ['id', 'name']
 
 
+class ServiceExtraChargeSerializer(serializers.ModelSerializer):
+    """CRUD serializer for service-level extra charges (e.g. dismantle fee)."""
+
+    created_by_name = serializers.CharField(
+        source="created_by.get_full_name",
+        read_only=True,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = ServiceExtraCharge
+        fields = [
+            "id",
+            "service",
+            "description",
+            "amount",
+            "created_by",
+            "created_by_name",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_by", "created_by_name", "created_at", "updated_at"]
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            validated_data["created_by"] = request.user
+        return super().create(validated_data)
+
+
 class ServiceSerializer(serializers.ModelSerializer):
     """
     Service serializer with two-stall architecture support.
@@ -1379,6 +1410,7 @@ class ServiceSerializer(serializers.ModelSerializer):
 
     appliances = ServiceApplianceSerializer(many=True, required=False)
     receipts = ServiceReceiptSerializer(many=True, read_only=True)
+    extra_charges = ServiceExtraChargeSerializer(many=True, read_only=True)
     payments = serializers.SerializerMethodField()
     refunds = serializers.SerializerMethodField()
     installation_units = serializers.SerializerMethodField()
@@ -1513,6 +1545,8 @@ class ServiceSerializer(serializers.ModelSerializer):
             "service_items_checked_at",
             # BIR receipts (multiple receipts per service)
             "receipts",
+            # Extra charges (additional fees not tied to inventory items)
+            "extra_charges",
             # Backdating
             "transaction_date",
             # Back job / re-service

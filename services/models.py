@@ -450,7 +450,7 @@ class Service(models.Model):
 
     @property
     def total_cost(self):
-        """Sum labor fees and parts for all appliances + service-level items."""
+        """Sum labor fees and parts for all appliances + service-level items + extra charges."""
         appliance_costs = sum(a.labor_fee for a in self.appliances.all())
         parts_costs = sum(
             iu.line_total
@@ -461,7 +461,10 @@ class Service(models.Model):
             si.line_total
             for si in self.service_items.all()
         )
-        return appliance_costs + parts_costs + service_items_costs
+        extra_charges_costs = sum(
+            Decimal(str(ec.amount)) for ec in self.extra_charges.all()
+        )
+        return appliance_costs + parts_costs + service_items_costs + extra_charges_costs
 
     @property
     def total_paid(self):
@@ -1376,3 +1379,59 @@ class CompanyAsset(models.Model):
 
     def __str__(self):
         return f"{self.appliance_description or 'Asset'} from SVC-{self.service_id} ({self.get_acquisition_type_display()})"
+
+
+# ----------------------------------
+# Service Extra Charge
+# ----------------------------------
+class ServiceExtraCharge(models.Model):
+    """
+    Additional charges attached to a service that are not tied to inventory
+    items or appliance labor. Examples: dismantle fee, site inspection charge,
+    haul-away fee, etc.
+
+    These are included in the service total revenue (main_stall_revenue) and
+    therefore affect the balance due.
+    """
+
+    service = models.ForeignKey(
+        Service,
+        on_delete=models.CASCADE,
+        related_name="extra_charges",
+        help_text="Service this charge belongs to",
+    )
+    description = models.CharField(
+        max_length=255,
+        help_text="Description of the charge (e.g. 'Dismantle Fee', 'Site Survey')",
+    )
+    amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        help_text="Charge amount in PHP",
+    )
+    created_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="service_extra_charges_created",
+        help_text="User who added this charge",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        verbose_name = "Service Extra Charge"
+        verbose_name_plural = "Service Extra Charges"
+
+    def __str__(self):
+        return f"{self.description}: ₱{self.amount} (Service #{self.service_id})"
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # Recalculate revenue whenever a charge is saved
+        from services.business_logic import RevenueCalculator
+        from services.models import Service as ServiceModel
+        fresh_service = ServiceModel.objects.get(pk=self.service_id)
+        RevenueCalculator.calculate_service_revenue(fresh_service)
