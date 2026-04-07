@@ -32,10 +32,11 @@ def _write_go2rtc_yaml() -> bool:
             url = f"ffmpeg:{url}#video=copy#rtsp_transport=tcp"
         stream_lines.append(f"  {cam.stream_name}:\n")
         stream_lines.append(f"    - {url}\n")
+    hls_config = ["hls:\n", "  window_duration: 30\n", "\n"]
     if stream_lines:
-        lines = ["streams:\n"] + stream_lines
+        lines = hls_config + ["streams:\n"] + stream_lines
     else:
-        lines = ["streams: {}\n"]
+        lines = hls_config + ["streams: {}\n"]
 
     try:
         os.makedirs(os.path.dirname(GO2RTC_CONFIG_PATH), exist_ok=True)
