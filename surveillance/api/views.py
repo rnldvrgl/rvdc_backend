@@ -25,8 +25,13 @@ def _write_go2rtc_yaml() -> bool:
     cameras = CCTVCamera.objects.filter(is_active=True)
     lines = ["streams:\n"]
     for cam in cameras:
+        url = cam.stream_url
+        # Wrap RTSP sources with ffmpeg to transcode H.265 → H.264 so
+        # HLS.js in the browser can play it (HLS.js has no H.265 support).
+        if url.startswith("rtsp://") or url.startswith("rtsps://"):
+            url = f"ffmpeg:{url}#video=h264"
         lines.append(f"  {cam.stream_name}:\n")
-        lines.append(f"    - {cam.stream_url}\n")
+        lines.append(f"    - {url}\n")
     if not lines[1:]:
         lines = ["streams: {}\n"]
 
