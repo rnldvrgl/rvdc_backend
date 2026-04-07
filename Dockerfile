@@ -37,7 +37,7 @@ FROM base AS production
 
 COPY . .
 
-RUN chmod +x /usr/src/app/entrypoint.sh
+RUN sed -i 's/\r//' /usr/src/app/entrypoint.sh && chmod +x /usr/src/app/entrypoint.sh
 
 ENTRYPOINT ["/usr/src/app/entrypoint.sh"]
 
