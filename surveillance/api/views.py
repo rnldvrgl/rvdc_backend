@@ -26,8 +26,13 @@ def _write_go2rtc_yaml() -> bool:
     stream_lines = []
     for cam in cameras:
         url = cam.stream_url
-        # Shop PC go2rtc already transcodes H.265→H.264; VPS go2rtc can relay RTSP→HLS natively.
-        # Just force TCP transport for reliability over the WireGuard tunnel.
+        # Force TCP transport (rtsptcp://) so go2rtc uses interleaved RTSP over the single
+        # TCP connection it opens to the shop PC. Without this, go2rtc defaults to UDP for
+        # media delivery which silently fails through the Docker bridge / WireGuard tunnel.
+        if url.startswith("rtsp://"):
+            url = "rtsptcp://" + url[len("rtsp://"):]
+        elif url.startswith("rtsps://"):
+            url = "rtsptcps://" + url[len("rtsps://"):]
         stream_lines.append(f"  {cam.stream_name}:\n")
         stream_lines.append(f"    - {url}\n")
     hls_config = ["hls:\n", "  window_duration: 30\n", "\n"]
