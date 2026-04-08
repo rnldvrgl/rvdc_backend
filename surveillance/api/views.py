@@ -1,6 +1,9 @@
 import logging
 import os
 import subprocess
+from urllib.request import urlopen, Request
+from urllib.error import URLError
+import json
 
 from django.conf import settings
 from rest_framework import filters, viewsets
@@ -20,6 +23,7 @@ logger = logging.getLogger(__name__)
 GO2RTC_CONFIG_PATH = getattr(settings, "GO2RTC_CONFIG_PATH", "/go2rtc-config/go2rtc.yaml")
 GO2RTC_CONTAINER = getattr(settings, "GO2RTC_CONTAINER", "rvdc_backend-go2rtc-1")
 GO2RTC_AUTO_RESTART = getattr(settings, "GO2RTC_AUTO_RESTART", True)
+GO2RTC_URL = getattr(settings, "GO2RTC_URL", "http://go2rtc:1984")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -168,20 +172,41 @@ class CCTVCameraViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="go2rtc-status")
     def go2rtc_status(self, request):
-        config_exists = os.path.exists(GO2RTC_CONFIG_PATH)
+        running = False
+        version = None
+        streams = {}
+        error = None
 
+        if not GO2RTC_URL:
+            return Response({
+                "running": False,
+                "error": "GO2RTC_URL not configured",
+            })
+
+        # Check go2rtc health via GET /api
         try:
-            result = subprocess.run(
-                ["docker", "inspect", "--format", "{{.State.Status}}", GO2RTC_CONTAINER],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            running = result.stdout.strip() == "running"
-        except Exception:
-            running = False
+            req = Request(f"{GO2RTC_URL}/api", method="GET")
+            with urlopen(req, timeout=5) as resp:
+                info = json.loads(resp.read())
+                running = True
+                version = info.get("version")
+        except (URLError, OSError, json.JSONDecodeError) as exc:
+            error = f"Cannot reach go2rtc at {GO2RTC_URL}: {exc}"
+            logger.warning(error)
+
+        # Fetch active streams list
+        if running:
+            try:
+                req = Request(f"{GO2RTC_URL}/api/streams", method="GET")
+                with urlopen(req, timeout=5) as resp:
+                    streams = json.loads(resp.read())
+            except Exception as exc:
+                logger.warning("Failed to fetch go2rtc streams: %s", exc)
 
         return Response({
-            "configured": config_exists,
             "running": running,
+            "version": version,
+            "streams": streams,
+            "stream_count": len(streams),
+            "error": error,
         })
