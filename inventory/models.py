@@ -402,13 +402,49 @@ class StockRoomStock(models.Model):
         return f"{self.item.name} - {self.quantity} {self.item.unit_of_measure}"
 
 
+class DirectStockRequestBatch(models.Model):
+    """
+    Groups multiple direct stock requests submitted by a clerk in one batch.
+    Allows clerks to request stock independent of any service.
+    """
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("completed", "Completed"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    notes = models.TextField(
+        blank=True, default="",
+        help_text="Clerk notes for the overall batch request.",
+    )
+    status = models.CharField(
+        max_length=10, choices=STATUS_CHOICES, default="pending"
+    )
+    requested_by = models.ForeignKey(
+        "users.CustomUser",
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="direct_stock_batches",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"DirectBatch #{self.pk} by {self.requested_by}"
+
+
 class StockRequest(models.Model):
     """
     Tracks requests to add stock for items that have insufficient inventory.
 
     Created automatically when a clerk adds an item/part to a service but
-    stock is insufficient. Admin can approve (auto-adds stock and reserves
-    for the service) or decline the request.
+    stock is insufficient. Clerks can also create direct requests (source='direct')
+    independent of any service. Admin can approve (auto-adds stock and, for service
+    requests, reserves inventory) or decline each request.
     """
 
     STATUS_CHOICES = [
@@ -421,6 +457,7 @@ class StockRequest(models.Model):
     SOURCE_CHOICES = [
         ("service_appliance", "Service Appliance Item"),
         ("service", "Service Item"),
+        ("direct", "Direct Request"),
     ]
 
     item = models.ForeignKey(
@@ -439,7 +476,25 @@ class StockRequest(models.Model):
     )
     source = models.CharField(
         max_length=20, choices=SOURCE_CHOICES,
-        help_text="Whether this request originated from an appliance item or service-level item.",
+        help_text="Whether this request originated from an appliance item, service-level item, or direct clerk request.",
+    )
+
+    # For direct requests: link back to the batch
+    batch = models.ForeignKey(
+        DirectStockRequestBatch,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="items",
+    )
+
+    # Admin-specified release quantity (used instead of requested_quantity when approving direct requests)
+    approved_quantity = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Quantity approved for release by admin (for direct requests).",
     )
 
     # Link to service context

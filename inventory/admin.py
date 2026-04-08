@@ -2,6 +2,7 @@ from django.contrib import admin
 
 from inventory.models import (
     CustomItemTemplate,
+    DirectStockRequestBatch,
     Item,
     Stall,
     Stock,
@@ -115,7 +116,27 @@ class StockRequestAdmin(admin.ModelAdmin):
     list_filter = ("status", "source")
     search_fields = ("item__name", "notes")
     ordering = ("-created_at",)
-    raw_id_fields = ("item", "stall", "service", "appliance_item", "service_item", "requested_by", "approved_by")
+    raw_id_fields = ("item", "stall", "service", "appliance_item", "service_item", "requested_by", "approved_by", "batch")
+
+
+class StockRequestInline(admin.TabularInline):
+    model = StockRequest
+    extra = 0
+    readonly_fields = ("item", "stall", "requested_quantity", "approved_quantity", "status", "notes", "requested_by")
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(DirectStockRequestBatch)
+class DirectStockRequestBatchAdmin(admin.ModelAdmin):
+    list_display = ("id", "requested_by", "status", "created_at")
+    list_filter = ("status",)
+    search_fields = ("notes", "requested_by__first_name", "requested_by__last_name")
+    ordering = ("-created_at",)
+    raw_id_fields = ("requested_by",)
+    inlines = [StockRequestInline]
 
 
 @admin.register(CustomItemTemplate)

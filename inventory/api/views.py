@@ -15,6 +15,8 @@ from inventory.api.filters import (
 )
 from inventory.api.serializers import (
     CustomItemTemplateSerializer,
+    DirectStockRequestBatchCreateSerializer,
+    DirectStockRequestBatchSerializer,
     ItemSerializer,
     ProductCategorySerializer,
     StallSerializer,
@@ -28,6 +30,7 @@ from inventory.api.serializers import (
 )
 from inventory.models import (
     CustomItemTemplate,
+    DirectStockRequestBatch,
     Item,
     ProductCategory,
     Stall,
@@ -2736,7 +2739,7 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUser])
     @transaction.atomic
     def approve(self, request, pk=None):
-        """Approve a stock request: add stock and reserve for the service item."""
+        """Approve a stock request: add stock and (for service requests) reserve for the service item."""
         from services.business_logic import StockReservationManager
         from django.db import transaction as db_transaction
 
@@ -2750,6 +2753,23 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+            # Determine quantity to release
+            # For direct requests, admin may pass an approved_quantity in the body
+            raw_approved_qty = request.data.get("approved_quantity")
+            if raw_approved_qty is not None:
+                try:
+                    qty_to_add = Decimal(str(raw_approved_qty))
+                    if qty_to_add <= 0:
+                        raise ValueError
+                    stock_request.approved_quantity = qty_to_add
+                except (ValueError, Exception):
+                    return Response(
+                        {"detail": "Invalid approved_quantity value."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            else:
+                qty_to_add = stock_request.approved_quantity or stock_request.requested_quantity
+
             stock_record, _ = Stock.objects.get_or_create(
                 item=stock_request.item,
                 stall=stock_request.stall,
@@ -2757,9 +2777,10 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                 defaults={"quantity": 0, "reserved_quantity": 0},
             )
             stock_record = Stock.objects.select_for_update().get(pk=stock_record.pk)
-            stock_record.quantity += stock_request.requested_quantity
+            stock_record.quantity += qty_to_add
             stock_record.save(update_fields=["quantity", "updated_at"])
 
+            # Only reserve for service-linked requests
             item_usage = stock_request.appliance_item or stock_request.service_item
             if item_usage and item_usage.item:
                 try:
@@ -2781,8 +2802,16 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
             stock_request.approved_by = request.user
             stock_request.approved_at = timezone.now()
             stock_request.save(update_fields=[
-                "status", "approved_by", "approved_at", "updated_at",
+                "status", "approved_by", "approved_at", "approved_quantity", "updated_at",
             ])
+
+            # Update batch status if all items are resolved
+            if stock_request.batch_id:
+                batch = stock_request.batch
+                pending_remaining = batch.items.filter(status="pending").count()
+                if pending_remaining == 0:
+                    batch.status = "completed"
+                    batch.save(update_fields=["status", "updated_at"])
 
             if stock_request.requested_by and stock_request.requested_by.is_active:
                 Notification.objects.create(
@@ -2790,15 +2819,16 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                     type="stock_request_approved",
                     title="Stock Request Approved",
                     message=(
-                        f"Your stock request for {stock_request.requested_quantity} "
+                        f"Your stock request for {qty_to_add} "
                         f"{stock_request.item.unit_of_measure} of '{stock_request.item.name}' "
                         f"has been approved."
                     ),
                     data={
                         "stock_request_id": stock_request.id,
                         "item_name": stock_request.item.name,
-                        "quantity": float(stock_request.requested_quantity),
+                        "quantity": float(qty_to_add),
                         "service_id": stock_request.service_id,
+                        "batch_id": stock_request.batch_id,
                     },
                 )
 
@@ -2877,7 +2907,8 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
                 defaults={"quantity": 0, "reserved_quantity": 0},
             )
             stock_record = Stock.objects.select_for_update().get(pk=stock_record.pk)
-            stock_record.quantity += sr.requested_quantity
+            qty_to_add = sr.approved_quantity or sr.requested_quantity
+            stock_record.quantity += qty_to_add
             stock_record.save(update_fields=["quantity", "updated_at"])
 
             item_usage = sr.appliance_item or sr.service_item
@@ -2903,25 +2934,96 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
             sr.save(update_fields=["status", "approved_by", "approved_at", "updated_at"])
             approved_count += 1
 
+            # Update batch status if all items resolved
+            if sr.batch_id:
+                from django.db.models import Q
+                if not StockRequest.objects.filter(batch_id=sr.batch_id, status="pending").exists():
+                    DirectStockRequestBatch.objects.filter(pk=sr.batch_id).update(status="completed")
+
             if sr.requested_by and sr.requested_by.is_active:
                 Notification.objects.create(
                     user=sr.requested_by,
                     type="stock_request_approved",
                     title="Stock Request Approved",
                     message=(
-                        f"Your stock request for {sr.requested_quantity} "
+                        f"Your stock request for {qty_to_add} "
                         f"{sr.item.unit_of_measure} of '{sr.item.name}' "
                         f"has been approved."
                     ),
                     data={
                         "stock_request_id": sr.id,
                         "item_name": sr.item.name,
-                        "quantity": float(sr.requested_quantity),
+                        "quantity": float(qty_to_add),
                         "service_id": sr.service_id,
+                        "batch_id": sr.batch_id,
                     },
                 )
 
         return Response({"approved_count": approved_count})
+
+
+class DirectStockRequestBatchViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for direct stock request batches.
+
+    Clerks can create batches (POST) and view their own.
+    Admins can view all batches and cancel them.
+    Per-item approval is done via StockRequestViewSet.approve().
+    """
+
+    serializer_class = DirectStockRequestBatchSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    filterset_fields = ["status"]
+    search_fields = ["notes", "requested_by__first_name", "requested_by__last_name"]
+    ordering_fields = ["created_at", "status"]
+    http_method_names = ["get", "post", "head", "options"]
+
+    def get_queryset(self):
+        qs = DirectStockRequestBatch.objects.prefetch_related(
+            "items__item", "items__stall", "items__requested_by", "items__approved_by"
+        ).select_related("requested_by")
+        if self.request.user.role != "admin":
+            qs = qs.filter(requested_by=self.request.user)
+        return qs
+
+    def get_serializer_class(self):
+        if self.action == "create":
+            return DirectStockRequestBatchCreateSerializer
+        return DirectStockRequestBatchSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = DirectStockRequestBatchCreateSerializer(
+            data=request.data, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        batch = serializer.save()
+        out = DirectStockRequestBatchSerializer(batch, context={"request": request})
+        return Response(out.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAuthenticated])
+    def cancel(self, request, pk=None):
+        """Cancel a pending batch (clerk can cancel their own; admin can cancel any)."""
+        batch = self.get_object()
+        if batch.status != "pending":
+            return Response(
+                {"detail": f"Cannot cancel a batch with status '{batch.status}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if request.user.role != "admin" and batch.requested_by != request.user:
+            return Response(
+                {"detail": "You do not have permission to cancel this batch."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        batch.status = "cancelled"
+        batch.save(update_fields=["status", "updated_at"])
+        # Also cancel all pending items in the batch
+        batch.items.filter(status="pending").update(status="cancelled")
+        return Response(DirectStockRequestBatchSerializer(batch, context={"request": request}).data)
 
 
 class CustomItemTemplateViewSet(viewsets.ModelViewSet):

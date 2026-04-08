@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from inventory.models import (
     CustomItemTemplate,
+    DirectStockRequestBatch,
     Item,
     ItemPriceHistory,
     ProductCategory,
@@ -235,6 +236,7 @@ class StockRequestSerializer(serializers.ModelSerializer):
 
     item_name = serializers.CharField(source="item.name", read_only=True)
     item_sku = serializers.CharField(source="item.sku", read_only=True)
+    item_unit = serializers.CharField(source="item.unit_of_measure", read_only=True)
     stall_name = serializers.CharField(source="stall.name", read_only=True)
     requested_by_name = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
@@ -248,11 +250,14 @@ class StockRequestSerializer(serializers.ModelSerializer):
             "item",
             "item_name",
             "item_sku",
+            "item_unit",
             "stall",
             "stall_name",
             "requested_quantity",
+            "approved_quantity",
             "status",
             "source",
+            "batch",
             "service",
             "service_id",
             "appliance_item",
@@ -274,11 +279,13 @@ class StockRequestSerializer(serializers.ModelSerializer):
             "item",
             "item_name",
             "item_sku",
+            "item_unit",
             "stall",
             "stall_name",
             "requested_quantity",
             "status",
             "source",
+            "batch",
             "service",
             "appliance_item",
             "service_item",
@@ -311,6 +318,106 @@ class StockRequestSerializer(serializers.ModelSerializer):
             return 0
         except Exception:
             return 0
+
+
+class DirectStockRequestBatchSerializer(serializers.ModelSerializer):
+    """Serializer for direct stock request batches with nested items."""
+
+    requested_by_name = serializers.SerializerMethodField()
+    items = StockRequestSerializer(many=True, read_only=True)
+    pending_count = serializers.SerializerMethodField()
+    approved_count = serializers.SerializerMethodField()
+    declined_count = serializers.SerializerMethodField()
+    total_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DirectStockRequestBatch
+        fields = [
+            "id",
+            "notes",
+            "status",
+            "requested_by",
+            "requested_by_name",
+            "items",
+            "pending_count",
+            "approved_count",
+            "declined_count",
+            "total_count",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "requested_by", "status", "created_at", "updated_at"]
+
+    def get_requested_by_name(self, obj):
+        if obj.requested_by:
+            return obj.requested_by.get_full_name() or obj.requested_by.username
+        return None
+
+    def get_pending_count(self, obj):
+        return obj.items.filter(status="pending").count()
+
+    def get_approved_count(self, obj):
+        return obj.items.filter(status="approved").count()
+
+    def get_declined_count(self, obj):
+        return obj.items.filter(status="declined").count()
+
+    def get_total_count(self, obj):
+        return obj.items.count()
+
+
+class DirectStockRequestBatchItemSerializer(serializers.Serializer):
+    """One item entry for creating a direct stock request batch."""
+
+    item = serializers.PrimaryKeyRelatedField(queryset=Item.objects.all())
+    stall = serializers.PrimaryKeyRelatedField(queryset=Stall.objects.all())
+    requested_quantity = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0.01"))
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class DirectStockRequestBatchCreateSerializer(serializers.Serializer):
+    """Used by clerks to submit a batch of direct stock requests."""
+
+    notes = serializers.CharField(required=False, allow_blank=True, default="")
+    items = DirectStockRequestBatchItemSerializer(many=True, min_length=1)
+
+    def validate_items(self, value):
+        if not value:
+            raise serializers.ValidationError("At least one item is required.")
+        return value
+
+    def create(self, validated_data):
+        from django.utils import timezone
+
+        request = self.context.get("request")
+        user = request.user if request else None
+
+        batch = DirectStockRequestBatch.objects.create(
+            notes=validated_data.get("notes", ""),
+            requested_by=user,
+            status="pending",
+        )
+
+        stock_requests = []
+        for item_data in validated_data["items"]:
+            stock_requests.append(StockRequest(
+                item=item_data["item"],
+                stall=item_data["stall"],
+                requested_quantity=item_data["requested_quantity"],
+                notes=item_data.get("notes", ""),
+                source="direct",
+                batch=batch,
+                requested_by=user,
+                status="pending",
+            ))
+
+        StockRequest.objects.bulk_create(stock_requests)
+
+        # Reload batch with prefetched items
+        batch = DirectStockRequestBatch.objects.prefetch_related(
+            "items__item", "items__stall", "items__requested_by", "items__approved_by"
+        ).get(pk=batch.pk)
+        return batch
 
 
 class CustomItemTemplateSerializer(serializers.ModelSerializer):
