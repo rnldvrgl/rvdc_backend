@@ -12,7 +12,9 @@ class CCTVCamera(models.Model):
     )
     stream_url = models.CharField(
         max_length=500,
-        help_text="Full go2rtc source URL, e.g. dvrip://user:pass@IP:34567?channel=0 or rtsp://user:pass@IP/stream",
+        blank=True,
+        default="",
+        help_text="Full go2rtc source URL (optional — streams are configured directly in go2rtc)",
     )
     location = models.CharField(max_length=200, blank=True)
     notes = models.TextField(blank=True)

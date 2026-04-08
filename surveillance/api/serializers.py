@@ -18,8 +18,7 @@ class CCTVCameraSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         extra_kwargs = {
-            # stream_url contains credentials — write-only, never exposed in list responses
-            "stream_url": {"write_only": True},
+            "stream_url": {"write_only": True, "required": False},
         }
 
 

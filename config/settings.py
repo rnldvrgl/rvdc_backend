@@ -252,9 +252,9 @@ VAPID_ADMIN_EMAIL = config("VAPID_ADMIN_EMAIL", default="admin@example.com")
 # ------------------------------------------------------------------------------
 # SURVEILLANCE (go2rtc)
 # ------------------------------------------------------------------------------
-# go2rtc REST API base URL — accessible from within the Docker network.
-# Set to empty string to disable go2rtc sync.
-GO2RTC_URL = config("GO2RTC_URL", default="http://go2rtc:1984")
+# go2rtc REST API base URL — the machine running go2rtc (local PC / Raspberry Pi).
+# Set via GO2RTC_URL env var. Empty string disables status checks.
+GO2RTC_URL = config("GO2RTC_URL", default="")
 
 # UNCOMMENT THE FOLLOWING LINE IF USING A REVERSE PROXY WITH HTTPS
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
