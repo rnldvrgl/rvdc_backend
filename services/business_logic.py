@@ -718,6 +718,50 @@ class ServiceCompletionHandler:
                         service.related_sub_transaction = existing_sub_transaction
                         service.save(update_fields=['related_sub_transaction'])
 
+                # ----------------------------------------------------------------
+                # Backfill SalesPayments for any service payments that were
+                # recorded before the main TX existed (e.g. paid with no labor
+                # fees set yet, or paid before the service was completed).
+                # ----------------------------------------------------------------
+                if main_receipt:
+                    from sales.models import SalesPayment as SalesPmt
+                    existing_svc_payments = service.payments.order_by('payment_date')
+                    if existing_svc_payments.exists():
+                        # Which sub TX was ultimately used?
+                        actual_sub_tx = sub_receipt
+                        if actual_sub_tx is None and service.related_sub_transaction_id:
+                            actual_sub_tx = service.related_sub_transaction
+
+                        main_total = main_receipt.computed_total or Decimal('0')
+
+                        # How much of the service payment was already mirrored to
+                        # the sub TX (before this call created the main TX)?
+                        sub_already_mirrored = (
+                            sum(p.amount for p in actual_sub_tx.payments.all())
+                            if actual_sub_tx else Decimal('0')
+                        )
+
+                        total_svc_paid = sum(p.amount for p in existing_svc_payments)
+
+                        # Apply the unmirrored portion to the newly created main TX
+                        amount_to_apply = min(
+                            main_total,
+                            max(total_svc_paid - sub_already_mirrored, Decimal('0')),
+                        )
+                        if amount_to_apply > 0:
+                            remaining = amount_to_apply
+                            for svc_payment in existing_svc_payments:
+                                if remaining <= 0:
+                                    break
+                                apply_now = min(svc_payment.amount, remaining)
+                                SalesPmt.objects.create(
+                                    transaction=main_receipt,
+                                    payment_type=svc_payment.payment_type,
+                                    amount=apply_now,
+                                    payment_date=svc_payment.payment_date,
+                                )
+                                remaining -= apply_now
+
             return {
                 'service_id': service.id,
                 'status': 'completed',
@@ -1190,6 +1234,55 @@ class ServicePaymentManager:
     Handles payment creation, validation, and status updates.
     Prevents overpayment and ensures data integrity.
     """
+
+    @staticmethod
+    def sync_sub_sales_items(service):
+        """
+        Sync the sub-stall SalesTransaction items to match the current set of
+        charged parts on the service.  Call this whenever ApplianceItemUsed or
+        ServiceItemUsed records are added/changed/deleted on a *completed*
+        service so the sub TX total stays in step with service.sub_stall_revenue.
+        """
+        from sales.models import SalesItem
+
+        if not service.related_sub_transaction_id:
+            return
+
+        sub_tx = service.related_sub_transaction
+        if sub_tx.voided:
+            return
+
+        # Rebuild all line items from scratch
+        sub_tx.items.all().delete()
+
+        for appliance in service.appliances.all():
+            for item_used in appliance.items_used.all():
+                if item_used.is_free:
+                    continue
+                charged_qty = item_used.quantity - item_used.free_quantity
+                if charged_qty > 0:
+                    SalesItem.objects.create(
+                        transaction=sub_tx,
+                        item=item_used.item,
+                        description='',
+                        quantity=charged_qty,
+                        final_price_per_unit=item_used.discounted_price,
+                    )
+
+        for item_used in service.service_items.all():
+            if item_used.is_free:
+                continue
+            charged_qty = item_used.quantity - item_used.free_quantity
+            if charged_qty > 0:
+                SalesItem.objects.create(
+                    transaction=sub_tx,
+                    item=item_used.item,
+                    description='',
+                    quantity=charged_qty,
+                    final_price_per_unit=item_used.discounted_price,
+                )
+
+        sub_tx.update_payment_status()
 
     @staticmethod
     def sync_sales_items(service):
