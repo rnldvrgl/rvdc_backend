@@ -3,19 +3,17 @@ from surveillance.models import CCTVCamera
 
 
 class CCTVCameraSerializer(serializers.ModelSerializer):
-    stream_name = serializers.ReadOnlyField()
-
     class Meta:
         model = CCTVCamera
         fields = [
             "id",
             "name",
+            "stream_name",
             "stream_url",
             "location",
             "notes",
             "is_active",
             "order",
-            "stream_name",
             "created_at",
             "updated_at",
         ]
@@ -28,15 +26,13 @@ class CCTVCameraSerializer(serializers.ModelSerializer):
 class CCTVCameraListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for the camera grid (no credentials)."""
 
-    stream_name = serializers.ReadOnlyField()
-
     class Meta:
         model = CCTVCamera
         fields = [
             "id",
             "name",
+            "stream_name",
             "location",
             "is_active",
             "order",
-            "stream_name",
         ]

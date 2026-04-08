@@ -5,6 +5,11 @@ class CCTVCamera(models.Model):
     """Represents a camera streamed via go2rtc."""
 
     name = models.CharField(max_length=100)
+    stream_name = models.CharField(
+        max_length=100,
+        unique=True,
+        help_text="Stream identifier used in go2rtc, e.g. cam_1, cam_2",
+    )
     stream_url = models.CharField(
         max_length=500,
         help_text="Full go2rtc source URL, e.g. dvrip://user:pass@IP:34567?channel=0 or rtsp://user:pass@IP/stream",
@@ -24,8 +29,3 @@ class CCTVCamera(models.Model):
 
     def __str__(self):
         return self.name
-
-    @property
-    def stream_name(self) -> str:
-        """Unique stream identifier used in go2rtc."""
-        return f"cam_{self.pk}"
