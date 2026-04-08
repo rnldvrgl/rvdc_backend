@@ -1,53 +1,52 @@
 """
-Maintenance command to fix two related service-payment bugs on existing records.
+Maintenance command to reconcile service-payment SalesTransaction records.
 
-Problem 1 — Main TX missing SalesPayments (shows UNPAID despite service being paid)
------------------------------------------------------------------------------
-When a service was marked completed AFTER a payment was already recorded, the
-main-stall SalesTransaction was created during completion but never received
-SalesPayment mirror records.  The sub-stall TX already had payment mirrors so
-the money appeared there while the main TX showed UNPAID.
+Syndromes fixed
+---------------
+1. Main TX shows UNPAID / £0 paid despite the service being fully paid.
+   Cause: payment was recorded when no main TX existed yet, so the SalesPayment
+   mirror was never created for the main TX.
 
-Problem 2 — Sub TX line items out of sync with parts
-------------------------------------------------------
-When parts (ApplianceItemUsed / ServiceItemUsed) were added or changed on a
-completed service, the sub-stall SalesTransaction items were never updated, so
-the TX total no longer matched the service's sub_stall_revenue.
+2. Sub TX line items out of sync with actual parts used.
+   Cause: parts (ApplianceItemUsed / ServiceItemUsed) were added/changed after
+   the sub TX was already created.
 
-What this command does
------------------------
-For every completed/paid service that has both a related_transaction (main TX)
-and has service-level payments recorded:
+3. Both main TX and sub TX have zero SalesPayments even though the service is paid.
+   Cause: payment was recorded before any TX existed; mirrors were dropped silently.
 
-  Step 1 – Re-sync sub TX items
-      Rebuild the sub-stall SalesTransaction line items from the current
-      ApplianceItemUsed / ServiceItemUsed records so the TX total is accurate.
+Algorithm
+---------
+For every qualifying service:
+  a) Find the main TX (service.related_transaction) and the sub TX
+     (service.related_sub_transaction, or found by time-window fallback).
+  b) Rebuild sub TX items if they don't match service.sub_stall_revenue.
+  c) Delete every existing SalesPayment on BOTH TXs and recreate them from
+     scratch using the correct waterfall split (sub first, then main) across
+     all ServicePayment records.
+  d) Call update_payment_status() on both TXs and the service.
 
-  Step 2 – Backfill missing SalesPayments on main TX
-      Re-compute the correct waterfall split (sub TX first, then main TX) for
-      all service payments. Delete any existing SalesPayment records on the
-      main TX that are inconsistent, then create the right ones.
-
-  Step 3 – Refresh payment_status
-      Call update_payment_status() on both TXs and the service.
-
-Run:
+Usage
+-----
     python manage.py fix_service_payment_sync
     python manage.py fix_service_payment_sync --dry-run
     python manage.py fix_service_payment_sync --service-id 893
+    python manage.py fix_service_payment_sync --all   # includes services without main TX
 """
+from datetime import timedelta
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand
 from django.db import transaction as db_transaction
+from django.utils import timezone
 
-from sales.models import SalesItem, SalesPayment
+from inventory.models import Stall
+from sales.models import SalesItem, SalesPayment, SalesTransaction
 from services.business_logic import ServicePaymentManager
 from services.models import Service
 
 
 class Command(BaseCommand):
-    help = "Fix main-TX missing payments and sub-TX out-of-sync items for completed services"
+    help = "Reconcile SalesPayment mirrors for all service-linked SalesTransactions"
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -61,210 +60,272 @@ class Command(BaseCommand):
             default=None,
             help="Limit to a single service ID",
         )
+        parser.add_argument(
+            "--all",
+            action="store_true",
+            dest="include_all",
+            help="Also include services that only have a sub TX (no main TX linked)",
+        )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _find_sub_tx(self, service, main_tx, sub_stall):
+        """Return the linked sub TX, falling back to a time-window search."""
+        if service.related_sub_transaction_id:
+            try:
+                sub = service.related_sub_transaction
+                if not sub.voided:
+                    return sub
+            except SalesTransaction.DoesNotExist:
+                pass
+
+        if main_tx:
+            return (
+                SalesTransaction.objects.filter(
+                    stall=sub_stall,
+                    client=service.client,
+                    voided=False,
+                    created_at__range=(
+                        main_tx.created_at - timedelta(seconds=120),
+                        main_tx.created_at + timedelta(seconds=120),
+                    ),
+                )
+                .exclude(id=main_tx.id)
+                .first()
+            )
+        return None
+
+    @staticmethod
+    def _waterfall(payments, main_total, sub_total):
+        """
+        Given a list of ServicePayment amounts, return how much should go to
+        each TX in total (sub first, then main).
+        """
+        m_total = Decimal("0")
+        s_total = Decimal("0")
+        m_rem = main_total
+        s_rem = sub_total
+        for p in payments:
+            m, s = ServicePaymentManager._waterfall_split(p.amount, m_rem, s_rem)
+            m_total += m
+            s_total += s
+            m_rem -= m
+            s_rem -= s
+        return m_total, s_total
+
+    def _rebuild_sub_items(self, service, sub_tx):
+        """Rebuild the sub TX line items from current service parts."""
+        sub_tx.items.all().delete()
+        for appliance in service.appliances.all():
+            for item_used in appliance.items_used.all():
+                if item_used.is_free:
+                    continue
+                charged_qty = item_used.quantity - item_used.free_quantity
+                if charged_qty > 0:
+                    SalesItem.objects.create(
+                        transaction=sub_tx,
+                        item=item_used.item,
+                        description="",
+                        quantity=charged_qty,
+                        final_price_per_unit=item_used.discounted_price,
+                    )
+        for item_used in service.service_items.all():
+            if item_used.is_free:
+                continue
+            charged_qty = item_used.quantity - item_used.free_quantity
+            if charged_qty > 0:
+                SalesItem.objects.create(
+                    transaction=sub_tx,
+                    item=item_used.item,
+                    description="",
+                    quantity=charged_qty,
+                    final_price_per_unit=item_used.discounted_price,
+                )
+
+    # ------------------------------------------------------------------
+    # Main handler
+    # ------------------------------------------------------------------
 
     def handle(self, *args, **options):
         dry_run = options["dry_run"]
         service_id = options["service_id"]
+        include_all = options["include_all"]
 
         if dry_run:
             self.stdout.write(self.style.WARNING("=== DRY RUN — no changes will be saved ===\n"))
 
-        qs = (
-            Service.objects.filter(
-                related_transaction__isnull=False,
-                payments__isnull=False,
-            )
-            .distinct()
-            .select_related("related_transaction", "related_sub_transaction", "client")
-            .prefetch_related(
-                "payments",
-                "appliances__items_used__item",
-                "appliances__appliance_type",
-                "service_items__item",
-            )
-        )
+        sub_stall = Stall.objects.filter(stall_type="sub", is_system=True).first()
+
+        base_filter = Service.objects.filter(payments__isnull=False).distinct()
+        if include_all:
+            qs = base_filter
+        else:
+            qs = base_filter.filter(related_transaction__isnull=False)
 
         if service_id:
             qs = qs.filter(pk=service_id)
 
+        qs = qs.select_related(
+            "related_transaction", "related_sub_transaction", "client"
+        ).prefetch_related(
+            "payments",
+            "appliances__items_used__item",
+            "appliances__appliance_type",
+            "service_items__item",
+        )
+
         total_services = qs.count()
         self.stdout.write(f"Checking {total_services} service(s)…\n")
 
-        fixed_sub_items = 0
-        fixed_main_payments = 0
+        fixed = 0
         skipped = 0
+        errored = 0
 
         for service in qs:
-            main_tx = service.related_transaction
-            sub_tx = service.related_sub_transaction if service.related_sub_transaction_id else None
+            main_tx = service.related_transaction if service.related_transaction_id else None
+            if main_tx and main_tx.voided:
+                main_tx = None
+
+            sub_tx = self._find_sub_tx(service, main_tx, sub_stall)
 
             service_payments = list(service.payments.order_by("payment_date"))
             if not service_payments:
+                skipped += 1
                 continue
 
             total_svc_paid = sum(p.amount for p in service_payments)
 
-            # ── Step 1: detect sub TX item mismatch ──────────────────────────
-            sub_needs_rebuild = False
-            if sub_tx and not sub_tx.voided:
-                # Compute expected sub total from the service revenue model
+            # ── Determine correct distribution ─────────────────────────────
+            main_total = (main_tx.computed_total or Decimal("0")) if main_tx else Decimal("0")
+            sub_total = (sub_tx.computed_total or Decimal("0")) if sub_tx else Decimal("0")
+
+            correct_main, correct_sub = self._waterfall(service_payments, main_total, sub_total)
+
+            # ── Determine current distribution ─────────────────────────────
+            current_main = (
+                sum(p.amount for p in main_tx.payments.all()) if main_tx else Decimal("0")
+            )
+            current_sub = (
+                sum(p.amount for p in sub_tx.payments.all()) if sub_tx else Decimal("0")
+            )
+
+            # ── Detect sub TX item mismatch ────────────────────────────────
+            sub_items_need_rebuild = False
+            if sub_tx:
                 expected_sub_total = service.sub_stall_revenue or Decimal("0")
-                current_sub_total = sub_tx.computed_total or Decimal("0")
-                if abs(expected_sub_total - current_sub_total) > Decimal("0.01"):
-                    sub_needs_rebuild = True
-                    self.stdout.write(
-                        f"  Service #{service.id}: sub TX #{sub_tx.id} total "
-                        f"₱{current_sub_total} ≠ expected ₱{expected_sub_total} — will rebuild items"
-                    )
+                if abs(expected_sub_total - sub_total) > Decimal("0.01"):
+                    sub_items_need_rebuild = True
 
-            # ── Step 2: detect main TX missing payments ───────────────────────
-            main_needs_fix = False
-            if main_tx and not main_tx.voided:
-                main_total = main_tx.computed_total or Decimal("0")
-                main_currently_paid = sum(p.amount for p in main_tx.payments.all())
+            # ── Detect payment mismatch ────────────────────────────────────
+            payments_need_fix = (
+                abs(correct_main - current_main) > Decimal("0.01")
+                or abs(correct_sub - current_sub) > Decimal("0.01")
+            )
 
-                # After the sub TX is filled, the rest should flow to main.
-                sub_total = (sub_tx.computed_total or Decimal("0")) if (sub_tx and not sub_tx.voided) else Decimal("0")
-                sub_actually_paid = sum(p.amount for p in sub_tx.payments.all()) if sub_tx else Decimal("0")
-
-                # Expected payment to main = total paid – what belongs to sub
-                expected_main_payment = max(total_svc_paid - sub_total, Decimal("0"))
-                # Cap at what main TX actually requires
-                expected_main_payment = min(expected_main_payment, main_total)
-
-                if abs(expected_main_payment - main_currently_paid) > Decimal("0.01"):
-                    main_needs_fix = True
-                    self.stdout.write(
-                        f"  Service #{service.id}: main TX #{main_tx.id} paid "
-                        f"₱{main_currently_paid} but should be ₱{expected_main_payment} — will fix"
-                    )
-
-            if not sub_needs_rebuild and not main_needs_fix:
+            if not sub_items_need_rebuild and not payments_need_fix:
                 skipped += 1
                 continue
 
+            # ── Report ─────────────────────────────────────────────────────
+            if sub_items_need_rebuild:
+                self.stdout.write(
+                    f"  Service #{service.id}: sub TX #{sub_tx.id if sub_tx else 'N/A'} "
+                    f"items total ₱{sub_total} ≠ expected ₱{service.sub_stall_revenue}"
+                )
+            if payments_need_fix:
+                self.stdout.write(
+                    f"  Service #{service.id}: "
+                    + (f"main TX #{main_tx.id} paid ₱{current_main} → should be ₱{correct_main}  " if main_tx else "")
+                    + (f"sub TX #{sub_tx.id} paid ₱{current_sub} → should be ₱{correct_sub}" if sub_tx else "")
+                )
+
             if dry_run:
-                if sub_needs_rebuild:
-                    fixed_sub_items += 1
-                if main_needs_fix:
-                    fixed_main_payments += 1
+                fixed += 1
                 continue
 
-            # ── Apply fixes atomically ─────────────────────────────────────────
+            # ── Apply fix ──────────────────────────────────────────────────
             try:
                 with db_transaction.atomic():
-                    # Step 1 – Rebuild sub TX items
-                    if sub_needs_rebuild and sub_tx:
-                        sub_tx.items.all().delete()
-
-                        for appliance in service.appliances.all():
-                            for item_used in appliance.items_used.all():
-                                if item_used.is_free:
-                                    continue
-                                charged_qty = item_used.quantity - item_used.free_quantity
-                                if charged_qty > 0:
-                                    SalesItem.objects.create(
-                                        transaction=sub_tx,
-                                        item=item_used.item,
-                                        description="",
-                                        quantity=charged_qty,
-                                        final_price_per_unit=item_used.discounted_price,
-                                    )
-
-                        for item_used in service.service_items.all():
-                            if item_used.is_free:
-                                continue
-                            charged_qty = item_used.quantity - item_used.free_quantity
-                            if charged_qty > 0:
-                                SalesItem.objects.create(
-                                    transaction=sub_tx,
-                                    item=item_used.item,
-                                    description="",
-                                    quantity=charged_qty,
-                                    final_price_per_unit=item_used.discounted_price,
-                                )
-
-                        sub_tx.update_payment_status()
-                        fixed_sub_items += 1
+                    # Step 1: rebuild sub TX items if needed
+                    if sub_items_need_rebuild and sub_tx:
+                        self._rebuild_sub_items(service, sub_tx)
+                        # Recompute sub_total after rebuild
+                        sub_total = sub_tx.computed_total or Decimal("0")
+                        correct_main, correct_sub = self._waterfall(
+                            service_payments, main_total, sub_total
+                        )
                         self.stdout.write(
-                            self.style.SUCCESS(
-                                f"  ✓ Service #{service.id}: rebuilt sub TX #{sub_tx.id} items"
-                            )
+                            self.style.SUCCESS(f"  ✓ Rebuilt sub TX #{sub_tx.id} items")
                         )
 
-                    # Step 2 – Fix main TX payments using waterfall split
-                    if main_needs_fix and main_tx:
-                        # Remove all existing SalesPayment rows on the main TX so we
-                        # can recompute a clean waterfall from the service payments.
-                        main_tx.payments.all().delete()
-
-                        # Also refresh the sub TX payments reference after possible rebuild
+                    # Step 2: delete ALL existing SalesPayments on both TXs
+                    if payments_need_fix:
+                        if main_tx:
+                            main_tx.payments.all().delete()
                         if sub_tx:
-                            sub_tx.refresh_from_db()
+                            sub_tx.payments.all().delete()
 
-                        sub_total_now = (sub_tx.computed_total or Decimal("0")) if sub_tx else Decimal("0")
-                        main_total_now = main_tx.computed_total or Decimal("0")
-
-                        main_filled = Decimal("0")
-                        sub_filled = Decimal("0")
-
-                        # Re-snapshot sub TX payments (unchanged by this fix, keep as-is):
-                        # We only recreate the main TX payments here.
-                        sub_paid_snapshot = (
-                            sum(p.amount for p in sub_tx.payments.all()) if sub_tx else Decimal("0")
-                        )
-
+                        # Recreate using correct waterfall
+                        m_rem = main_total
+                        s_rem = sub_total
                         for svc_payment in service_payments:
-                            m_share, s_share = ServicePaymentManager._waterfall_split(
-                                svc_payment.amount,
-                                main_total_now - main_filled,
-                                sub_total_now - sub_filled,
+                            m, s = ServicePaymentManager._waterfall_split(
+                                svc_payment.amount, m_rem, s_rem
                             )
-                            if m_share > 0:
+                            if m > 0 and main_tx:
                                 SalesPayment.objects.create(
                                     transaction=main_tx,
                                     payment_type=svc_payment.payment_type,
-                                    amount=m_share,
+                                    amount=m,
                                     payment_date=svc_payment.payment_date,
                                 )
-                            main_filled += m_share
-                            sub_filled += s_share
+                            if s > 0 and sub_tx:
+                                SalesPayment.objects.create(
+                                    transaction=sub_tx,
+                                    payment_type=svc_payment.payment_type,
+                                    amount=s,
+                                    payment_date=svc_payment.payment_date,
+                                )
+                            m_rem -= m
+                            s_rem -= s
 
-                        main_tx.update_payment_status()
-                        fixed_main_payments += 1
+                        if main_tx:
+                            main_tx.update_payment_status()
+                        if sub_tx:
+                            sub_tx.update_payment_status()
+
                         self.stdout.write(
                             self.style.SUCCESS(
-                                f"  ✓ Service #{service.id}: backfilled main TX #{main_tx.id} "
-                                f"payments (₱{main_filled})"
+                                f"  ✓ Service #{service.id}: payments fixed "
+                                + (f"main=₱{correct_main} " if main_tx else "")
+                                + (f"sub=₱{correct_sub}" if sub_tx else "")
                             )
                         )
 
-                    # Step 3 – Refresh service payment status
+                    # Step 3: persist sub TX link if found via fallback
+                    if sub_tx and not service.related_sub_transaction_id:
+                        service.related_sub_transaction = sub_tx
+                        service.save(update_fields=["related_sub_transaction"])
+
+                    # Step 4: sync service payment_status
                     service.update_payment_status()
 
+                fixed += 1
+
             except Exception as exc:
+                errored += 1
                 self.stdout.write(
-                    self.style.ERROR(
-                        f"  ✗ Service #{service.id}: error — {exc}"
-                    )
+                    self.style.ERROR(f"  ✗ Service #{service.id}: {exc}")
                 )
 
         self.stdout.write("")
-        if dry_run:
-            self.stdout.write(
-                self.style.WARNING(
-                    f"DRY RUN complete. Would fix:\n"
-                    f"  • {fixed_sub_items} sub TX(s) with out-of-sync items\n"
-                    f"  • {fixed_main_payments} main TX(s) with missing payments\n"
-                    f"  • {skipped} service(s) already correct (no changes needed)"
-                )
+        label = "Would fix" if dry_run else "Fixed"
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"{label} {fixed} service(s). "
+                f"Skipped {skipped} (already correct). "
+                + (f"Errors: {errored}." if errored else "")
             )
-        else:
-            self.stdout.write(
-                self.style.SUCCESS(
-                    f"Done.\n"
-                    f"  • {fixed_sub_items} sub TX(s) rebuilt\n"
-                    f"  • {fixed_main_payments} main TX(s) backfilled\n"
-                    f"  • {skipped} service(s) already correct (skipped)"
-                )
-            )
+        )
