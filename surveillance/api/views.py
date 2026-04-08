@@ -121,12 +121,21 @@ def write_go2rtc_config() -> bool:
 # ─────────────────────────────────────────────────────────────
 
 class CCTVCameraViewSet(viewsets.ModelViewSet):
-    queryset = CCTVCamera.objects.all()
-    permission_classes = [IsAuthenticated, IsSuperAdminUser]
+    permission_classes = [IsAuthenticated]
     pagination_class = None
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["name", "location"]
     ordering_fields = ["order", "name", "created_at"]
+
+    def get_queryset(self):
+        if self.request.user.is_superuser:
+            return CCTVCamera.objects.all()
+        return CCTVCamera.objects.filter(is_active=True)
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve", "go2rtc_status"):
+            return [IsAuthenticated()]
+        return [IsAuthenticated(), IsSuperAdminUser()]
 
     def get_serializer_class(self):
         if self.action == "list" and self.request.query_params.get("minimal") == "true":
