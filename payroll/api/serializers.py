@@ -184,6 +184,8 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
     total_hours = serializers.SerializerMethodField(read_only=True)
     holiday_day_hours = serializers.SerializerMethodField(read_only=True)
     additional_earnings_details = serializers.SerializerMethodField(read_only=True)
+    attendance_dates = serializers.SerializerMethodField(read_only=True)
+    holiday_details = serializers.SerializerMethodField(read_only=True)
     deductions = DeductionsField(required=False)
     employee = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.filter(is_deleted=False, is_active=True), required=True
@@ -210,6 +212,8 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "allowances",
             "additional_earnings_total",
             "additional_earnings_details",
+            "attendance_dates",
+            "holiday_details",
             "gross_pay",
             "night_diff_pay",
             "approved_ot_pay",
@@ -236,6 +240,8 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
             "total_hours",
             "holiday_day_hours",
             "additional_earnings_total",
+            "attendance_dates",
+            "holiday_details",
             "gross_pay",
             "night_diff_pay",
             "approved_ot_pay",
@@ -324,6 +330,41 @@ class WeeklyPayrollSerializer(serializers.ModelSerializer):
                     'reference': earning.reference or '',
                 }
                 for earning in earnings
+            ]
+        except Exception:
+            return []
+
+    def get_attendance_dates(self, obj: WeeklyPayroll) -> list:
+        """Return list of dates where employee has approved attendance records."""
+        try:
+            from attendance.models import DailyAttendance
+            dates = DailyAttendance.objects.filter(
+                employee=obj.employee,
+                date__gte=obj.week_start,
+                date__lte=obj.week_end or obj.week_start,
+                is_deleted=False,
+                status='APPROVED',
+            ).order_by('date').values_list('date', flat=True).distinct()
+            return [d.isoformat() for d in dates]
+        except Exception:
+            return []
+
+    def get_holiday_details(self, obj: WeeklyPayroll) -> list:
+        """Return list of holidays in the payroll week with details."""
+        try:
+            from payroll.models import Holiday
+            holidays = Holiday.objects.filter(
+                is_deleted=False,
+                date__gte=obj.week_start,
+                date__lte=obj.week_end or obj.week_start,
+            ).order_by('date')
+            return [
+                {
+                    'date': h.date.isoformat(),
+                    'name': h.name,
+                    'kind': h.kind,
+                }
+                for h in holidays
             ]
         except Exception:
             return []

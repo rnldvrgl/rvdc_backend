@@ -749,16 +749,12 @@ class WeeklyPayroll(models.Model):
         for attendance in attendance_qs:
             worked_hours_by_date[attendance.date] += Decimal(attendance.paid_hours or 0)
 
-        # Fetch holidays in range
-        try:
-            from payroll.models import Holiday
-            holidays = Holiday.objects.filter(
-                is_deleted=False,
-                date__gte=self.week_start,
-                date__lte=self.week_end
-            )
-        except (ImportError, LookupError, AttributeError):
-            holidays = []
+        # Fetch holidays in range (Holiday is defined in the same module)
+        holidays = Holiday.objects.filter(
+            is_deleted=False,
+            date__gte=self.week_start,
+            date__lte=self.week_end
+        )
 
         for h in holidays:
             d = h.date
@@ -898,7 +894,7 @@ class WeeklyPayroll(models.Model):
                 else:
                     # If effective_date is set, apply only in the week containing that date
                     if (deduction.effective_date >= self.week_start and
-                        deduction.effective_date < self.week_end):
+                        deduction.effective_date <= self.week_end):
                         if deduction.applied_date is None or deduction.applied_date == self.week_start:
                             should_apply = True
 
@@ -1130,7 +1126,7 @@ class WeeklyPayroll(models.Model):
         Marks one-time deductions as applied so they won't apply to future payrolls.
         Should be called when payroll status changes to 'approved'.
         """
-        from payroll.models import ManualDeduction
+        # ManualDeduction is defined in the same module
 
         # Get deduction metadata to check which deductions are in this payroll
         deduction_metadata = self.deduction_metadata or {}
@@ -1173,7 +1169,7 @@ class WeeklyPayroll(models.Model):
             should_mark = False
             if deduction.effective_date is None:
                 should_mark = True
-            elif deduction.effective_date >= self.week_start and deduction.effective_date < self.week_end:
+            elif deduction.effective_date >= self.week_start and deduction.effective_date <= self.week_end:
                 should_mark = True
 
             if should_mark:
@@ -1406,7 +1402,7 @@ class WeeklyPayroll(models.Model):
                         should_apply = True
                 else:
                     if (deduction.effective_date >= self.week_start and
-                        deduction.effective_date < self.week_end):
+                        deduction.effective_date <= self.week_end):
                         if deduction.applied_date is None or deduction.applied_date == self.week_start:
                             should_apply = True
 

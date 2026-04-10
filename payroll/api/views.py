@@ -780,16 +780,18 @@ class WeeklyPayrollUpdateStatusView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Business rule: can only move forward (draft -> approved -> paid)
+        # Business rule: can only move forward (draft -> approved -> paid), OR back from approved to draft
         status_order = {'draft': 0, 'approved': 1, 'paid': 2}
         current_order = status_order.get(payroll.status, 0)
         new_order = status_order.get(new_status, 0)
 
         if new_order < current_order:
-            return Response(
-                {'status': [f'Cannot move status backwards from {payroll.status} to {new_status}.']},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            # Allow approved -> draft (return to draft)
+            if not (payroll.status == 'approved' and new_status == 'draft'):
+                return Response(
+                    {'status': [f'Cannot move status backwards from {payroll.status} to {new_status}.']},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
 
         old_status = payroll.status
         payroll.status = new_status
