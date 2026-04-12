@@ -607,6 +607,18 @@ class ServiceCompletionHandler:
                                         final_price_per_unit=unit_final_price,
                                     )
 
+                    # Add extra charges (e.g. special bracket, hauling fee)
+                    for ec in service.extra_charges.all():
+                        ec_amount = Decimal(str(ec.amount))
+                        if ec_amount > 0:
+                            SalesItem.objects.create(
+                                transaction=main_receipt,
+                                item=None,
+                                description=ec.name,
+                                quantity=1,
+                                final_price_per_unit=ec_amount,
+                            )
+
                     # Link main receipt to service
                     service.related_transaction = main_receipt
                     service.save(update_fields=['related_transaction'])
@@ -851,6 +863,18 @@ class ServiceCompletionHandler:
                     description='',
                     quantity=charged_qty,
                     final_price_per_unit=item_used.discounted_price,
+                )
+
+        # Add extra charges (e.g. special bracket, hauling fee)
+        for ec in service.extra_charges.all():
+            ec_amount = Decimal(str(ec.amount))
+            if ec_amount > 0:
+                SalesItem.objects.create(
+                    transaction=receipt,
+                    item=None,
+                    description=ec.name,
+                    quantity=1,
+                    final_price_per_unit=ec_amount,
                 )
 
         # Link receipt to service
@@ -1360,6 +1384,18 @@ class ServicePaymentManager:
                             final_price_per_unit=unit_final_price,
                         )
 
+        # Add extra charges (e.g. special bracket, hauling fee) to the main transaction
+        for ec in service.extra_charges.all():
+            ec_amount = Decimal(str(ec.amount))
+            if ec_amount > 0:
+                SalesItem.objects.create(
+                    transaction=sales_transaction,
+                    item=None,
+                    description=ec.name,
+                    quantity=1,
+                    final_price_per_unit=ec_amount,
+                )
+
         # Apply service-level discount to Main stall items only
         service_discount = Decimal('0.00')
         main_subtotal = sales_transaction.subtotal or Decimal('0.00')
@@ -1466,6 +1502,18 @@ class ServicePaymentManager:
                                 quantity=1,
                                 final_price_per_unit=unit_price,
                             )
+
+            # Add extra charges (e.g. special bracket, hauling fee) to the main transaction
+            for ec in service.extra_charges.all():
+                ec_amount = Decimal(str(ec.amount))
+                if ec_amount > 0:
+                    SalesItem.objects.create(
+                        transaction=sales_transaction,
+                        item=None,
+                        description=ec.name,
+                        quantity=1,
+                        final_price_per_unit=ec_amount,
+                    )
 
             # Collect all parts from all appliances + service-level items
             parts_to_add = []

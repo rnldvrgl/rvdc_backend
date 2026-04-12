@@ -1967,13 +1967,26 @@ class ServiceExtraChargeViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return ServiceExtraCharge.objects.select_related("service", "created_by").all()
 
+    def _resync_service(self, service_id):
+        """Recalculate revenue and re-sync sales transaction items."""
+        from services.business_logic import RevenueCalculator, ServicePaymentManager
+        try:
+            svc = Service.objects.get(pk=service_id)
+            RevenueCalculator.calculate_service_revenue(svc, save=True)
+            if svc.related_transaction_id:
+                ServicePaymentManager.sync_sales_items(svc)
+        except Service.DoesNotExist:
+            pass
+
+    def perform_create(self, serializer):
+        instance = serializer.save(created_by=self.request.user)
+        self._resync_service(instance.service_id)
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        self._resync_service(instance.service_id)
+
     def perform_destroy(self, instance):
         service_id = instance.service_id
         instance.delete()
-        # Recalculate revenue after deletion
-        from services.business_logic import RevenueCalculator
-        try:
-            svc = Service.objects.get(pk=service_id)
-            RevenueCalculator.calculate_service_revenue(svc)
-        except Service.DoesNotExist:
-            pass
+        self._resync_service(service_id)
