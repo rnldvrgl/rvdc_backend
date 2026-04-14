@@ -270,6 +270,47 @@ class SummaryStatsView(APIView):
             .first()
         )
 
+        # Payment collection rate
+        total_services_in_period = Service.objects.filter(
+            created_at__date__gte=start_date.date() if hasattr(start_date, 'date') else start_date,
+            created_at__date__lte=end_date.date() if hasattr(end_date, 'date') else end_date,
+        ).count()
+
+        from services.models import PaymentStatus as ServicePaymentStatus
+        paid_services = Service.objects.filter(
+            created_at__date__gte=start_date.date() if hasattr(start_date, 'date') else start_date,
+            created_at__date__lte=end_date.date() if hasattr(end_date, 'date') else end_date,
+            payment_status=ServicePaymentStatus.FULLY_PAID,
+        ).count()
+
+        collection_rate = (
+            (paid_services / total_services_in_period * 100)
+            if total_services_in_period > 0
+            else 0
+        )
+
+        # Top service technician (most completed services in period)
+        from services.models import TechnicianAssignment
+        top_technician = (
+            TechnicianAssignment.objects.filter(
+                service__created_at__date__gte=start_date.date() if hasattr(start_date, 'date') else start_date,
+                service__created_at__date__lte=end_date.date() if hasattr(end_date, 'date') else end_date,
+                service__status='completed',
+                assignment_type='repair'
+            )
+            .values('technician__id', 'technician__first_name', 'technician__last_name')
+            .annotate(total_completed=Count('id'))
+            .order_by('-total_completed')
+            .first()
+        )
+
+        top_technician_data = None
+        if top_technician:
+            top_technician_data = {
+                "name": f"{top_technician['technician__first_name']} {top_technician['technician__last_name']}",
+                "services_completed": top_technician['total_completed']
+            }
+
         return Response(
             {
                 # Revenue metrics
@@ -319,6 +360,12 @@ class SummaryStatsView(APIView):
                         top_selling_item["total_sold"] if top_selling_item else 0
                     ),
                 },
+
+                # Payment metrics
+                "payment_collection_rate": round(collection_rate, 1),
+
+                # Top technician
+                "top_service_technician": top_technician_data,
             }
         )
 

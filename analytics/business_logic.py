@@ -19,13 +19,17 @@ from django.db.models import (
     Case,
     Count,
     DecimalField,
+    DurationField,
+    ExpressionWrapper,
     F,
+    Max,
+    Min,
     Q,
     Sum,
     Value,
     When,
 )
-from django.db.models.functions import Coalesce, TruncDate, TruncMonth, TruncWeek
+from django.db.models.functions import Coalesce, Extract, TruncDate, TruncMonth, TruncWeek
 from django.utils import timezone
 
 
@@ -699,7 +703,7 @@ class EmployeePerformanceAnalytics:
             end_date = timezone.now().date()
 
         # ── Top Service Types (most completed) ──
-        top_service_types = list(
+        top_service_types_raw = list(
             Service.objects.filter(
                 created_at__date__gte=start_date,
                 created_at__date__lte=end_date,
@@ -712,14 +716,39 @@ class EmployeePerformanceAnalytics:
             )
             .order_by("-count")[:6]
         )
-        top_service_types = [
-            {
-                "service_type": item["service_type"],
+
+        # Add top technician per service type
+        top_service_types = []
+        for item in top_service_types_raw:
+            service_type = item["service_type"]
+            top_tech = (
+                TechnicianAssignment.objects.filter(
+                    service__service_type=service_type,
+                    service__created_at__date__gte=start_date,
+                    service__created_at__date__lte=end_date,
+                    service__status=ServiceStatus.COMPLETED,
+                    technician__is_deleted=False,
+                )
+                .values("technician__id", "technician__first_name", "technician__last_name")
+                .annotate(completed=Count("id"))
+                .order_by("-completed")
+                .first()
+            )
+
+            top_technician = None
+            if top_tech:
+                top_technician = {
+                    "employee_id": top_tech["technician__id"],
+                    "employee_name": f"{top_tech['technician__first_name']} {top_tech['technician__last_name']}".strip(),
+                    "completed_count": top_tech["completed"],
+                }
+
+            top_service_types.append({
+                "service_type": service_type,
                 "count": item["count"],
                 "revenue": float(item["revenue"] or 0),
-            }
-            for item in top_service_types
-        ]
+                "top_technician": top_technician,
+            })
 
         # ── Top Technicians by Assignments ──
         assignments = (
@@ -819,6 +848,68 @@ class EmployeePerformanceAnalytics:
             for item in punctual_stats
         ]
 
+        # ── Service Turnaround Time (avg days from creation to completion) ──
+        completed_services = Service.objects.filter(
+            created_at__date__gte=start_date,
+            created_at__date__lte=end_date,
+            status=ServiceStatus.COMPLETED,
+            completed_at__isnull=False,
+        ).annotate(
+            days_to_complete=ExpressionWrapper(
+                F("completed_at") - F("created_at"),
+                output_field=DurationField()
+            )
+        ).aggregate(
+            avg_turnaround_days=Coalesce(
+                Avg(
+                    Extract(F("days_to_complete"), "days"),
+                    output_field=DecimalField()
+                ),
+                Value(0, output_field=DecimalField())
+            ),
+            min_turnaround_days=Coalesce(
+                Min(
+                    Extract(F("days_to_complete"), "days"),
+                    output_field=DecimalField()
+                ),
+                Value(0, output_field=DecimalField())
+            ),
+            max_turnaround_days=Coalesce(
+                Max(
+                    Extract(F("days_to_complete"), "days"),
+                    output_field=DecimalField()
+                ),
+                Value(0, output_field=DecimalField())
+            ),
+        )
+
+        # ── Payment Collection Rate ──
+        total_services_in_period = Service.objects.filter(
+            created_at__date__gte=start_date,
+            created_at__date__lte=end_date,
+        ).count()
+
+        from services.models import PaymentStatus as ServicePaymentStatus
+        paid_services = Service.objects.filter(
+            created_at__date__gte=start_date,
+            created_at__date__lte=end_date,
+            payment_status=ServicePaymentStatus.FULLY_PAID,
+        ).count()
+
+        collection_rate = (
+            (paid_services / total_services_in_period * 100)
+            if total_services_in_period > 0
+            else 0
+        )
+
+        # ── Re-opened Services (quality metric) ──
+        reopened_services = Service.objects.filter(
+            created_at__date__gte=start_date,
+            created_at__date__lte=end_date,
+            status=ServiceStatus.IN_PROGRESS,  # Opened/reopened back to in progress
+            completed_at__isnull=False,  # Was previously completed
+        ).count()
+
         return {
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
@@ -826,6 +917,24 @@ class EmployeePerformanceAnalytics:
             "top_technicians": top_technicians,
             "most_late": most_late,
             "most_punctual": most_punctual,
+            "turnaround_time": {
+                "avg_days": float(completed_services.get("avg_turnaround_days") or 0),
+                "min_days": float(completed_services.get("min_turnaround_days") or 0),
+                "max_days": float(completed_services.get("max_turnaround_days") or 0),
+            },
+            "payment_collection": {
+                "total_services": total_services_in_period,
+                "paid_services": paid_services,
+                "collection_rate": round(collection_rate, 1),
+            },
+            "service_quality": {
+                "total_completed": Service.objects.filter(
+                    created_at__date__gte=start_date,
+                    created_at__date__lte=end_date,
+                    status=ServiceStatus.COMPLETED,
+                ).count(),
+                "reopened_services": reopened_services,
+            },
         }
 
 
