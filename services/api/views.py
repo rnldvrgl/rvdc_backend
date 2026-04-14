@@ -23,6 +23,7 @@ from services.api.serializers import (
     ServiceItemUsedSerializer,
     CreateServicePaymentSerializer,
     JobOrderTemplatePrintSerializer,
+    ServicePartTemplateSerializer,
     ServiceApplianceSerializer,
     ServiceCancellationSerializer,
     ServiceCompletionSerializer,
@@ -44,6 +45,7 @@ from services.models import (
     ServiceAppliance,
     ServiceExtraCharge,
     ServiceItemUsed,
+    ServicePartTemplate,
     ServiceReceipt,
     TechnicianAssignment,
 )
@@ -1836,6 +1838,23 @@ class JobOrderTemplatePrintViewSet(viewsets.ModelViewSet):
         latest = JobOrderTemplatePrint.objects.order_by("-end_number").first()
         next_num = (latest.end_number + 1) if latest else 1
         return Response({"next_number": next_num})
+
+
+class ServicePartTemplateViewSet(viewsets.ModelViewSet):
+    """CRUD for reusable service part templates (all authenticated users)."""
+
+    serializer_class = ServicePartTemplateSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["name", "description", "lines__item__name", "lines__custom_description"]
+    ordering_fields = ["name", "created_at", "updated_at"]
+    ordering = ["name", "-updated_at"]
+
+    def get_queryset(self):
+        return ServicePartTemplate.objects.select_related("created_by").prefetch_related("lines")
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
 
 
 # --------------------------

@@ -6,6 +6,8 @@ from .models import (
     JobOrderTemplatePrint,
     Service,
     ServiceAppliance,
+    ServicePartTemplate,
+    ServicePartTemplateLine,
     ServiceExtraCharge,
     ServicePayment,
     TechnicianAssignment,
@@ -132,6 +134,22 @@ class JobOrderTemplatePrintAdmin(admin.ModelAdmin):
     search_fields = ("printed_by__username", "printed_by__first_name", "printed_by__last_name")
     ordering = ("-printed_at",)
     list_select_related = ("printed_by",)
+    list_per_page = 25
+
+
+class ServicePartTemplateLineInline(admin.TabularInline):
+    model = ServicePartTemplateLine
+    extra = 1
+
+
+@admin.register(ServicePartTemplate)
+class ServicePartTemplateAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "created_by", "updated_at")
+    search_fields = ("name", "description", "lines__item__name", "lines__custom_description")
+    list_filter = ("created_at", "updated_at")
+    ordering = ("name",)
+    inlines = [ServicePartTemplateLineInline]
+    list_select_related = ("created_by",)
     list_per_page = 25
 
 

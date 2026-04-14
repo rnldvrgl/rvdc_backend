@@ -36,6 +36,8 @@ from services.models import (
     ServiceAppliance,
     ServiceExtraCharge,
     ServiceItemUsed,
+    ServicePartTemplate,
+    ServicePartTemplateLine,
     ServicePayment,
     ServiceReceipt,
     ServiceRefund,
@@ -2567,6 +2569,114 @@ class JobOrderTemplatePrintSerializer(serializers.ModelSerializer):
         if attrs["end_number"] - attrs["start_number"] + 1 > 200:
             raise ValidationError("Cannot print more than 200 templates at a time.")
         return attrs
+
+
+class ServicePartTemplateLineSerializer(serializers.ModelSerializer):
+    item_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = ServicePartTemplateLine
+        fields = [
+            "id",
+            "item",
+            "item_name",
+            "custom_description",
+            "custom_price",
+            "quantity",
+            "sort_order",
+        ]
+        read_only_fields = ["id"]
+
+    def get_item_name(self, obj):
+        if obj.item:
+            return obj.item.name
+        return obj.custom_description
+
+    def validate(self, attrs):
+        item = attrs.get("item")
+        custom_description = (attrs.get("custom_description") or "").strip()
+        custom_price = attrs.get("custom_price")
+
+        if not item and not custom_description:
+            raise ValidationError("Each line requires either an inventory item or a custom description.")
+
+        if item and custom_description:
+            attrs["custom_description"] = ""
+            attrs["custom_price"] = None
+            return attrs
+
+        if not item and custom_price is None:
+            raise ValidationError("Custom lines require a custom price.")
+
+        return attrs
+
+
+class ServicePartTemplateSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField()
+    lines = ServicePartTemplateLineSerializer(many=True)
+
+    class Meta:
+        model = ServicePartTemplate
+        fields = [
+            "id",
+            "name",
+            "description",
+            "lines",
+            "created_by",
+            "created_by_name",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "created_by",
+            "created_by_name",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_created_by_name(self, obj):
+        if obj.created_by:
+            return obj.created_by.get_full_name() or obj.created_by.username
+        return None
+
+    def validate_lines(self, value):
+        if not value:
+            raise ValidationError("At least one template line is required.")
+        return value
+
+    def create(self, validated_data):
+        lines_data = validated_data.pop("lines", [])
+        request = self.context.get("request")
+        if request and hasattr(request, "user"):
+            validated_data["created_by"] = request.user
+
+        template = ServicePartTemplate.objects.create(**validated_data)
+        ServicePartTemplateLine.objects.bulk_create(
+            [
+                ServicePartTemplateLine(template=template, **line)
+                for line in lines_data
+            ]
+        )
+        return ServicePartTemplate.objects.prefetch_related("lines").get(pk=template.pk)
+
+    def update(self, instance, validated_data):
+        lines_data = validated_data.pop("lines", None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if lines_data is not None:
+            instance.lines.all().delete()
+            ServicePartTemplateLine.objects.bulk_create(
+                [
+                    ServicePartTemplateLine(template=instance, **line)
+                    for line in lines_data
+                ]
+            )
+
+        return ServicePartTemplate.objects.prefetch_related("lines").get(pk=instance.pk)
 
 
 # ----------------------------------

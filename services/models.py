@@ -1,6 +1,7 @@
 from clients.models import Client
 from decimal import Decimal, ROUND_HALF_UP
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -1261,6 +1262,71 @@ class ServiceItemUsed(BaseItemUsed):
 
     def __str__(self):
         return f"{self.item} x{self.quantity} (service #{self.service_id})"
+
+
+class ServicePartTemplate(models.Model):
+    """Reusable service-level parts template editable by authenticated users."""
+
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(
+        "users.CustomUser",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="service_part_templates",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "-updated_at"]
+        verbose_name = "Service Part Template"
+        verbose_name_plural = "Service Part Templates"
+
+    def __str__(self):
+        return self.name
+
+
+class ServicePartTemplateLine(models.Model):
+    """Line items belonging to a service part template."""
+
+    template = models.ForeignKey(
+        ServicePartTemplate,
+        on_delete=models.CASCADE,
+        related_name="lines",
+    )
+    item = models.ForeignKey(
+        Item,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="service_part_template_lines",
+    )
+    custom_description = models.CharField(max_length=255, blank=True, default="")
+    custom_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.00"))],
+    )
+    quantity = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=1,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    sort_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+        verbose_name = "Service Part Template Line"
+        verbose_name_plural = "Service Part Template Lines"
+
+    def __str__(self):
+        name = self.item.name if self.item else (self.custom_description or "Custom Item")
+        return f"{name} x{self.quantity}"
 
 
 # ----------------------------------
