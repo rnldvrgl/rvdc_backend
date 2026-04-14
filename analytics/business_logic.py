@@ -801,7 +801,7 @@ class EmployeePerformanceAnalytics:
                 total_paid_hours=Sum("paid_hours"),
                 full_days=Count("id", filter=Q(attendance_type="FULL_DAY")),
             )
-            .order_by("-on_time_days")[:10]
+            .order_by("-on_time_days", "-total_days", "employee__first_name", "employee__last_name")[:10]
         )
         most_punctual = [
             {
