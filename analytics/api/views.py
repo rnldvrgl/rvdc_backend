@@ -280,7 +280,7 @@ class SummaryStatsView(APIView):
         paid_services = Service.objects.filter(
             created_at__date__gte=start_date.date() if hasattr(start_date, 'date') else start_date,
             created_at__date__lte=end_date.date() if hasattr(end_date, 'date') else end_date,
-            payment_status=ServicePaymentStatus.FULLY_PAID,
+            payment_status=ServicePaymentStatus.PAID,
         ).count()
 
         collection_rate = (

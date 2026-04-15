@@ -893,7 +893,7 @@ class EmployeePerformanceAnalytics:
         paid_services = Service.objects.filter(
             created_at__date__gte=start_date,
             created_at__date__lte=end_date,
-            payment_status=ServicePaymentStatus.FULLY_PAID,
+            payment_status=ServicePaymentStatus.PAID,
         ).count()
 
         collection_rate = (
