@@ -104,6 +104,42 @@ fi
 echo "" >> "$LOG_FILE"
 EOF
 
+# Script 1a: Clock-in reminder (Daily 7:00 AM)
+cat > "$SCRIPT_DIR/clock-in-reminder.sh" << 'EOF'
+#!/bin/bash
+LOG_FILE="/var/log/cron-clock-in-reminder.log"
+CONTAINER_NAME="CONTAINER_NAME_PLACEHOLDER"
+export TZ=Asia/Manila
+
+echo "=== Clock-In Reminder - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
+docker exec "$CONTAINER_NAME" python manage.py send_attendance_reminders --mode clock_in >> "$LOG_FILE" 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "Success - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
+else
+    echo "Failed - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
+fi
+echo "" >> "$LOG_FILE"
+EOF
+
+# Script 1b: Clock-out reminder (Daily 6:00 PM)
+cat > "$SCRIPT_DIR/clock-out-reminder.sh" << 'EOF'
+#!/bin/bash
+LOG_FILE="/var/log/cron-clock-out-reminder.log"
+CONTAINER_NAME="CONTAINER_NAME_PLACEHOLDER"
+export TZ=Asia/Manila
+
+echo "=== Clock-Out Reminder - $(date '+%Y-%m-%d %H:%M:%S %Z') ===" >> "$LOG_FILE"
+docker exec "$CONTAINER_NAME" python manage.py send_attendance_reminders --mode clock_out >> "$LOG_FILE" 2>&1
+
+if [ $? -eq 0 ]; then
+    echo "Success - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
+else
+    echo "Failed - $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$LOG_FILE"
+fi
+echo "" >> "$LOG_FILE"
+EOF
+
 # Script 1b: Delete old notifications (Daily 2:00 AM)
 cat > "$SCRIPT_DIR/delete-old-notifications.sh" << 'EOF'
 #!/bin/bash
@@ -413,7 +449,7 @@ sed -i "s/CONTAINER_NAME_PLACEHOLDER/$CONTAINER_NAME/g" "$SCRIPT_DIR"/*.sh
 # Make scripts executable
 chmod +x "$SCRIPT_DIR"/*.sh
 
-echo -e "${GREEN}✅ Created 10 cron scripts${NC}"
+echo -e "${GREEN}✅ Created 12 cron scripts${NC}"
 
 # Step 4: Test scripts
 echo ""
@@ -499,6 +535,12 @@ cat >> "$TEMP_CRON" << 'CRONEND'
 # DAILY TASKS (Philippines Time)
 # Daily at 9:00 PM Philippines (1:00 PM UTC) - Auto-close open attendance records
 0 13 * * * /opt/cron-scripts/auto-close-attendance.sh
+
+# Daily at 7:00 AM Philippines (11:00 PM previous day UTC) - Send clock-in reminder
+0 23 * * * /opt/cron-scripts/clock-in-reminder.sh
+
+# Daily at 6:00 PM Philippines (10:00 AM UTC) - Send clock-out reminder
+0 10 * * * /opt/cron-scripts/clock-out-reminder.sh
 
 # Daily at 11:30 PM Philippines (3:30 PM UTC) - Mark absent employees
 30 15 * * * /opt/cron-scripts/mark-absences.sh

@@ -38,7 +38,7 @@ def push_notification_via_websocket(sender, instance, created, **kwargs):
 
     try:
         from asgiref.sync import async_to_sync
-        from channels.layers import get_channel_layer
+        from channels.layers import get_channel_layer  # type: ignore[import-not-found]
 
         channel_layer = get_channel_layer()
         if channel_layer is None:
@@ -75,7 +75,7 @@ def push_notification_via_websocket(sender, instance, created, **kwargs):
                 user_id=instance.user.id,
                 title=instance.title,
                 body=instance.message,
-                url="/notifications",
+                url=instance.data.get("url", "/notifications"),
                 tag=f"notif-{instance.id}",
             )
         except Exception:

@@ -41,6 +41,7 @@ class NotificationType(models.TextChoices):
     SALE_VOIDED = "sale_voided", _("Sale Voided")
 
     # Attendance / HR notifications
+    ATTENDANCE_REMINDER = "attendance_reminder", _("Attendance Reminder")
     ATTENDANCE_APPROVED = "attendance_approved", _("Attendance Approved")
     ATTENDANCE_REJECTED = "attendance_rejected", _("Attendance Rejected")
     LEAVE_REQUEST_APPROVED = "leave_request_approved", _("Leave Request Approved")

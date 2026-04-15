@@ -353,6 +353,92 @@ class WarrantyNotifications:
 
 
 # ----------------------------------
+# Attendance Notifications
+# ----------------------------------
+class AttendanceNotifications:
+    """Notifications related to attendance reminders."""
+
+    @staticmethod
+    def _create_reminder(user, reminder_kind, title, message, data):
+        from notifications.models import Notification, NotificationType
+
+        reminder_key = data.get("reminder_key")
+        if reminder_key and Notification.objects.filter(
+            user=user,
+            type=NotificationType.ATTENDANCE_REMINDER,
+            data__reminder_key=reminder_key,
+        ).exists():
+            return None
+
+        return NotificationManager.create_notification(
+            user=user,
+            notification_type=NotificationType.ATTENDANCE_REMINDER,
+            title=title,
+            message=message,
+            data={
+                **data,
+                "kind": reminder_kind,
+            },
+        )
+
+    @staticmethod
+    def notify_clock_in_reminder(
+        user,
+        reminder_date,
+        work_start,
+        work_end,
+        reminder_window_open,
+        reminder_window_close,
+    ):
+        """Notify an employee that they still need to clock in."""
+        return AttendanceNotifications._create_reminder(
+            user=user,
+            reminder_kind="clock_in",
+            title="Clock In Reminder",
+            message=(
+                f"You still need to clock in for {reminder_date:%B %d, %Y}. "
+                f"Your shift is open from {work_start} to {work_end}."
+            ),
+            data={
+                "date": reminder_date.isoformat(),
+                "work_start": work_start,
+                "work_end": work_end,
+                "reminder_window_open": reminder_window_open,
+                "reminder_window_close": reminder_window_close,
+                "reminder_key": f"clock_in:{reminder_date.isoformat()}",
+                "url": "/attendance/timetable",
+            },
+        )
+
+    @staticmethod
+    def notify_clock_out_reminder(
+        user,
+        reminder_date,
+        work_end,
+        reminder_window_open,
+        reminder_window_close,
+    ):
+        """Notify an employee that they still need to clock out."""
+        return AttendanceNotifications._create_reminder(
+            user=user,
+            reminder_kind="clock_out",
+            title="Clock Out Reminder",
+            message=(
+                f"You are still clocked in for {reminder_date:%B %d, %Y}. "
+                f"Please clock out by {work_end}."
+            ),
+            data={
+                "date": reminder_date.isoformat(),
+                "work_end": work_end,
+                "reminder_window_open": reminder_window_open,
+                "reminder_window_close": reminder_window_close,
+                "reminder_key": f"clock_out:{reminder_date.isoformat()}",
+                "url": "/attendance/timetable",
+            },
+        )
+
+
+# ----------------------------------
 # Helper Functions
 # ----------------------------------
 def notify_user(user, notification_type, title, message, **kwargs):

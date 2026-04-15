@@ -25,6 +25,7 @@ from services.models import (
 from utils.enums import ServiceType
 
 from notifications.business_logic import (
+    AttendanceNotifications,
     InventoryNotifications,
     NotificationManager,
     PaymentNotifications,
@@ -442,6 +443,59 @@ class InventoryNotificationTest(NotificationTestSetupMixin, TransactionTestCase)
             type=NotificationType.STOCK_OUT
         )
         self.assertGreater(notifications.count(), 0)
+
+
+# ----------------------------------
+# Attendance Notification Tests
+# ----------------------------------
+class AttendanceNotificationTest(NotificationTestSetupMixin, TransactionTestCase):
+    """Test attendance reminder notifications."""
+
+    def test_notify_clock_in_reminder(self):
+        """Test notification when an employee still needs to clock in."""
+        reminder_date = timezone.localdate()
+
+        notification = AttendanceNotifications.notify_clock_in_reminder(
+            user=self.technician_user,
+            reminder_date=reminder_date,
+            work_start="8:00 AM",
+            work_end="6:00 PM",
+            reminder_window_open="2026-04-16 07:00",
+            reminder_window_close="2026-04-16 21:00",
+        )
+
+        self.assertIsNotNone(notification)
+        self.assertEqual(notification.type, NotificationType.ATTENDANCE_REMINDER)
+        self.assertEqual(notification.data["kind"], "clock_in")
+
+    def test_notify_clock_out_reminder_is_deduplicated(self):
+        """Test that the same clock-out reminder is only created once per day."""
+        reminder_date = timezone.localdate()
+
+        first = AttendanceNotifications.notify_clock_out_reminder(
+            user=self.technician_user,
+            reminder_date=reminder_date,
+            work_end="6:00 PM",
+            reminder_window_open="2026-04-16 17:30",
+            reminder_window_close="2026-04-16 21:00",
+        )
+        second = AttendanceNotifications.notify_clock_out_reminder(
+            user=self.technician_user,
+            reminder_date=reminder_date,
+            work_end="6:00 PM",
+            reminder_window_open="2026-04-16 17:30",
+            reminder_window_close="2026-04-16 21:00",
+        )
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(
+            Notification.objects.filter(
+                user=self.technician_user,
+                type=NotificationType.ATTENDANCE_REMINDER,
+            ).count(),
+            1,
+        )
 
 
 # ----------------------------------

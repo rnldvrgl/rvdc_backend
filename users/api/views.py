@@ -274,6 +274,8 @@ class ServerMaintenanceView(APIView):
 
     # Defined cron schedule (runs on host, not in container)
     CRON_JOBS = [
+        {"id": "clock_in_reminder", "schedule": "Daily 7:00 AM", "description": "Send a clock-in reminder to employees who have not clocked in yet", "log_file": "cron-clock-in-reminder.log", "category": "attendance"},
+        {"id": "clock_out_reminder", "schedule": "Daily 6:00 PM", "description": "Send a clock-out reminder to employees who are still clocked in", "log_file": "cron-clock-out-reminder.log", "category": "attendance"},
         {"id": "auto_close_attendance", "schedule": "Daily 9:00 PM", "description": "Auto-close open attendance sessions for employees who forgot to clock out", "log_file": "cron-auto-close-attendance.log", "category": "attendance"},
         {"id": "mark_daily_absences", "schedule": "Daily 11:30 PM", "description": "Mark employees absent if no clock-in/out and no approved leave", "log_file": "cron-mark-absences.log", "category": "attendance"},
         {"id": "delete_old_notifications", "schedule": "Daily 2:00 AM", "description": "Delete read notifications older than 7 days", "log_file": "cron-delete-old-notifications.log", "category": "maintenance"},
@@ -290,6 +292,8 @@ class ServerMaintenanceView(APIView):
 
     # Management commands safe for manual triggering
     TRIGGERABLE_COMMANDS = [
+        {"id": "clock_in_reminder", "label": "Send Clock-In Reminder", "description": "Send a push reminder to employees who have not clocked in yet", "app": "attendance", "args": ["--mode", "clock_in"], "category": "attendance", "destructive": False},
+        {"id": "clock_out_reminder", "label": "Send Clock-Out Reminder", "description": "Send a push reminder to employees who are still clocked in", "app": "attendance", "args": ["--mode", "clock_out"], "category": "attendance", "destructive": False},
         {"id": "auto_close_attendance", "label": "Auto-Close Attendance", "description": "Close any open attendance sessions", "app": "attendance", "category": "attendance", "destructive": False},
         {"id": "mark_daily_absences", "label": "Mark Daily Absences", "description": "Mark employees absent for today if no attendance record", "app": "attendance", "category": "attendance", "destructive": False},
         {"id": "fix_attendance_time_entries", "label": "Fix Attendance Entries", "description": "Recalculate paid hours, lateness, and penalties for all attendance records", "app": "attendance", "args": ["--verify-only"], "category": "attendance", "destructive": False},
