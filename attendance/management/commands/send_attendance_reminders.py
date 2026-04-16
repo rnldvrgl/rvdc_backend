@@ -131,6 +131,10 @@ class Command(BaseCommand):
             work_end_dt = self._aware_datetime(target_date, work_end)
             clock_in_slot = self._get_clock_in_slot(now_dt)
             clock_out_slot = self._get_clock_out_slot(now_dt, work_end_dt)
+            if force_run and not clock_in_slot:
+                clock_in_slot = "manual_force"
+            if force_run and not clock_out_slot:
+                clock_out_slot = "manual_force"
 
             attendance = DailyAttendance.objects.filter(
                 employee=employee,
@@ -144,6 +148,7 @@ class Command(BaseCommand):
                 clock_in_slot=clock_in_slot,
                 reminder_window_open=reminder_window_open,
                 work_end_dt=work_end_dt,
+                force_run=force_run,
             )
             should_send_clock_out = self._should_send_clock_out(
                 now_dt=now_dt,
@@ -152,6 +157,7 @@ class Command(BaseCommand):
                 work_end_dt=work_end_dt,
                 reminder_window_close=reminder_window_close,
                 clock_out_tolerance=clock_out_tolerance,
+                force_run=force_run,
             )
 
             if mode in ("all", "clock_in") and should_send_clock_in:
@@ -269,6 +275,7 @@ class Command(BaseCommand):
         clock_in_slot,
         reminder_window_open,
         work_end_dt,
+        force_run=False,
     ):
         if attendance and attendance.attendance_type in {"LEAVE", "ABSENT", "SHOP_CLOSED"}:
             return False
@@ -276,7 +283,7 @@ class Command(BaseCommand):
         if attendance and attendance.clock_in:
             return False
 
-        if not clock_in_slot:
+        if not force_run and not clock_in_slot:
             return False
 
         # Allow early reminders in the configured reminder window before shift start.
@@ -290,6 +297,7 @@ class Command(BaseCommand):
         work_end_dt,
         reminder_window_close,
         clock_out_tolerance,
+        force_run=False,
     ):
         if attendance and attendance.attendance_type in {"LEAVE", "ABSENT", "SHOP_CLOSED"}:
             return False
@@ -297,7 +305,7 @@ class Command(BaseCommand):
         if attendance and attendance.clock_out:
             return False
 
-        if not clock_out_slot:
+        if not force_run and not clock_out_slot:
             return False
 
         reminder_open = work_end_dt - timedelta(minutes=clock_out_tolerance)
