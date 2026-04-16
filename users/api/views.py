@@ -8,6 +8,8 @@ from django.utils import timezone
 from users.models import CustomUser, SystemSettings, CashAdvanceMovement
 from users.api.serializers import EmployeesSerializer, UserSerializer, SystemSettingsSerializer, CashAdvanceMovementSerializer
 from django_filters.rest_framework import DjangoFilterBackend
+from django.conf import settings as django_settings
+from django.core.files.storage import default_storage
 
 
 # List all users (admin only)
@@ -182,6 +184,7 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
     """
     serializer_class = SystemSettingsSerializer
     permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [parsers.JSONParser, parsers.MultiPartParser, parsers.FormParser]
 
     def get_object(self):
         """Always return the singleton settings instance"""
@@ -195,6 +198,57 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
                 return [IsSuperAdminUser()]
             return [IsAdminOrManager()]
         return [permissions.IsAuthenticated()]
+
+    def patch(self, request, *args, **kwargs):
+        settings_obj = self.get_object()
+        should_remove_sound = str(request.data.get("remove_notification_sound", "")).lower() in {
+            "1", "true", "yes", "on"
+        }
+        uploaded_sound = request.FILES.get("notification_sound_file")
+
+        if should_remove_sound:
+            self._delete_existing_notification_sound(settings_obj)
+            settings_obj.notification_sound = ""
+            settings_obj.save(update_fields=["notification_sound", "updated_at"])
+
+        if uploaded_sound:
+            self._delete_existing_notification_sound(settings_obj)
+            saved_path = default_storage.save(
+                f"notification_sounds/{uploaded_sound.name}",
+                uploaded_sound,
+            )
+            media_url = (django_settings.MEDIA_URL or "/media/").rstrip("/")
+            settings_obj.notification_sound = f"{media_url}/{saved_path}"
+            settings_obj.save(update_fields=["notification_sound", "updated_at"])
+
+        cleaned_data = request.data.copy()
+        for key in ["remove_notification_sound", "notification_sound_file"]:
+            if key in cleaned_data:
+                cleaned_data.pop(key)
+
+        serializer = self.get_serializer(settings_obj, data=cleaned_data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def _delete_existing_notification_sound(self, settings_obj):
+        sound_path = (settings_obj.notification_sound or "").strip()
+        if not sound_path:
+            return
+
+        media_url = (django_settings.MEDIA_URL or "/media/").rstrip("/") + "/"
+        if not sound_path.startswith(media_url):
+            return
+
+        relative_path = sound_path[len(media_url):].lstrip("/")
+        if not relative_path.startswith("notification_sounds/"):
+            return
+
+        try:
+            default_storage.delete(relative_path)
+        except Exception:
+            # Do not block settings updates if file is already missing.
+            pass
 
 
 class CashAdvanceMovementViewSet(viewsets.ModelViewSet):
@@ -871,6 +925,12 @@ class ServerMaintenanceView(APIView):
                         'cat /tmp/clean.txt > "$CRONTAB_FILE"\n'
                         'cat /staging/rvdc-crontab-entries.txt >> "$CRONTAB_FILE"\n'
                         'chmod 600 "$CRONTAB_FILE"\n'
+                        'chown root:crontab "$CRONTAB_FILE" 2>/dev/null || chown root:root "$CRONTAB_FILE"\n'
+                        'chown root:crontab /crontab-dir 2>/dev/null || true\n'
+                        'touch "$CRONTAB_FILE"\n'
+                        'if command -v crontab >/dev/null 2>&1; then\n'
+                        '  crontab -l >/dev/null 2>&1 || true\n'
+                        'fi\n'
                         'SCRIPT_COUNT=$(ls -1 /opt/cron-scripts/*.sh 2>/dev/null | wc -l)\n'
                         'echo "Deployed $SCRIPT_COUNT cron scripts and updated crontab"\n'
                     )
