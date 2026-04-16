@@ -1376,7 +1376,7 @@ class ServerMaintenanceView(APIView):
             '# Auto-installed via Server Maintenance Dashboard\n'
             '# All times are in Philippines Time (UTC+8)\n'
             '# ============================================================================\n\n'
-            'CRON_TZ=Asia/Manila\n\n'
+            'TZ=Asia/Manila\n\n'
             '# DAILY TASKS\n'
             '# 9:00 PM PHT - Auto-close open attendance records\n'
             '0 21 * * * /opt/cron-scripts/auto-close-attendance.sh\n\n'
