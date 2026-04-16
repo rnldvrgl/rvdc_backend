@@ -41,11 +41,11 @@ class SystemSettingsAdmin(admin.ModelAdmin):
         }),
     ]
     readonly_fields = ['updated_at']
-    
+
     def has_add_permission(self, request):
         # Only allow one instance (singleton)
         return not SystemSettings.objects.exists()
-    
+
     def has_delete_permission(self, request, obj=None):
         # Don't allow deleting the settings
         return False
@@ -58,7 +58,7 @@ class CashAdvanceMovementAdmin(admin.ModelAdmin):
     search_fields = ['employee__first_name', 'employee__last_name', 'description', 'reference']
     readonly_fields = ['created_at', 'updated_at', 'created_by', 'balance_after']
     date_hierarchy = 'date'
-    
+
     def save_model(self, request, obj, form, change):
         if not change:  # Only set created_by on creation
             obj.created_by = request.user
