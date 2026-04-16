@@ -12,6 +12,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets, filters
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 
@@ -1488,8 +1489,18 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
 
         return queryset
 
+    def _ensure_service_editable(self, service):
+        from utils.enums import ServiceStatus
+
+        if service.status == ServiceStatus.COMPLETED:
+            raise ValidationError("Cannot modify parts on a completed service. Reopen the service first.")
+
     def perform_create(self, serializer):
         """Create item usage, recalculate revenue, and reset items_checked."""
+        appliance = serializer.validated_data.get("appliance")
+        if appliance and appliance.service:
+            self._ensure_service_editable(appliance.service)
+
         item_used = serializer.save()
         # Recalculate revenue after adding parts
         from services.business_logic import RevenueCalculator, ServicePaymentManager
@@ -1502,6 +1513,10 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         """Update item usage, recalculate revenue, and reset items_checked."""
+        appliance = serializer.instance.appliance
+        if appliance and appliance.service:
+            self._ensure_service_editable(appliance.service)
+
         item_used = serializer.save()
         # Recalculate revenue after updating parts
         from services.business_logic import RevenueCalculator, ServicePaymentManager
@@ -1526,7 +1541,7 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
 
             if instance.appliance.service.status == ServiceStatus.COMPLETED:
                 return Response(
-                    {"error": "Cannot delete items from a completed service."},
+                    {"error": "Cannot modify parts on a completed service. Reopen the service first."},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
@@ -1623,7 +1638,17 @@ class ServiceItemUsedViewSet(viewsets.ModelViewSet):
 
         return queryset
 
+    def _ensure_service_editable(self, service):
+        from utils.enums import ServiceStatus
+
+        if service.status == ServiceStatus.COMPLETED:
+            raise ValidationError("Cannot modify parts on a completed service. Reopen the service first.")
+
     def perform_create(self, serializer):
+        service = serializer.validated_data.get("service")
+        if service:
+            self._ensure_service_editable(service)
+
         item_used = serializer.save()
         from services.business_logic import RevenueCalculator, ServicePaymentManager
         service = item_used.service
@@ -1632,6 +1657,8 @@ class ServiceItemUsedViewSet(viewsets.ModelViewSet):
         self._reset_service_items_checked(service)
 
     def perform_update(self, serializer):
+        self._ensure_service_editable(serializer.instance.service)
+
         item_used = serializer.save()
         from services.business_logic import RevenueCalculator, ServicePaymentManager
         service = item_used.service
@@ -1648,7 +1675,7 @@ class ServiceItemUsedViewSet(viewsets.ModelViewSet):
         from utils.enums import ServiceStatus
         if instance.service.status == ServiceStatus.COMPLETED:
             return Response(
-                {"error": "Cannot delete items from a completed service."},
+                {"error": "Cannot modify parts on a completed service. Reopen the service first."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
