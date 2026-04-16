@@ -146,7 +146,15 @@ class Command(BaseCommand):
         else:
             self.stdout.write(self.style.SUCCESS('\nMode: LIVE (will update records)'))
             if not force:
-                confirm = input('\nAre you sure you want to refresh these payroll records? (yes/no): ')
+                try:
+                    confirm = input('\nAre you sure you want to refresh these payroll records? (yes/no): ')
+                except EOFError:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            'Non-interactive environment detected. Re-run with --force to skip confirmation.'
+                        )
+                    )
+                    return
                 if confirm.lower() != 'yes':
                     self.stdout.write(self.style.WARNING('Aborted.'))
                     return

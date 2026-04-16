@@ -668,6 +668,23 @@ class ServerMaintenanceView(APIView):
             _logger = logging.getLogger(__name__)
             results = []
 
+            def _append_manual_command_log(log_file, title, content, success=True):
+                if not log_file:
+                    return
+                import os
+                log_path = os.path.join("/host-logs", log_file)
+                stamp = timezone.localtime(timezone.now()).strftime("%Y-%m-%d %H:%M:%S %Z")
+                status_icon = "✅" if success else "❌"
+                try:
+                    os.makedirs("/host-logs", exist_ok=True)
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"=== {title} (manual) - {stamp} ===\n")
+                        if content:
+                            f.write(f"{content}\n")
+                        f.write(f"{status_icon} {'Success' if success else 'Failed'} - {stamp}\n\n")
+                except OSError as log_err:
+                    _logger.warning("Unable to append manual command log %s: %s", log_file, log_err)
+
             # Docker system prune
             if action_type in ("docker_prune", "full_cleanup"):
                 try:
@@ -780,12 +797,18 @@ class ServerMaintenanceView(APIView):
 
                 cmd_name = command_config.get("command") or command_config["id"]
                 cmd_args = command_config.get("args", [])
+                cron_job = next((job for job in self.CRON_JOBS if job["id"] == command_config["id"]), None)
+                log_file = cron_job.get("log_file") if cron_job else None
+                title = command_config.get("label") or cmd_name
                 try:
                     out = StringIO()
                     err = StringIO()
                     call_command(cmd_name, *cmd_args, stdout=out, stderr=err)
                     output = out.getvalue().strip()
                     error_output = err.getvalue().strip()
+                    combined_output = output
+                    if error_output:
+                        combined_output = f"{combined_output}\n{error_output}".strip()
                     results.append({
                         "task": cmd_name,
                         "success": True,
@@ -793,7 +816,19 @@ class ServerMaintenanceView(APIView):
                     })
                     if error_output:
                         results[-1]["output"] += f"\n{error_output[-500:]}"
+                    _append_manual_command_log(
+                        log_file=log_file,
+                        title=title,
+                        content=combined_output,
+                        success=True,
+                    )
                 except Exception as e:
+                    _append_manual_command_log(
+                        log_file=log_file,
+                        title=title,
+                        content=str(e),
+                        success=False,
+                    )
                     results.append({
                         "task": cmd_name,
                         "success": False,
