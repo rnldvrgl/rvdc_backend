@@ -389,6 +389,7 @@ class AttendanceNotifications:
         work_end,
         reminder_window_open,
         reminder_window_close,
+        reminder_slot="first",
     ):
         """Notify an employee that they still need to clock in."""
         return AttendanceNotifications._create_reminder(
@@ -405,7 +406,8 @@ class AttendanceNotifications:
                 "work_end": work_end,
                 "reminder_window_open": reminder_window_open,
                 "reminder_window_close": reminder_window_close,
-                "reminder_key": f"clock_in:{reminder_date.isoformat()}",
+                "reminder_slot": reminder_slot,
+                "reminder_key": f"clock_in:{reminder_date.isoformat()}:{reminder_slot}",
                 "url": "/attendance/timetable",
             },
         )
@@ -417,6 +419,7 @@ class AttendanceNotifications:
         work_end,
         reminder_window_open,
         reminder_window_close,
+        reminder_slot="first",
     ):
         """Notify an employee that they still need to clock out."""
         return AttendanceNotifications._create_reminder(
@@ -432,7 +435,8 @@ class AttendanceNotifications:
                 "work_end": work_end,
                 "reminder_window_open": reminder_window_open,
                 "reminder_window_close": reminder_window_close,
-                "reminder_key": f"clock_out:{reminder_date.isoformat()}",
+                "reminder_slot": reminder_slot,
+                "reminder_key": f"clock_out:{reminder_date.isoformat()}:{reminder_slot}",
                 "url": "/attendance/timetable",
             },
         )

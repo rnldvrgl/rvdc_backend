@@ -274,8 +274,8 @@ class ServerMaintenanceView(APIView):
 
     # Defined cron schedule (runs on host, not in container)
     CRON_JOBS = [
-        {"id": "clock_in_reminder", "schedule": "Daily 7:00 AM", "description": "Send a clock-in reminder to employees who have not clocked in yet", "log_file": "cron-clock-in-reminder.log", "category": "attendance"},
-        {"id": "clock_out_reminder", "schedule": "Daily 6:00 PM", "description": "Send a clock-out reminder to employees who are still clocked in", "log_file": "cron-clock-out-reminder.log", "category": "attendance"},
+            {"id": "clock_in_reminder", "schedule": "Daily 7:00 AM and 7:30 AM", "description": "Send first and follow-up clock-in reminders to employees who still have no clock-in", "log_file": "cron-clock-in-reminder.log", "category": "attendance"},
+            {"id": "clock_out_reminder", "schedule": "Daily 1:00 PM, 1:30 PM (half-day) and 6:00 PM, 6:30 PM", "description": "Send first and follow-up clock-out reminders to employees who still have no clock-out", "log_file": "cron-clock-out-reminder.log", "category": "attendance"},
         {"id": "auto_close_attendance", "schedule": "Daily 9:00 PM", "description": "Auto-close open attendance sessions for employees who forgot to clock out", "log_file": "cron-auto-close-attendance.log", "category": "attendance"},
         {"id": "mark_daily_absences", "schedule": "Daily 11:30 PM", "description": "Mark employees absent if no clock-in/out and no approved leave", "log_file": "cron-mark-absences.log", "category": "attendance"},
         {"id": "delete_old_notifications", "schedule": "Daily 2:00 AM", "description": "Delete read notifications older than 7 days", "log_file": "cron-delete-old-notifications.log", "category": "maintenance"},
@@ -1278,10 +1278,12 @@ class ServerMaintenanceView(APIView):
             '# DAILY TASKS\n'
             '# 9:00 PM PHT - Auto-close open attendance records\n'
             '0 21 * * * /opt/cron-scripts/auto-close-attendance.sh\n\n'
-            '# 7:00 AM PHT - Send clock-in reminder\n'
-            '0 7 * * * /opt/cron-scripts/clock-in-reminder.sh\n\n'
-            '# 6:00 PM PHT - Send clock-out reminder\n'
-            '0 18 * * * /opt/cron-scripts/clock-out-reminder.sh\n\n'
+            '# 7:00 AM and 7:30 AM PHT - Send first/follow-up clock-in reminders\n'
+            '0,30 7 * * * /opt/cron-scripts/clock-in-reminder.sh\n\n'
+            '# 1:00 PM and 1:30 PM PHT - Half-day clock-out reminders\n'
+            '0,30 13 * * * /opt/cron-scripts/clock-out-reminder.sh\n\n'
+            '# 6:00 PM and 6:30 PM PHT - Full-day clock-out reminders\n'
+            '0,30 18 * * * /opt/cron-scripts/clock-out-reminder.sh\n\n'
             '# 11:30 PM PHT - Mark absent employees\n'
             '30 23 * * * /opt/cron-scripts/mark-absences.sh\n\n'
             '# 2:00 AM PHT - Delete old notifications\n'

@@ -26,6 +26,9 @@ from users.models import CustomUser
 class Command(BaseCommand):
     help = "Send push reminders to employees who have not clocked in or out yet"
 
+    CLOCK_IN_SCHEDULE_TIMES = {(7, 0), (7, 30)}
+    CLOCK_OUT_SCHEDULE_TIMES = {(13, 0), (13, 30), (18, 0), (18, 30)}
+
     def add_arguments(self, parser):
         parser.add_argument(
             "--mode",
@@ -41,7 +44,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--force",
             action="store_true",
-            help="Run even outside the scheduled 7:00 AM / 6:00 PM windows (for manual testing).",
+            help="Run even outside the scheduled reminder windows (for manual testing).",
         )
 
     def handle(self, *args, **options):
@@ -50,16 +53,13 @@ class Command(BaseCommand):
         mode = options["mode"]
         force_run = options.get("force", False)
 
-        if not force_run and mode == "clock_in" and local_now.hour != 7:
-            self.stdout.write(self.style.WARNING("Skipping clock-in reminders outside 7:00 AM PH time."))
-            return
-
-        if not force_run and mode == "clock_out" and local_now.hour != 18:
-            self.stdout.write(self.style.WARNING("Skipping clock-out reminders outside 6:00 PM PH time."))
-            return
-
-        if not force_run and mode == "all" and local_now.hour not in {7, 18}:
-            self.stdout.write(self.style.WARNING("Skipping reminders outside 7:00 AM and 6:00 PM PH time."))
+        if not force_run and not self._is_scheduled_run_time(mode=mode, local_now=local_now):
+            self.stdout.write(
+                self.style.WARNING(
+                    "Skipping reminders outside scheduled PH windows: "
+                    "clock-in (7:00 AM, 7:30 AM) and clock-out (1:00 PM, 1:30 PM, 6:00 PM, 6:30 PM)."
+                )
+            )
             return
 
         if force_run:
@@ -99,6 +99,7 @@ class Command(BaseCommand):
             is_deleted=False,
         ).exists()
         half_day_cutoff = self._get_half_day_cutoff(shift_start, shift_end)
+        now_dt = local_now
 
         employees = (
             CustomUser.objects.filter(
@@ -128,7 +129,8 @@ class Command(BaseCommand):
 
             work_start_dt = self._aware_datetime(target_date, work_start)
             work_end_dt = self._aware_datetime(target_date, work_end)
-            now_dt = timezone.localtime(timezone.now())
+            clock_in_slot = self._get_clock_in_slot(now_dt)
+            clock_out_slot = self._get_clock_out_slot(now_dt, work_end_dt)
 
             attendance = DailyAttendance.objects.filter(
                 employee=employee,
@@ -139,12 +141,14 @@ class Command(BaseCommand):
             should_send_clock_in = self._should_send_clock_in(
                 now_dt=now_dt,
                 attendance=attendance,
-                work_start_dt=work_start_dt,
+                clock_in_slot=clock_in_slot,
+                reminder_window_open=reminder_window_open,
                 work_end_dt=work_end_dt,
             )
             should_send_clock_out = self._should_send_clock_out(
                 now_dt=now_dt,
                 attendance=attendance,
+                clock_out_slot=clock_out_slot,
                 work_end_dt=work_end_dt,
                 reminder_window_close=reminder_window_close,
                 clock_out_tolerance=clock_out_tolerance,
@@ -158,6 +162,7 @@ class Command(BaseCommand):
                     work_end=work_end_dt.strftime("%I:%M %p").lstrip("0"),
                     reminder_window_open=reminder_window_open.strftime("%Y-%m-%d %H:%M"),
                     reminder_window_close=reminder_window_close.strftime("%Y-%m-%d %H:%M"),
+                    reminder_slot=clock_in_slot,
                 )
                 if notification:
                     stats["clock_in"] += 1
@@ -169,6 +174,7 @@ class Command(BaseCommand):
                     work_end=work_end_dt.strftime("%I:%M %p").lstrip("0"),
                     reminder_window_open=reminder_window_open.strftime("%Y-%m-%d %H:%M"),
                     reminder_window_close=reminder_window_close.strftime("%Y-%m-%d %H:%M"),
+                    reminder_slot=clock_out_slot,
                 )
                 if notification:
                     stats["clock_out"] += 1
@@ -232,24 +238,66 @@ class Command(BaseCommand):
 
         return shift_start, shift_end
 
-    def _should_send_clock_in(self, now_dt, attendance, work_start_dt, work_end_dt):
+    def _is_scheduled_run_time(self, mode, local_now):
+        current_time = (local_now.hour, local_now.minute)
+        if mode == "clock_in":
+            return current_time in self.CLOCK_IN_SCHEDULE_TIMES
+        if mode == "clock_out":
+            return current_time in self.CLOCK_OUT_SCHEDULE_TIMES
+        return current_time in (self.CLOCK_IN_SCHEDULE_TIMES | self.CLOCK_OUT_SCHEDULE_TIMES)
+
+    def _get_clock_in_slot(self, now_dt):
+        current_time = (now_dt.hour, now_dt.minute)
+        if current_time == (7, 0):
+            return "first"
+        if current_time == (7, 30):
+            return "follow_up"
+        return None
+
+    def _get_clock_out_slot(self, now_dt, work_end_dt):
+        delta_minutes = int((now_dt - work_end_dt).total_seconds() // 60)
+        if delta_minutes == 0:
+            return "first"
+        if delta_minutes == 30:
+            return "follow_up"
+        return None
+
+    def _should_send_clock_in(
+        self,
+        now_dt,
+        attendance,
+        clock_in_slot,
+        reminder_window_open,
+        work_end_dt,
+    ):
         if attendance and attendance.attendance_type in {"LEAVE", "ABSENT", "SHOP_CLOSED"}:
             return False
 
         if attendance and attendance.clock_in:
             return False
 
-        return work_start_dt <= now_dt <= work_end_dt
+        if not clock_in_slot:
+            return False
+
+        # Allow early reminders in the configured reminder window before shift start.
+        return reminder_window_open <= now_dt <= work_end_dt
 
     def _should_send_clock_out(
         self,
         now_dt,
         attendance,
+        clock_out_slot,
         work_end_dt,
         reminder_window_close,
         clock_out_tolerance,
     ):
-        if not attendance or not attendance.clock_in or attendance.clock_out:
+        if attendance and attendance.attendance_type in {"LEAVE", "ABSENT", "SHOP_CLOSED"}:
+            return False
+
+        if attendance and attendance.clock_out:
+            return False
+
+        if not clock_out_slot:
             return False
 
         reminder_open = work_end_dt - timedelta(minutes=clock_out_tolerance)
