@@ -520,7 +520,7 @@ echo -e "${YELLOW}Installing cron jobs...${NC}"
 # Get existing crontab (if any)
 TEMP_CRON=$(mktemp)
 if crontab -l > /dev/null 2>&1; then
-    crontab -l > "$TEMP_CRON"
+    crontab -l | sed '/^# RVDC Attendance & Payroll Management Cron Jobs/,/^# END RVDC Cron Jobs/d' > "$TEMP_CRON"
 fi
 
 # Add RVDC cron jobs
@@ -532,55 +532,57 @@ cat >> "$TEMP_CRON" << 'CRONEND'
 # All times are in Philippines Time (UTC+8)
 # ============================================================================
 
+CRON_TZ=Asia/Manila
+
 # DAILY TASKS (Philippines Time)
-# Daily at 9:00 PM Philippines (1:00 PM UTC) - Auto-close open attendance records
-0 13 * * * /opt/cron-scripts/auto-close-attendance.sh
+# Daily at 9:00 PM Philippines - Auto-close open attendance records
+0 21 * * * /opt/cron-scripts/auto-close-attendance.sh
 
-# Daily at 7:00 AM Philippines (11:00 PM previous day UTC) - Send clock-in reminder
-0 23 * * * /opt/cron-scripts/clock-in-reminder.sh
+# Daily at 7:00 AM Philippines - Send clock-in reminder
+0 7 * * * /opt/cron-scripts/clock-in-reminder.sh
 
-# Daily at 6:00 PM Philippines (10:00 AM UTC) - Send clock-out reminder
-0 10 * * * /opt/cron-scripts/clock-out-reminder.sh
+# Daily at 6:00 PM Philippines - Send clock-out reminder
+0 18 * * * /opt/cron-scripts/clock-out-reminder.sh
 
-# Daily at 11:30 PM Philippines (3:30 PM UTC) - Mark absent employees
-30 15 * * * /opt/cron-scripts/mark-absences.sh
+# Daily at 11:30 PM Philippines - Mark absent employees
+30 23 * * * /opt/cron-scripts/mark-absences.sh
 
-# Daily at 2:00 AM Philippines (6:00 PM previous day UTC) - Delete old notifications (older than 7 days)
-0 18 * * * /opt/cron-scripts/delete-old-notifications.sh
+# Daily at 2:00 AM Philippines - Delete old notifications (older than 7 days)
+0 2 * * * /opt/cron-scripts/delete-old-notifications.sh
 
-# Daily at 3:00 AM Philippines (7:00 PM previous day UTC) - Cleanup archived quotations (older than 14 days)
-0 19 * * * /opt/cron-scripts/cleanup-archived-quotations.sh
+# Daily at 3:00 AM Philippines - Cleanup archived quotations (older than 14 days)
+0 3 * * * /opt/cron-scripts/cleanup-archived-quotations.sh
 
 # WEEKLY TASKS (Philippines Time)
-# Every Friday at 11:00 PM Philippines (3:00 PM UTC) - Fix last week's attendance & refresh payroll (Sat-Fri → Sat payday)
-0 15 * * 5 /opt/cron-scripts/weekly-attendance-payroll-fix.sh
+# Every Friday at 11:00 PM Philippines - Fix last week's attendance & refresh payroll (Sat-Fri → Sat payday)
+0 23 * * 5 /opt/cron-scripts/weekly-attendance-payroll-fix.sh
 
 # YEARLY TASKS (January 1st - Philippines Time)
-# January 1st at 2:00 AM Philippines (6:00 PM Dec 31 UTC) - Update holiday years
-0 18 31 12 * /opt/cron-scripts/yearly-update-holidays.sh
+# January 1st at 2:00 AM Philippines - Update holiday years
+0 2 1 1 * /opt/cron-scripts/yearly-update-holidays.sh
 
-# January 1st at 3:00 AM Philippines (7:00 PM Dec 31 UTC) - Replenish leave balances
-0 19 31 12 * /opt/cron-scripts/yearly-replenish-leaves.sh
+# January 1st at 3:00 AM Philippines - Replenish leave balances
+0 3 1 1 * /opt/cron-scripts/yearly-replenish-leaves.sh
 
 # YEARLY TASKS (January 2nd - Philippines Time)
-# January 2nd at 2:00 AM Philippines (6:00 PM Jan 1 UTC) - Archive old payrolls
-0 18 1 1 * /opt/cron-scripts/yearly-archive-payrolls.sh
+# January 2nd at 2:00 AM Philippines - Archive old payrolls
+0 2 2 1 * /opt/cron-scripts/yearly-archive-payrolls.sh
 
 # DISK MAINTENANCE (Philippines Time)
-# Daily at 5:00 AM Philippines (9:00 PM previous day UTC) - Truncate large log files
-0 21 * * * /opt/cron-scripts/truncate-large-logs.sh
+# Daily at 5:00 AM Philippines - Truncate large log files
+0 5 * * * /opt/cron-scripts/truncate-large-logs.sh
 
-# Daily at 6:00 AM Philippines (10:00 PM previous day UTC) - Check disk usage, auto-cleanup at 90%+
-0 22 * * * /opt/cron-scripts/disk-usage-check.sh
+# Daily at 6:00 AM Philippines - Check disk usage, auto-cleanup at 90%+
+0 6 * * * /opt/cron-scripts/disk-usage-check.sh
 
-# Every Sunday at 3:00 AM Philippines (7:00 PM Saturday UTC) - Docker system prune
-0 19 * * 6 /opt/cron-scripts/docker-system-prune.sh
+# Every Sunday at 3:00 AM Philippines - Docker system prune
+0 3 * * 0 /opt/cron-scripts/docker-system-prune.sh
 
-# Every Sunday at 3:30 AM Philippines (7:30 PM Saturday UTC) - Cleanup unused profile images
-30 19 * * 6 /opt/cron-scripts/cleanup-unused-images.sh
+# Every Sunday at 3:30 AM Philippines - Cleanup unused profile images
+30 3 * * 0 /opt/cron-scripts/cleanup-unused-images.sh
 
-# 1st of every month at 3:00 AM Philippines (7:00 PM previous day UTC) - Delete old log files (90+ days)
-0 19 * * * [ "$(date +\%d)" = "01" ] && find /var/log/cron-*.log -type f -mtime +90 -delete
+# 1st of every month at 3:00 AM Philippines - Delete old log files (90+ days)
+0 3 1 * * find /var/log/cron-*.log -type f -mtime +90 -delete
 
 CRONEND
 
