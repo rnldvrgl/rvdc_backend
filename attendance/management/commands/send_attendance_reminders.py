@@ -9,6 +9,7 @@ Usage:
     python manage.py send_attendance_reminders --mode clock_in
     python manage.py send_attendance_reminders --mode clock_out
     python manage.py send_attendance_reminders --date 2026-04-16
+    python manage.py send_attendance_reminders --mode clock_in --force
 """
 
 from datetime import datetime, time, timedelta
@@ -37,23 +38,32 @@ class Command(BaseCommand):
             type=str,
             help="Target date to process (YYYY-MM-DD). Defaults to today.",
         )
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Run even outside the scheduled 7:00 AM / 6:00 PM windows (for manual testing).",
+        )
 
     def handle(self, *args, **options):
         local_now = timezone.localtime(timezone.now())
         target_date = self._parse_target_date(options.get("date"), local_now.date())
         mode = options["mode"]
+        force_run = options.get("force", False)
 
-        if mode == "clock_in" and local_now.hour != 7:
+        if not force_run and mode == "clock_in" and local_now.hour != 7:
             self.stdout.write(self.style.WARNING("Skipping clock-in reminders outside 7:00 AM PH time."))
             return
 
-        if mode == "clock_out" and local_now.hour != 18:
+        if not force_run and mode == "clock_out" and local_now.hour != 18:
             self.stdout.write(self.style.WARNING("Skipping clock-out reminders outside 6:00 PM PH time."))
             return
 
-        if mode == "all" and local_now.hour not in {7, 18}:
+        if not force_run and mode == "all" and local_now.hour not in {7, 18}:
             self.stdout.write(self.style.WARNING("Skipping reminders outside 7:00 AM and 6:00 PM PH time."))
             return
+
+        if force_run:
+            self.stdout.write(self.style.WARNING("Force mode enabled: bypassing schedule hour checks."))
 
         settings = PayrollSettings.objects.first()
         shift_start = self._get_setting_time(settings, "shift_start", time(8, 0))
