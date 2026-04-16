@@ -292,8 +292,8 @@ class ServerMaintenanceView(APIView):
 
     # Management commands safe for manual triggering
     TRIGGERABLE_COMMANDS = [
-        {"id": "clock_in_reminder", "label": "Send Clock-In Reminder", "description": "Send a push reminder to employees who have not clocked in yet", "app": "attendance", "args": ["--mode", "clock_in"], "category": "attendance", "destructive": False},
-        {"id": "clock_out_reminder", "label": "Send Clock-Out Reminder", "description": "Send a push reminder to employees who are still clocked in", "app": "attendance", "args": ["--mode", "clock_out"], "category": "attendance", "destructive": False},
+        {"id": "clock_in_reminder", "command": "send_attendance_reminders", "label": "Send Clock-In Reminder", "description": "Send a push reminder to employees who have not clocked in yet", "app": "attendance", "args": ["--mode", "clock_in"], "category": "attendance", "destructive": False},
+        {"id": "clock_out_reminder", "command": "send_attendance_reminders", "label": "Send Clock-Out Reminder", "description": "Send a push reminder to employees who are still clocked in", "app": "attendance", "args": ["--mode", "clock_out"], "category": "attendance", "destructive": False},
         {"id": "auto_close_attendance", "label": "Auto-Close Attendance", "description": "Close any open attendance sessions", "app": "attendance", "category": "attendance", "destructive": False},
         {"id": "mark_daily_absences", "label": "Mark Daily Absences", "description": "Mark employees absent for today if no attendance record", "app": "attendance", "category": "attendance", "destructive": False},
         {"id": "fix_attendance_time_entries", "label": "Fix Attendance Entries", "description": "Recalculate paid hours, lateness, and penalties for all attendance records", "app": "attendance", "args": ["--verify-only"], "category": "attendance", "destructive": False},
@@ -778,7 +778,7 @@ class ServerMaintenanceView(APIView):
                 from io import StringIO
                 from django.core.management import call_command
 
-                cmd_name = command_config["id"]
+                cmd_name = command_config.get("command") or command_config["id"]
                 cmd_args = command_config.get("args", [])
                 try:
                     out = StringIO()
