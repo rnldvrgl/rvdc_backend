@@ -276,6 +276,7 @@ class ServerMaintenanceView(APIView):
     CRON_JOBS = [
             {"id": "clock_in_reminder", "schedule": "Daily 7:00 AM and 7:30 AM", "description": "Send first and follow-up clock-in reminders to employees who still have no clock-in", "log_file": "cron-clock-in-reminder.log", "category": "attendance"},
             {"id": "clock_out_reminder", "schedule": "Daily 1:00 PM, 1:30 PM (half-day) and 6:00 PM, 6:30 PM", "description": "Send first and follow-up clock-out reminders to employees who still have no clock-out", "log_file": "cron-clock-out-reminder.log", "category": "attendance"},
+            {"id": "weekly_incomplete_attendance_admin_reminder", "schedule": "Friday 6:00 AM", "description": "Notify admins about employees with missing or open attendance before payroll", "log_file": "cron-weekly-attendance-admin-reminder.log", "category": "attendance"},
         {"id": "auto_close_attendance", "schedule": "Daily 9:00 PM", "description": "Auto-close open attendance sessions for employees who forgot to clock out", "log_file": "cron-auto-close-attendance.log", "category": "attendance"},
         {"id": "mark_daily_absences", "schedule": "Daily 11:30 PM", "description": "Mark employees absent if no clock-in/out and no approved leave", "log_file": "cron-mark-absences.log", "category": "attendance"},
         {"id": "delete_old_notifications", "schedule": "Daily 2:00 AM", "description": "Delete read notifications older than 7 days", "log_file": "cron-delete-old-notifications.log", "category": "maintenance"},
@@ -294,6 +295,7 @@ class ServerMaintenanceView(APIView):
     TRIGGERABLE_COMMANDS = [
         {"id": "clock_in_reminder", "command": "send_attendance_reminders", "label": "Send Clock-In Reminder", "description": "Send a push reminder to employees who have not clocked in yet", "app": "attendance", "args": ["--mode", "clock_in", "--force"], "category": "attendance", "destructive": False},
         {"id": "clock_out_reminder", "command": "send_attendance_reminders", "label": "Send Clock-Out Reminder", "description": "Send a push reminder to employees who are still clocked in", "app": "attendance", "args": ["--mode", "clock_out", "--force"], "category": "attendance", "destructive": False},
+        {"id": "weekly_incomplete_attendance_admin_reminder", "command": "send_weekly_incomplete_attendance_admin_reminder", "label": "Send Weekly Attendance Gap Reminder", "description": "Notify admins about missing/open attendance days in the payroll week", "app": "attendance", "args": ["--force"], "category": "attendance", "destructive": False},
         {"id": "auto_close_attendance", "label": "Auto-Close Attendance", "description": "Close any open attendance sessions", "app": "attendance", "category": "attendance", "destructive": False},
         {"id": "mark_daily_absences", "label": "Mark Daily Absences", "description": "Mark employees absent for today if no attendance record", "app": "attendance", "category": "attendance", "destructive": False},
         {"id": "fix_attendance_time_entries", "label": "Fix Attendance Entries", "description": "Recalculate paid hours, lateness, and penalties for all attendance records", "app": "attendance", "args": ["--verify-only"], "category": "attendance", "destructive": False},
@@ -1117,6 +1119,11 @@ class ServerMaintenanceView(APIView):
                 "cron-clock-out-reminder.log", "Clock-Out Reminder", "send_attendance_reminders",
                 "--mode clock_out",
             ),
+            "weekly-attendance-admin-reminder.sh": _mgmt(
+                "cron-weekly-attendance-admin-reminder.log",
+                "Weekly Attendance Gap Reminder",
+                "send_weekly_incomplete_attendance_admin_reminder",
+            ),
             "mark-absences.sh": _mgmt(
                 "cron-mark-absences.log", "Mark Daily Absences", "mark_daily_absences",
             ),
@@ -1319,6 +1326,8 @@ class ServerMaintenanceView(APIView):
             '0,30 13 * * * /opt/cron-scripts/clock-out-reminder.sh\n\n'
             '# 6:00 PM and 6:30 PM PHT - Full-day clock-out reminders\n'
             '0,30 18 * * * /opt/cron-scripts/clock-out-reminder.sh\n\n'
+            '# Friday 6:00 AM PHT - Notify admins about incomplete attendance before payroll\n'
+            '0 6 * * 5 /opt/cron-scripts/weekly-attendance-admin-reminder.sh\n\n'
             '# 11:30 PM PHT - Mark absent employees\n'
             '30 23 * * * /opt/cron-scripts/mark-absences.sh\n\n'
             '# 2:00 AM PHT - Delete old notifications\n'
