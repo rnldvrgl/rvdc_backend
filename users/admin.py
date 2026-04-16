@@ -4,7 +4,7 @@ from users.models import CustomUser, SystemSettings, CashAdvanceMovement
 
 @admin.register(SystemSettings)
 class SystemSettingsAdmin(admin.ModelAdmin):
-    list_display = ['id', 'birthday_greeting_enabled', 'birthday_greeting_variant', 'updated_at']
+    list_display = ['id', 'birthday_greeting_enabled', 'birthday_greeting_variant', 'maintenance_mode', 'updated_at']
     fieldsets = [
         ('Birthday Greeting Settings', {
             'fields': [
@@ -27,6 +27,13 @@ class SystemSettingsAdmin(admin.ModelAdmin):
                 'birthday_greeting_female_emojis',
             ],
             'description': 'Customize emoji decorations based on employee gender. Use comma-separated emojis (e.g., 🎈,🎊,🎁,🎉,🍺)'
+        }),
+        ('Business Operations', {
+            'fields': [
+                'maintenance_mode',
+                'check_stock_on_sale',
+                'notification_sound',
+            ]
         }),
         ('Metadata', {
             'fields': ['updated_at'],

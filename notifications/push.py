@@ -40,6 +40,7 @@ def send_web_push(user_id: int, title: str, body: str, url: str = "/", tag: str 
         from pywebpush import WebPushException, webpush
 
         from notifications.models import PushSubscription
+        from users.models import SystemSettings
     except ImportError:
         logger.warning("[WebPush] pywebpush not installed – skipping")
         return
@@ -52,13 +53,21 @@ def send_web_push(user_id: int, title: str, body: str, url: str = "/", tag: str 
 
     logger.info("[WebPush] Sending to %d subscription(s) for user %s: %s", count, user_id, title)
 
-    payload = json.dumps({
+    # Get admin-configured notification sound
+    system_settings = SystemSettings.get_settings()
+    notification_sound = (system_settings.notification_sound or "").strip() if system_settings else ""
+
+    payload_data = {
         "title": title,
         "body": body,
         "url": url,
         "tag": tag,
         **(extra_data or {}),
-    })
+    }
+    if notification_sound:
+        payload_data["sound"] = notification_sound
+
+    payload = json.dumps(payload_data)
 
     vapid_claims = {"sub": f"mailto:{vapid_email}"}
     stale_ids = []

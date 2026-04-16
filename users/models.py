@@ -184,6 +184,14 @@ class SystemSettings(models.Model):
         help_text="Check and deduct stock when creating or editing a sales transaction"
     )
 
+    # Notification Settings
+    notification_sound = models.CharField(
+        max_length=255,
+        default="",
+        blank=True,
+        help_text="Sound file path for push notifications (e.g., /sounds/notification.mp3)"
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
