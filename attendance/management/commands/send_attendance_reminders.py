@@ -105,15 +105,26 @@ class Command(BaseCommand):
             CustomUser.objects.filter(
                 is_active=True,
                 is_deleted=False,
-                include_in_payroll=True,
             )
             .exclude(role="admin")
             .order_by("last_name", "first_name", "id")
         )
 
-        stats = {"clock_in": 0, "clock_out": 0, "skipped": 0}
+        stats = {
+            "clock_in": 0,
+            "clock_out": 0,
+            "skipped": 0,
+            "employees_scanned": 0,
+            "clock_out_candidates": 0,
+            "clock_out_deduped": 0,
+            "clock_out_excluded_type": 0,
+            "clock_out_already_done": 0,
+            "clock_out_missing_slot": 0,
+            "clock_out_outside_window": 0,
+        }
 
         for employee in employees:
+            stats["employees_scanned"] += 1
             work_start, work_end = self._get_work_window(
                 employee=employee,
                 target_date=target_date,
@@ -159,6 +170,26 @@ class Command(BaseCommand):
                 clock_out_tolerance=clock_out_tolerance,
                 force_run=force_run,
             )
+            if mode in ("all", "clock_out"):
+                clock_out_skip_reason = self._get_clock_out_skip_reason(
+                    now_dt=now_dt,
+                    attendance=attendance,
+                    clock_out_slot=clock_out_slot,
+                    work_end_dt=work_end_dt,
+                    reminder_window_close=reminder_window_close,
+                    clock_out_tolerance=clock_out_tolerance,
+                    force_run=force_run,
+                )
+                if clock_out_skip_reason is None:
+                    stats["clock_out_candidates"] += 1
+                elif clock_out_skip_reason == "excluded_type":
+                    stats["clock_out_excluded_type"] += 1
+                elif clock_out_skip_reason == "already_done":
+                    stats["clock_out_already_done"] += 1
+                elif clock_out_skip_reason == "missing_slot":
+                    stats["clock_out_missing_slot"] += 1
+                elif clock_out_skip_reason == "outside_window":
+                    stats["clock_out_outside_window"] += 1
 
             if mode in ("all", "clock_in") and should_send_clock_in:
                 notification = AttendanceNotifications.notify_clock_in_reminder(
@@ -184,12 +215,20 @@ class Command(BaseCommand):
                 )
                 if notification:
                     stats["clock_out"] += 1
+                else:
+                    stats["clock_out_deduped"] += 1
 
         self.stdout.write(
             self.style.SUCCESS(
                 "Sent {clock_in} clock-in reminder(s) and {clock_out} clock-out reminder(s). "
                 "Skipped {skipped} employee(s).".format(**stats)
             )
+        )
+        self.stdout.write(
+            "Diagnostics: scanned={employees_scanned}, clock_out_candidates={clock_out_candidates}, "
+            "clock_out_deduped={clock_out_deduped}, clock_out_excluded_type={clock_out_excluded_type}, "
+            "clock_out_already_done={clock_out_already_done}, clock_out_missing_slot={clock_out_missing_slot}, "
+            "clock_out_outside_window={clock_out_outside_window}".format(**stats)
         )
 
     def _parse_target_date(self, value, default_date):
@@ -286,6 +325,9 @@ class Command(BaseCommand):
         if not force_run and not clock_in_slot:
             return False
 
+        if force_run:
+            return True
+
         # Allow early reminders in the configured reminder window before shift start.
         return reminder_window_open <= now_dt <= work_end_dt
 
@@ -308,8 +350,39 @@ class Command(BaseCommand):
         if not force_run and not clock_out_slot:
             return False
 
+        if force_run:
+            return True
+
         reminder_open = work_end_dt - timedelta(minutes=clock_out_tolerance)
         return reminder_open <= now_dt <= reminder_window_close
+
+    def _get_clock_out_skip_reason(
+        self,
+        now_dt,
+        attendance,
+        clock_out_slot,
+        work_end_dt,
+        reminder_window_close,
+        clock_out_tolerance,
+        force_run=False,
+    ):
+        if attendance and attendance.attendance_type in {"LEAVE", "ABSENT", "SHOP_CLOSED"}:
+            return "excluded_type"
+
+        if attendance and attendance.clock_out:
+            return "already_done"
+
+        if not force_run and not clock_out_slot:
+            return "missing_slot"
+
+        if force_run:
+            return None
+
+        reminder_open = work_end_dt - timedelta(minutes=clock_out_tolerance)
+        if not (reminder_open <= now_dt <= reminder_window_close):
+            return "outside_window"
+
+        return None
 
     def _aware_datetime(self, target_date, time_value):
         dt = datetime.combine(target_date, time_value)
