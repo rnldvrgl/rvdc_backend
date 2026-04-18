@@ -13,7 +13,7 @@ from rest_framework.response import Response
 class DailyAttendance(models.Model):
     """
     Daily attendance record for an employee.
-    
+
     Business Rules:
     - One attendance per employee per day
     - Default status is PENDING; only APPROVED attendance counts for payroll
@@ -22,7 +22,7 @@ class DailyAttendance(models.Model):
     - Clock-in allowance: Can clock in early (default: 60 min), but paid hours count from shift start
       Example: Clock in 7:00 AM, shift starts 8:00 AM → paid time starts from 8:00 AM (7am-8am NOT counted)
     - Clock-out tolerance: Configurable grace period before shift end (default: 30 min, e.g., 5:30 PM)
-    
+
     Attendance Types:
     - FULL_DAY: Stayed until shift end (with tolerance) OR worked 8+ hours after breaks → 8 paid hours
       Example 1: 8:00 AM - 5:30 PM = FULL_DAY (with 30-min tolerance)
@@ -41,13 +41,13 @@ class DailyAttendance(models.Model):
     - ABSENT: No clock-in/out
     - LEAVE: Approved leave (unpaid)
     - INVALID: < 1 hour worked → REJECTED
-    
+
     Late Policy:
     - 0-15 min late: grace period (no penalty)
     - 16-60 min late: ₱2 per minute penalty (beyond grace period)
     - >60 min late: INVALID → REJECTED (no pay)
     - Late penalties don't affect attendance type (can still be FULL_DAY if stayed full shift)
-    
+
     Break Time Periods:
     - First break: shift_start + 4 hours (1 hour duration)
       Example: 8:00 AM start → 12:00 PM - 1:00 PM lunch break
@@ -59,7 +59,7 @@ class DailyAttendance(models.Model):
     - Maximum break deduction: 2 hours (1hr first + 1hr second break)
     - Paid hours capped at 8 hours maximum
     """
-    
+
     ATTENDANCE_TYPE_CHOICES = [
         ('PENDING', 'Pending'),
         ('FULL_DAY', 'Full Day'),
@@ -70,24 +70,24 @@ class DailyAttendance(models.Model):
         ('SHOP_CLOSED', 'Shop Closed'),
         ('INVALID', 'Invalid'),
     ]
-    
+
     STATUS_CHOICES = [
         ('PENDING', 'Pending'),
         ('APPROVED', 'Approved'),
         ('REJECTED', 'Rejected'),
     ]
-    
+
     employee = models.ForeignKey(
         'users.CustomUser',
         on_delete=models.CASCADE,
         related_name='daily_attendances',
     )
     date = models.DateField()
-    
+
     # Clock times (nullable for ABSENT/LEAVE types)
     clock_in = models.DateTimeField(null=True, blank=True)
     clock_out = models.DateTimeField(null=True, blank=True)
-    
+
     # Computed fields
     attendance_type = models.CharField(
         max_length=20,
@@ -112,7 +112,7 @@ class DailyAttendance(models.Model):
         default=Decimal('0.00'),
         help_text='Hours counted for payroll (excludes early clock-in and break time)',
     )
-    
+
     # Late tracking
     is_late = models.BooleanField(default=False)
     late_minutes = models.PositiveIntegerField(
@@ -135,7 +135,7 @@ class DailyAttendance(models.Model):
         default=False,
         help_text='True if employee has 3+ consecutive absences (AWOL flag)',
     )
-    
+
     auto_closed = models.BooleanField(
         default=False,
         help_text="True if the attendance was auto-closed due to missing clock_out",
@@ -144,7 +144,7 @@ class DailyAttendance(models.Model):
         default=0,
         help_text="Cumulative count of auto-close warnings (for repeated violations)",
     )
-    
+
     # Uniform penalties (₱50 each)
     missing_uniform_shirt = models.BooleanField(
         default=False,
@@ -164,7 +164,7 @@ class DailyAttendance(models.Model):
         default=Decimal('0.00'),
         help_text='Total uniform penalty: ₱50 per missing item',
     )
-    
+
     # Approval workflow
     status = models.CharField(
         max_length=20,
@@ -179,16 +179,16 @@ class DailyAttendance(models.Model):
         related_name='approved_attendances',
     )
     approved_at = models.DateTimeField(null=True, blank=True)
-    
+
     notes = models.TextField(blank=True)
-    
+
     # Soft delete
     is_deleted = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
-    
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     class Meta:
         unique_together = ('employee', 'date')
         indexes = [
@@ -200,20 +200,20 @@ class DailyAttendance(models.Model):
         ordering = ['-date', 'employee']
         verbose_name = 'Daily Attendance'
         verbose_name_plural = 'Daily Attendances'
-    
+
     def __str__(self):
         return f"{self.employee.get_full_name()} - {self.date} ({self.get_attendance_type_display()})"
-    
+
     def clean(self):
         super().clean()
-        
+
         # Validate clock times
         if self.clock_in and self.clock_out:
             if self.clock_out <= self.clock_in:
                 raise ValidationError({
                     'clock_out': 'Clock-out time must be after clock-in time.'
                 })
-        
+
         # LEAVE, ABSENT, and SHOP_CLOSED types should not have clock times
         if self.attendance_type in ['LEAVE', 'ABSENT', 'SHOP_CLOSED']:
             if self.clock_in or self.clock_out:
@@ -224,11 +224,11 @@ class DailyAttendance(models.Model):
     def is_unexcused_absence(self):
         """
         Determines if this attendance record counts as an unexcused absence for AWOL tracking.
-        
+
         Returns:
             True if this should count toward consecutive absences (no appropriate leave coverage)
             False if this is excused (proper leave coverage) or worked full day
-        
+
         Rules:
         - ABSENT with no leave → Unexcused ✓
         - ABSENT with full-day leave → Excused (becomes LEAVE type)
@@ -242,15 +242,15 @@ class DailyAttendance(models.Model):
         # Full day work or full day leave with approval → Excused
         if self.attendance_type in ['FULL_DAY', 'LEAVE', 'SHOP_CLOSED']:
             return False
-        
+
         # Full absence without leave → Unexcused
         if self.attendance_type == 'ABSENT':
             return True
-        
+
         # Invalid attendance → Unexcused
         if self.attendance_type == 'INVALID' or self.status == 'REJECTED':
             return True
-        
+
         # HALF_DAY or PARTIAL - Check if they have appropriate leave coverage
         if self.attendance_type in ['HALF_DAY', 'PARTIAL']:
             try:
@@ -261,7 +261,7 @@ class DailyAttendance(models.Model):
                     status='APPROVED',
                     is_half_day=True,
                 ).first()
-                
+
                 if half_day_leave:
                     # They have half-day leave - check if it covers the non-worked period
                     # If clock_in exists, determine which shift they worked
@@ -270,11 +270,11 @@ class DailyAttendance(models.Model):
                         clock_in_local = self.clock_in
                         if not timezone.is_aware(clock_in_local):
                             clock_in_local = timezone.make_aware(clock_in_local, tz)
-                        
+
                         # Determine worked shift based on clock-in time
                         # Morning shift typically before 1 PM
                         worked_morning = clock_in_local.astimezone(tz).hour < 13
-                        
+
                         # Check if leave covers the non-worked period
                         if worked_morning and half_day_leave.shift_period == 'PM':
                             # Worked morning, has PM leave → Properly covered
@@ -282,14 +282,14 @@ class DailyAttendance(models.Model):
                         elif not worked_morning and half_day_leave.shift_period == 'AM':
                             # Worked afternoon, has AM leave → Properly covered
                             return False
-                
+
                 # No matching leave coverage → Unexcused
                 return True
-                
+
             except Exception:
                 # If query fails, assume unexcused to be safe
                 return True
-        
+
         # Default to unexcused for safety
         return True
 
@@ -299,35 +299,35 @@ class DailyAttendance(models.Model):
         skipping weekends and holidays. Looks back up to 7 days.
         """
         from payroll.models import Holiday
-        
+
         check_date = self.date - timedelta(days=1)
         max_lookback = 7  # Don't look back more than a week
-        
+
         for _ in range(max_lookback):
             # Skip weekends
             if check_date.weekday() >= 5:  # Saturday=5, Sunday=6
                 check_date -= timedelta(days=1)
                 continue
-            
+
             # Skip holidays
             if Holiday.objects.filter(date=check_date, is_deleted=False).exists():
                 check_date -= timedelta(days=1)
                 continue
-            
+
             # Found a working day - check for attendance
             return DailyAttendance.objects.filter(
                 employee=self.employee,
                 date=check_date,
                 is_deleted=False,
             ).first()
-        
+
         return None
 
     def mark_absent(self):
         """
         Marks the attendance as ABSENT if no approved leave and no clock in/out.
         Also updates consecutive absences and AWOL status.
-        
+
         Consecutive absence counting skips weekends and holidays so that
         e.g. Thu-Fri-Mon absences correctly count as 3 consecutive.
         """
@@ -345,16 +345,16 @@ class DailyAttendance(models.Model):
                 self.is_awol = False
             else:
                 self.attendance_type = 'ABSENT'
-                
+
                 # Get previous working day's attendance (skips weekends/holidays)
                 prev_attendance = self._get_previous_working_day_attendance()
-                
+
                 # Check if previous working day was an unexcused absence
                 if prev_attendance and prev_attendance.is_unexcused_absence():
                     self.consecutive_absences = prev_attendance.consecutive_absences + 1
                 else:
                     self.consecutive_absences = 1
-                
+
                 # Flag AWOL after 3 consecutive absences
                 if self.consecutive_absences >= 3:
                     self.is_awol = True
@@ -363,7 +363,7 @@ class DailyAttendance(models.Model):
             self.attendance_type = 'ABSENT'
             self.consecutive_absences = 1
             self.is_awol = False
-        
+
         # Clear clock times to avoid clean() validation conflicts
         self.clock_in = None
         self.clock_out = None
@@ -381,7 +381,7 @@ class DailyAttendance(models.Model):
             self.approved_by = approved_by_user
             self.approved_at = timezone.now()
             self.save()
-    
+
     def reject(self, rejected_by_user, reason=''):
         """Reject the attendance record."""
         with transaction.atomic():
@@ -391,13 +391,13 @@ class DailyAttendance(models.Model):
             if reason:
                 self.notes = f"{self.notes}\nRejected: {reason}".strip()
             self.save()
-    
+
     @staticmethod
     def _round(value: Decimal, places=2) -> Decimal:
         """Round to specified decimal places using ROUND_HALF_UP."""
         exp = Decimal(10) ** -places
         return Decimal(value).quantize(exp, rounding=ROUND_HALF_UP)
-    
+
     def calculate_uniform_penalty(self):
         """Calculate total uniform penalty: ₱50 per missing item."""
         penalty = Decimal('0.00')
@@ -408,19 +408,19 @@ class DailyAttendance(models.Model):
         if self.missing_uniform_shoes:
             penalty += Decimal('50.00')
         self.uniform_penalty_amount = penalty
-    
+
     def save(self, *args, **kwargs):
         """
         Save method that calculates penalties and attendance metrics.
-        
-        IMPORTANT: 
+
+        IMPORTANT:
         - Late penalty is calculated IMMEDIATELY when clock_in is recorded, NOT when clock_out happens
         - If marked as ABSENT/LEAVE or REJECTED status, all hours and penalties are cleared
         - Clock times are preserved for audit trail even when marked absent
         """
         # Calculate uniform penalties first (outside transaction)
         self.calculate_uniform_penalty()
-        
+
         # PRIORITY CHECK: Clear hours/penalties for REJECTED, ABSENT, or LEAVE
         # This must happen FIRST before any other logic
         if self.status == 'REJECTED' or self.attendance_type in ['ABSENT', 'LEAVE']:
@@ -433,21 +433,26 @@ class DailyAttendance(models.Model):
             # Clock times preserved for audit trail
             super().save(*args, **kwargs)
             return
-        
+
         try:
             with transaction.atomic():
-                # Auto-mark as ABSENT if no clock in/out and not LEAVE
-                if not self.clock_in and not self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
+                # Auto-mark as ABSENT only for auto/computed records.
+                # Explicit admin statuses like PENDING should be preserved.
+                if (
+                    not self.clock_in
+                    and not self.clock_out
+                    and self.attendance_type not in ['LEAVE', 'ABSENT', 'PENDING', 'SHOP_CLOSED']
+                ):
                     self.mark_absent()
                 else:
                     # Calculate LATENESS immediately when clock_in exists (even without clock_out)
                     if self.clock_in and self.attendance_type not in ['LEAVE', 'ABSENT']:
                         self.calculate_lateness()
-                    
+
                     # Only compute full attendance metrics when BOTH clock_in and clock_out exist
                     if self.clock_in and self.clock_out and self.attendance_type not in ['LEAVE', 'ABSENT']:
                         self.compute_attendance_metrics()
-                
+
                 super().save(*args, **kwargs)
         except Exception as e:
             # If any error occurs, ensure we still save with minimal data
@@ -459,20 +464,20 @@ class DailyAttendance(models.Model):
         """
         Calculate late penalty IMMEDIATELY based on clock-in time.
         This runs as soon as employee clocks in, even before they clock out.
-        
+
         RULES:
         - More than 60 minutes late → INVALID attendance + REJECTED status
         - 16-60 minutes late → Late penalty applies
         - 0-15 minutes late → Grace period, no penalty
         """
         from payroll.models import PayrollSettings
-        
+
         # Load settings
         morning_start = time(8, 0)
         shift_end = time(18, 0)
         grace_minutes = 15
         settings = None
-        
+
         try:
             with transaction.atomic():
                 settings = PayrollSettings.objects.first()
@@ -483,32 +488,32 @@ class DailyAttendance(models.Model):
         except Exception:
             # Use default settings if query fails
             pass
-        
+
         # Calculate dynamic afternoon start (midpoint of shift)
         morning_hour = morning_start.hour + morning_start.minute / 60
         shift_end_hour = shift_end.hour + shift_end.minute / 60
         afternoon_hour = (morning_hour + shift_end_hour) / 2
         afternoon_start = time(int(afternoon_hour), int((afternoon_hour % 1) * 60))
-        
+
         # Get timezone
         tz = timezone.get_current_timezone()
-        
+
         # Ensure clock_in is timezone-aware
         clock_in_local = self.clock_in
         if not timezone.is_aware(clock_in_local):
             clock_in_local = timezone.make_aware(clock_in_local, tz)
-        
+
         # Extract date from clock_in in LOCAL timezone
         local_date = clock_in_local.astimezone(tz).date()
-        
+
         # Create shift start times
         morning_start_dt = datetime.combine(local_date, morning_start)
         afternoon_start_dt = datetime.combine(local_date, afternoon_start)
-        
+
         # Make them timezone-aware
         morning_start_dt = timezone.make_aware(morning_start_dt, tz)
         afternoon_start_dt = timezone.make_aware(afternoon_start_dt, tz)
-        
+
         # Determine which shift they're clocking in for
         if clock_in_local < afternoon_start_dt:
             # Morning shift - expected start is 8:00 AM (or configured time)
@@ -516,15 +521,15 @@ class DailyAttendance(models.Model):
         else:
             # Afternoon shift - expected start is 1:00 PM
             expected_start = afternoon_start_dt
-        
+
         # Calculate how late they are (in minutes)
         late_minutes = (clock_in_local - expected_start).total_seconds() / 60
-        
+
         # Reset late fields first
         self.is_late = False
         self.late_minutes = 0
         self.late_penalty_amount = Decimal("0.00")
-        
+
         # Determine if late and calculate penalty
         if late_minutes < 0:
             # Arrived EARLY - no penalty
@@ -535,14 +540,14 @@ class DailyAttendance(models.Model):
         else:
             # LATE beyond grace period
             self.is_late = True
-            
+
             # Calculate actual late minutes (excluding grace period)
             actual_late_minutes = late_minutes - grace_minutes
             self.late_minutes = int(actual_late_minutes)
             hours = int(late_minutes) // 60
             minutes = int(late_minutes) % 60
             time_str = f"{hours} hours  & {minutes} minutes" if hours > 0 else f"{minutes} minutes" if minutes > 0 else '0 minute'
-            
+
             # Check if MORE than 60 minutes late (INVALID)
             if late_minutes > 60:
                 # Too late - mark as INVALID and REJECTED immediately
@@ -566,19 +571,19 @@ class DailyAttendance(models.Model):
 
         NOTE: Lateness is already calculated in calculate_lateness().
         This method only determines attendance type and paid hours.
-        
+
         SIMPLIFIED RULES:
         - FULL_DAY: Stayed until shift end (with tolerance) OR worked 8+ hours after breaks → 8 paid hours
         - HALF_DAY: Approved half-day leave scenarios OR worked 3.5-4.5 hours → 4 paid hours
         - PARTIAL: Worked < 8 hours → actual hours minus break overlap (per hour payment)
         - INVALID: < 1 hour worked → REJECTED
-        
+
         Break Time Periods:
         - First break: shift_start + 4 hours (1 hour)
         - Second break: shift_start + 9 hours (1 hour)
         - Deducts actual overlap time with these periods
         - Dynamic based on PayrollSettings.shift_start
-        
+
         Examples:
         - 8:00 AM - 6:00 PM = FULL_DAY (8 paid hours, 2hr break deducted)
         - 8:25 AM - 6:00 PM = FULL_DAY (8 paid hours) + late penalty
@@ -611,7 +616,7 @@ class DailyAttendance(models.Model):
         except Exception:
             # Use default settings if query fails
             pass
-        
+
         # Calculate dynamic half-day cutoff (midpoint of shift)
         morning_hour = morning_start.hour + morning_start.minute / 60
         shift_end_hour = shift_end.hour + shift_end.minute / 60
@@ -637,7 +642,7 @@ class DailyAttendance(models.Model):
         # Ensure clock times are timezone-aware
         clock_in_local = self.clock_in
         clock_out_local = self.clock_out
-        
+
         if not timezone.is_aware(clock_in_local):
             clock_in_local = timezone.make_aware(clock_in_local, tz)
         if clock_out_local and not timezone.is_aware(clock_out_local):
@@ -645,7 +650,7 @@ class DailyAttendance(models.Model):
 
         # Extract date from clock_in in LOCAL timezone
         local_date = clock_in_local.astimezone(tz).date()
-        
+
         # Create shift times on the SAME DATE as clock_in (in local timezone)
         morning_start_dt = datetime.combine(local_date, morning_start)
         afternoon_start_dt = datetime.combine(local_date, afternoon_start)
@@ -683,14 +688,14 @@ class DailyAttendance(models.Model):
         # Example: Clock in 7:00 AM (allowed early), shift starts 8:00 AM → paid time starts from 8:00 AM
         # This ensures early clock-ins (7am-8am) are NOT counted as work hours
         paid_clock_in = max(clock_in_local, morning_start_dt)
-        
+
         # Total hours = actual clock duration (for display/reference only)
         # This shows physical presence but NOT what they'll be paid for
         delta = clock_out_local - clock_in_local
         total_hours = Decimal(delta.total_seconds()) / Decimal(3600)
         total_hours = self._round(total_hours)
         self.total_hours = total_hours
-        
+
         # Paid hours calculation uses the capped clock-in time (NOT the actual clock-in time)
         # This ensures work before shift_start is excluded from payment
         paid_delta = clock_out_local - paid_clock_in
@@ -701,7 +706,7 @@ class DailyAttendance(models.Model):
         if self.status == 'REJECTED':
             self._update_awol_tracking()
             return
-        
+
         # INVALID (<1 hour worked) - Mark as REJECTED
         if paid_total_hours < Decimal("1.00"):
             self.attendance_type = "INVALID"
@@ -720,7 +725,7 @@ class DailyAttendance(models.Model):
         lunch_break_end = lunch_break_start + timedelta(hours=1)
         evening_break_start = morning_start_dt + second_break_start_offset
         evening_break_end = evening_break_start + timedelta(hours=1)
-        
+
         # Calculate overlap with lunch break using paid_clock_in (not actual clock_in)
         # This ensures early clock-ins don't affect break calculations
         lunch_overlap = Decimal("0.00")
@@ -731,7 +736,7 @@ class DailyAttendance(models.Model):
             if lunch_overlap_seconds > 0:
                 lunch_overlap = Decimal(lunch_overlap_seconds) / Decimal(3600)
                 lunch_overlap = self._round(lunch_overlap)
-        
+
         # Calculate overlap with evening break using paid_clock_in (not actual clock_in)
         evening_overlap = Decimal("0.00")
         if clock_out_local > evening_break_start and paid_clock_in < evening_break_end:
@@ -741,10 +746,10 @@ class DailyAttendance(models.Model):
             if evening_overlap_seconds > 0:
                 evening_overlap = Decimal(evening_overlap_seconds) / Decimal(3600)
                 evening_overlap = self._round(evening_overlap)
-        
+
         # Total break deduction
         total_break = lunch_overlap + evening_overlap
-        
+
         # Calculate paid hours after break deduction (capped at 8 hours)
         work_hours_after_break = paid_total_hours - total_break
         work_hours_after_break = min(work_hours_after_break, Decimal("8.00"))
@@ -755,7 +760,7 @@ class DailyAttendance(models.Model):
             is_deleted=False,
             schedule_type='half_day',
         ).exists()
-        
+
         if is_forced_half_day:
             # Cap at half-day regardless of hours worked
             self.attendance_type = "HALF_DAY"
@@ -799,7 +804,7 @@ class DailyAttendance(models.Model):
         except Exception:
             # If query fails, continue without leave data
             pass
-        
+
         # Determine which shift based on approved leave or clock-in time
         if approved_leave and approved_leave.is_half_day:
             if approved_leave.shift_period == 'AM':
@@ -855,10 +860,10 @@ class DailyAttendance(models.Model):
 
         # Calculate effective shift end with tolerance (e.g., 5:30 PM when tolerance is 30 mins)
         effective_shift_end_dt = shift_end_dt - timedelta(minutes=clock_out_tolerance_minutes)
-        
+
         # Minimum hours for full day after breaks: 8 paid hours
         min_paid_hours_for_full_day = Decimal("8.00")
-        
+
         # HALF DAY (approved leave) — checked BEFORE full day so auto-close
         # can't accidentally promote a half-day leave to full day
         if approved_leave and approved_leave.is_half_day:
@@ -875,7 +880,7 @@ class DailyAttendance(models.Model):
         # 2. Worked 8+ paid hours after breaks (e.g., 8:00 AM - 6:00 PM = 10 hrs - 2 break = 8 paid)
         # Late penalties are calculated separately and don't affect this classification
         # Maximum paid hours capped at 8 regardless of overtime worked
-        
+
         if clock_out_local >= effective_shift_end_dt or work_hours_after_break >= min_paid_hours_for_full_day:
             self.attendance_type = "FULL_DAY"
             self.break_hours = total_break
@@ -899,10 +904,10 @@ class DailyAttendance(models.Model):
         self.attendance_type = "PARTIAL"
         self.break_hours = total_break
         self.paid_hours = work_hours_after_break
-        
+
         # Update consecutive absences and AWOL status after attendance type is determined
         self._update_awol_tracking()
-    
+
     def _update_awol_tracking(self):
         """
         Updates consecutive absences and AWOL status based on previous day's attendance.
@@ -915,7 +920,7 @@ class DailyAttendance(models.Model):
                 employee=self.employee,
                 date=yesterday
             ).first()
-            
+
             # Check if current attendance is unexcused
             if self.is_unexcused_absence():
                 # Current day is unexcused absence
@@ -925,7 +930,7 @@ class DailyAttendance(models.Model):
                 else:
                     # Previous day was OK → start new counter
                     self.consecutive_absences = 1
-                
+
                 # Flag AWOL after 3 consecutive unexcused absences
                 if self.consecutive_absences >= 3:
                     self.is_awol = True
@@ -942,21 +947,21 @@ class DailyAttendance(models.Model):
 class LeaveBalance(models.Model):
     """
     Annual leave balance for an employee.
-    
+
     Business Rules:
     - Max 5 sick leave days per year
     - Max 5 emergency leave days per year
     - All leaves are unpaid
     - Balances reset on January 1 each year
     """
-    
+
     employee = models.ForeignKey(
         'users.CustomUser',
         on_delete=models.CASCADE,
         related_name='leave_balances',
     )
     year = models.PositiveIntegerField()
-    
+
     # Sick Leave
     sick_leave_total = models.PositiveIntegerField(
         default=5,
@@ -968,7 +973,7 @@ class LeaveBalance(models.Model):
         default=Decimal('0.00'),
         help_text='Sick leave days used (supports half-days)',
     )
-    
+
     # Emergency Leave
     emergency_leave_total = models.PositiveIntegerField(
         default=5,
@@ -980,10 +985,10 @@ class LeaveBalance(models.Model):
         default=Decimal('0.00'),
         help_text='Emergency leave days used (supports half-days)',
     )
-    
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     class Meta:
         unique_together = ('employee', 'year')
         indexes = [
@@ -993,28 +998,28 @@ class LeaveBalance(models.Model):
         ordering = ['-year', 'employee']
         verbose_name = 'Leave Balance'
         verbose_name_plural = 'Leave Balances'
-    
+
     def __str__(self):
         return f"{self.employee.get_full_name()} - {self.year} Leave Balance"
-    
+
     @property
     def sick_leave_remaining(self) -> Decimal:
         """Calculate remaining sick leave days."""
         return Decimal(self.sick_leave_total) - Decimal(self.sick_leave_used)
-    
+
     @property
     def emergency_leave_remaining(self) -> Decimal:
         """Calculate remaining emergency leave days."""
         return Decimal(self.emergency_leave_total) - Decimal(self.emergency_leave_used)
-    
+
     def can_take_leave(self, leave_type: str, days: Decimal = Decimal('1.00')) -> bool:
         """
         Check if employee has sufficient leave balance.
-        
+
         Args:
             leave_type: 'SICK' or 'EMERGENCY'
             days: Number of days to take (supports 0.5 for half-day)
-        
+
         Returns:
             True if sufficient balance exists
         """
@@ -1025,15 +1030,15 @@ class LeaveBalance(models.Model):
         elif leave_type == 'SPECIAL':
             return True
         return False
-    
+
     def deduct_leave(self, leave_type: str, days: Decimal = Decimal('1.00')):
         """
         Deduct leave from balance.
-        
+
         Args:
             leave_type: 'SICK' or 'EMERGENCY'
             days: Number of days to deduct (supports 0.5 for half-day)
-        
+
         Note:
             Validation should be done before calling this method
         """
@@ -1041,13 +1046,13 @@ class LeaveBalance(models.Model):
             self.sick_leave_used += days
         elif leave_type == 'EMERGENCY':
             self.emergency_leave_used += days
-        
+
         self.save()
-    
+
     def restore_leave(self, leave_type: str, days: Decimal = Decimal('1.00')):
         """
         Restore leave to balance (when leave request is cancelled).
-        
+
         Args:
             leave_type: 'SICK' or 'EMERGENCY'
             days: Number of days to restore
@@ -1056,13 +1061,13 @@ class LeaveBalance(models.Model):
             self.sick_leave_used = max(Decimal('0.00'), self.sick_leave_used - days)
         elif leave_type == 'EMERGENCY':
             self.emergency_leave_used = max(Decimal('0.00'), self.emergency_leave_used - days)
-        
+
         self.save()
 
     def get_remaining_balance(self, leave_type: str) -> Decimal:
         """
         Get remaining leave balance for the specified leave type.
-        
+
         Args:
             leave_type: 'SICK' or 'EMERGENCY'
         Returns:
@@ -1076,40 +1081,40 @@ class LeaveBalance(models.Model):
 class LeaveRequest(models.Model):
     """
     Leave request submitted by employee or created by admin/manager.
-    
+
     Business Rules:
     - Requires approval from admin/manager
     - Approved leave creates DailyAttendance with type=LEAVE
     - Deducts from employee's leave balance
     - Can be full-day (1.0) or half-day (0.5)
     """
-    
+
     LEAVE_TYPE_CHOICES = [
         ('SICK', 'Sick Leave'),
         ('EMERGENCY', 'Emergency Leave'),
         ('SPECIAL', 'Special Leave'),
     ]
-    
+
     STATUS_CHOICES = [
         ('PENDING', 'Pending'),
         ('APPROVED', 'Approved'),
         ('REJECTED', 'Rejected'),
         ('CANCELLED', 'Cancelled'),
     ]
-    
+
     SHIFT_PERIOD_CHOICES = [
         ('AM', 'Morning'),
         ('PM', 'Afternoon'),
         ('FULL', 'Full Day'),
     ]
-    
+
     employee = models.ForeignKey(
         'users.CustomUser',
         on_delete=models.CASCADE,
         related_name='leave_requests',
     )
     leave_type = models.CharField(max_length=20, choices=LEAVE_TYPE_CHOICES)
-    
+
     # Date range support (start_date + end_date for multi-day leaves)
     start_date = models.DateField(
         null=True,
@@ -1121,31 +1126,31 @@ class LeaveRequest(models.Model):
         blank=True,
         help_text='End date of the leave period (same as start_date for single-day)',
     )
-    
+
     # Legacy field - kept for backward compatibility with existing data
     # For new requests, this is auto-populated from start_date
     date = models.DateField()
-    
+
     is_half_day = models.BooleanField(
         default=False,
         help_text='True if half-day leave (0.5 days), False for full-day (1.0 days). Only applicable for single-day leaves.',
     )
-    
+
     shift_period = models.CharField(
         max_length=10,
         choices=SHIFT_PERIOD_CHOICES,
         default='FULL',
         help_text='AM, PM, or FULL day - determines which shift the leave applies to',
     )
-    
+
     reason = models.TextField()
-    
+
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
         default='PENDING',
     )
-    
+
     approved_by = models.ForeignKey(
         'users.CustomUser',
         null=True,
@@ -1154,12 +1159,12 @@ class LeaveRequest(models.Model):
         related_name='approved_leave_requests',
     )
     approved_at = models.DateTimeField(null=True, blank=True)
-    
+
     rejection_reason = models.TextField(blank=True)
-    
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     class Meta:
         indexes = [
             models.Index(fields=['employee', 'date']),
@@ -1170,17 +1175,17 @@ class LeaveRequest(models.Model):
         ordering = ['-date', 'employee']
         verbose_name = 'Leave Request'
         verbose_name_plural = 'Leave Requests'
-    
+
     def __str__(self):
         if self.start_date and self.end_date and self.start_date != self.end_date:
             return f"{self.employee.get_full_name()} - {self.get_leave_type_display()} from {self.start_date} to {self.end_date} ({self.days_count} days)"
         days_str = '0.5 days' if self.is_half_day else '1.0 day'
         return f"{self.employee.get_full_name()} - {self.get_leave_type_display()} on {self.date} ({days_str})"
-    
+
     def clean(self):
         super().clean()
         # Validation moved to serializer for better error handling
-    
+
     @property
     def days_count(self) -> Decimal:
         """Return the number of days this leave represents."""
@@ -1191,17 +1196,17 @@ class LeaveRequest(models.Model):
                 return Decimal('0.5')
             return Decimal(str(delta))
         return Decimal('0.5') if self.is_half_day else Decimal('1.0')
-    
+
     def save(self, skip_validation=False, *args, **kwargs):
         """
         Save the leave request.
         Balance deduction is now handled in the serializer.
-        
+
         Args:
             skip_validation: If True, skips validation (used when called from serializer)
         """
         super().save(*args, **kwargs)
-    
+
     def _get_date_range(self):
         """Get list of dates covered by this leave request."""
         from datetime import timedelta
@@ -1224,7 +1229,7 @@ class LeaveRequest(models.Model):
             raise ValidationError(
                 f'Cannot approve leave request with status: {self.status}'
             )
-        
+
         # Create DailyAttendance records for each date in range
         for leave_date in self._get_date_range():
             DailyAttendance.objects.update_or_create(
@@ -1242,20 +1247,20 @@ class LeaveRequest(models.Model):
                     'notes': f'{self.get_leave_type_display()} ({self.get_shift_period_display()}) - {self.reason}',
                 }
             )
-        
+
         # Update leave request status
         self.status = 'APPROVED'
         self.approved_by = approved_by_user
         self.approved_at = timezone.now()
         self.save(update_fields=['status', 'approved_by', 'approved_at', 'updated_at'])
-    
+
     def reject(self, rejected_by_user, reason=''):
         """
         Reject the leave request and restore leave balance.
         """
         if self.status == 'REJECTED':
             raise ValidationError('Leave request is already rejected.')
-        
+
         # Restore leave balance
         year = (self.start_date or self.date).year
         try:
@@ -1263,13 +1268,13 @@ class LeaveRequest(models.Model):
             leave_balance.restore_leave(self.leave_type, self.days_count)
         except LeaveBalance.DoesNotExist:
             pass  # Balance doesn't exist, nothing to restore
-        
+
         self.status = 'REJECTED'
         self.approved_by = rejected_by_user
         self.approved_at = timezone.now()
         self.rejection_reason = reason
         self.save(update_fields=['status', 'approved_by', 'approved_at', 'rejection_reason', 'updated_at'])
-    
+
     def cancel(self):
         """
         Cancel a leave request (pending or approved).
@@ -1278,7 +1283,7 @@ class LeaveRequest(models.Model):
         """
         if self.status not in ['PENDING', 'APPROVED']:
             raise ValidationError('Only pending or approved leave requests can be cancelled.')
-        
+
         # Restore leave balance
         year = (self.start_date or self.date).year
         try:
@@ -1286,7 +1291,7 @@ class LeaveRequest(models.Model):
             leave_balance.restore_leave(self.leave_type, self.days_count)
         except LeaveBalance.DoesNotExist:
             pass  # Balance doesn't exist, nothing to restore
-        
+
         # If approved, remove DailyAttendance records for all dates in range
         if self.status == 'APPROVED':
             for leave_date in self._get_date_range():
@@ -1295,7 +1300,7 @@ class LeaveRequest(models.Model):
                     date=leave_date,
                     attendance_type='LEAVE'
                 ).update(is_deleted=True)
-        
+
         # Update status
         self.status = 'CANCELLED'
         self.save()
@@ -1304,32 +1309,32 @@ class LeaveRequest(models.Model):
 class Offense(models.Model):
     """
     Track employee offenses for policy violations.
-    
+
     Offense Types:
     - AWOL: Absent Without Leave (not part of DailyAttendance)
     - LATE: Accumulated late arrivals
     - CURFEW: Not at home by 10 PM (manually added by admin)
     - OTHER: Other policy violations
-    
+
     Severity Levels (Based on Offense Count):
     - 1st offense: Warning
     - 2nd offense: Suspension (admin-defined days)
     - 3rd offense: Termination
     """
-    
+
     OFFENSE_TYPE_CHOICES = [
         ('AWOL', 'Absent Without Leave'),
         ('LATE', 'Late Arrival'),
         ('CURFEW', 'Curfew Violation'),
         ('OTHER', 'Other Violation'),
     ]
-    
+
     SEVERITY_LEVEL_CHOICES = [
         ('WARNING', '1st Offense - Warning'),
         ('SUSPENSION', '2nd Offense - Suspension'),
         ('TERMINATION', '3rd Offense - Termination'),
     ]
-    
+
     employee = models.ForeignKey(
         'users.CustomUser',
         on_delete=models.CASCADE,
@@ -1379,7 +1384,7 @@ class Offense(models.Model):
     # Soft-delete fields
     is_deleted = models.BooleanField(default=False, db_index=True)
     deleted_at = models.DateTimeField(null=True, blank=True)
-    
+
     class Meta:
         ordering = ['-date', '-created_at']
         indexes = [
@@ -1387,38 +1392,38 @@ class Offense(models.Model):
             models.Index(fields=['offense_type']),
             models.Index(fields=['severity_level']),
         ]
-    
+
     def __str__(self):
         return f"{self.employee.user.get_full_name()} - {self.get_offense_type_display()} ({self.get_severity_level_display()}) - {self.date}"
-    
+
     def save(self, *args, **kwargs):
         # Auto-calculate suspension end date if suspension_start_date and penalty_days are provided
         if self.suspension_start_date and self.penalty_days > 0 and not self.suspension_end_date:
             self.suspension_end_date = self.suspension_start_date + timedelta(days=self.penalty_days - 1)
         super().save(*args, **kwargs)
-    
+
     @staticmethod
     def get_offense_count(employee):
         """Get total offense count for an employee"""
         return Offense.objects.filter(employee=employee).count()
-    
+
     @staticmethod
     def get_offense_summary(employee):
         """Get summary of offenses by type for an employee"""
         from django.db.models import Count
         return Offense.objects.filter(employee=employee).values('offense_type').annotate(count=Count('id'))
-    
+
     @staticmethod
     def is_at_limit(employee, threshold=3):
         """Check if employee is at or near offense limit"""
         count = Offense.get_offense_count(employee)
         return count >= threshold
-    
+
     @staticmethod
     def is_employee_suspended(employee):
         """Check if employee is currently suspended"""
         today = timezone.localdate()
-        
+
         # Check for active suspensions
         active_suspension = Offense.objects.filter(
             employee=employee,
@@ -1427,7 +1432,7 @@ class Offense(models.Model):
             suspension_end_date__gte=today,
             is_deleted=False,
         ).exists()
-        
+
         return active_suspension
 
 
@@ -1475,23 +1480,23 @@ class OvertimeRequest(models.Model):
 class HalfDaySchedule(models.Model):
     """
     Admin-designated day schedule override.
-    
+
     When an admin marks a specific date as a half-day, all employees'
     attendance on that date will be capped at 4 paid hours (half-day),
     regardless of how long they actually worked.
-    
+
     When marked as shop-closed, all employees will automatically get
     SHOP_CLOSED attendance with 0 paid hours for that date.
-    
+
     This is used for occasions like company events, holidays-eve,
     shop closures, or any date the admin decides should have a schedule override.
     """
-    
+
     SCHEDULE_TYPE_CHOICES = [
         ('half_day', 'Half Day'),
         ('shop_closed', 'Shop Closed'),
     ]
-    
+
     date = models.DateField(unique=True)
     schedule_type = models.CharField(
         max_length=20,
@@ -1508,7 +1513,7 @@ class HalfDaySchedule(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     is_deleted = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
-    
+
     class Meta:
         db_table = 'half_day_schedules'
         ordering = ['-date']
@@ -1517,7 +1522,7 @@ class HalfDaySchedule(models.Model):
             models.Index(fields=['is_deleted']),
             models.Index(fields=['schedule_type']),
         ]
-    
+
     def __str__(self):
         type_label = 'Shop Closed' if self.schedule_type == 'shop_closed' else 'Half Day'
         return f"{type_label} - {self.date} ({self.reason})"
