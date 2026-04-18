@@ -699,13 +699,16 @@ class WeeklyPayroll(models.Model):
             # Add one day to end_dt to make it inclusive
             end_dt = end_dt + timedelta(days=1)
 
-            # Query by date field OR by time_start date (fallback for inconsistent data)
+            # Query by date field OR by time_start range.
+            # approved_at is kept as a defensive fallback for records whose
+            # date/time fields may have been entered or migrated inconsistently.
             ot_req_qs = OvertimeRequest.objects.filter(
                 employee=self.employee,
                 approved=True,
             ).filter(
                 Q(date__gte=self.week_start, date__lte=self.week_end) |
-                Q(time_start__gte=start_dt, time_start__lt=end_dt)
+                Q(time_start__gte=start_dt, time_start__lt=end_dt) |
+                Q(approved_at__date__gte=self.week_start, approved_at__date__lte=self.week_end)
             )
 
             approved_ot_hours_total = Decimal('0')
