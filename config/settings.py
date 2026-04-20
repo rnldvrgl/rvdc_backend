@@ -256,6 +256,20 @@ VAPID_ADMIN_EMAIL = config("VAPID_ADMIN_EMAIL", default="admin@example.com")
 # Set via GO2RTC_URL env var. Empty string disables status checks.
 GO2RTC_URL = config("GO2RTC_URL", default="")
 
+# ------------------------------------------------------------------------------
+# GOOGLE SHEETS (Sub-stall sales sync)
+# ------------------------------------------------------------------------------
+GOOGLE_SHEETS_SYNC_ENABLED = config(
+    "GOOGLE_SHEETS_SYNC_ENABLED", default=False, cast=bool
+)
+GOOGLE_SHEETS_SPREADSHEET_ID = config("GOOGLE_SHEETS_SPREADSHEET_ID", default="")
+GOOGLE_SHEETS_WORKSHEET_NAME = config(
+    "GOOGLE_SHEETS_WORKSHEET_NAME", default="Sub Stall Sales"
+)
+GOOGLE_SHEETS_SUB_STALL_TYPE = config("GOOGLE_SHEETS_SUB_STALL_TYPE", default="sub")
+GOOGLE_SERVICE_ACCOUNT_FILE = config("GOOGLE_SERVICE_ACCOUNT_FILE", default="")
+GOOGLE_SERVICE_ACCOUNT_JSON = config("GOOGLE_SERVICE_ACCOUNT_JSON", default="")
+
 # UNCOMMENT THE FOLLOWING LINE IF USING A REVERSE PROXY WITH HTTPS
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 

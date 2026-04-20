@@ -4,7 +4,14 @@ from users.models import CustomUser, SystemSettings, CashAdvanceMovement
 
 @admin.register(SystemSettings)
 class SystemSettingsAdmin(admin.ModelAdmin):
-    list_display = ['id', 'birthday_greeting_enabled', 'birthday_greeting_variant', 'maintenance_mode', 'updated_at']
+    list_display = [
+        'id',
+        'birthday_greeting_enabled',
+        'birthday_greeting_variant',
+        'maintenance_mode',
+        'google_sheets_sync_enabled',
+        'updated_at',
+    ]
     fieldsets = [
         ('Birthday Greeting Settings', {
             'fields': [
@@ -34,6 +41,16 @@ class SystemSettingsAdmin(admin.ModelAdmin):
                 'check_stock_on_sale',
                 'notification_sound',
             ]
+        }),
+        ('Google Sheets Sync', {
+            'fields': [
+                'google_sheets_sync_enabled',
+                'google_sheets_spreadsheet_id',
+                'google_sheets_worksheet_name',
+                'google_sheets_sub_stall_type',
+                'google_service_account_json',
+            ],
+            'description': 'Configure automatic sub-stall sales sync to Google Sheets using a service account JSON.',
         }),
         ('Metadata', {
             'fields': ['updated_at'],

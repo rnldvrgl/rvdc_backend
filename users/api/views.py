@@ -193,9 +193,17 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
     def get_permissions(self):
         """Allow any authenticated user to view, but restrict updates by field sensitivity"""
         if self.request.method in ['PUT', 'PATCH']:
-            sensitive_fields = {'maintenance_mode', 'check_stock_on_sale'}
+            sensitive_fields = {
+                'maintenance_mode',
+                'check_stock_on_sale',
+                'google_sheets_sync_enabled',
+                'google_sheets_spreadsheet_id',
+                'google_sheets_worksheet_name',
+                'google_sheets_sub_stall_type',
+                'google_service_account_json',
+            }
             if sensitive_fields & set(self.request.data.keys()):
-                return [IsSuperAdminUser()]
+                return [IsAdminOrManager()]
             return [IsAdminOrManager()]
         return [permissions.IsAuthenticated()]
 

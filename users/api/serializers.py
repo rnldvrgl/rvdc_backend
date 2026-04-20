@@ -242,6 +242,8 @@ class UserSerializer(serializers.ModelSerializer):
 class SystemSettingsSerializer(serializers.ModelSerializer):
     """Serializer for system-wide settings"""
 
+    google_service_account_configured = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = SystemSettings
         fields = [
@@ -258,9 +260,21 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             'maintenance_mode',
             'check_stock_on_sale',
             'notification_sound',
+            'google_sheets_sync_enabled',
+            'google_sheets_spreadsheet_id',
+            'google_sheets_worksheet_name',
+            'google_sheets_sub_stall_type',
+            'google_service_account_json',
+            'google_service_account_configured',
             'updated_at',
         ]
         read_only_fields = ['id', 'updated_at']
+        extra_kwargs = {
+            'google_service_account_json': {'write_only': True},
+        }
+
+    def get_google_service_account_configured(self, obj):
+        return bool((obj.google_service_account_json or "").strip())
 
 
 class CashAdvanceMovementSerializer(serializers.ModelSerializer):

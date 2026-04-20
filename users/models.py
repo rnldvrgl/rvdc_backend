@@ -192,6 +192,35 @@ class SystemSettings(models.Model):
         help_text="Sound file path for push notifications (e.g., /sounds/notification.mp3)"
     )
 
+    # Google Sheets Sync Settings (Sub-stall sales)
+    google_sheets_sync_enabled = models.BooleanField(
+        default=False,
+        help_text="Enable automatic sync of sub-stall sales transactions to Google Sheets"
+    )
+    google_sheets_spreadsheet_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Google Spreadsheet ID from the sheet URL"
+    )
+    google_sheets_worksheet_name = models.CharField(
+        max_length=100,
+        blank=True,
+        default="Sub Stall Sales",
+        help_text="Worksheet/tab name where synced rows are written"
+    )
+    google_sheets_sub_stall_type = models.CharField(
+        max_length=10,
+        default="sub",
+        blank=True,
+        help_text="Only transactions from this stall_type are synced (e.g. sub)"
+    )
+    google_service_account_json = models.TextField(
+        blank=True,
+        default="",
+        help_text="Service account JSON credentials content used for Google Sheets API"
+    )
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
