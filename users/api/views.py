@@ -345,8 +345,7 @@ class GoogleSheetsSyncView(APIView):
                 start_date=start_date,
                 end_date=end_date,
             )
-            http_status = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
-            return Response(result, status=http_status)
+            return Response(result, status=status.HTTP_200_OK)
 
         return Response(
             {"detail": "Unsupported action. Use 'test_connection' or 'sync_historical'."},
