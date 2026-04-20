@@ -262,14 +262,30 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
 class GoogleSheetsSyncView(APIView):
     """Status + manual operations for Google Sheets sales sync."""
 
-    permission_classes = [IsAdminOrManager]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _check_admin_or_manager(self, request):
+        if request.user.role not in ['admin', 'manager']:
+            return Response(
+                {"detail": "You do not have permission to perform this action."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return None
 
     def get(self, request):
+        denied = self._check_admin_or_manager(request)
+        if denied:
+            return denied
+
         from sales.integrations.google_sheets import get_google_sheets_sync_status
 
         return Response(get_google_sheets_sync_status())
 
     def post(self, request):
+        denied = self._check_admin_or_manager(request)
+        if denied:
+            return denied
+
         action = (request.data.get("action") or "").strip()
 
         if action == "test_connection":
