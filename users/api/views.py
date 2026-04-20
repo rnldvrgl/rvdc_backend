@@ -1,3 +1,4 @@
+import logging
 from rest_framework import generics, parsers, permissions, filters, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
@@ -10,6 +11,8 @@ from users.api.serializers import EmployeesSerializer, UserSerializer, SystemSet
 from django_filters.rest_framework import DjangoFilterBackend
 from django.conf import settings as django_settings
 from django.core.files.storage import default_storage
+
+logger = logging.getLogger(__name__)
 
 
 # List all users (admin only)
@@ -340,12 +343,28 @@ class GoogleSheetsSyncView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            result = sync_historical_sales_to_google_sheets(
-                limit=limit,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            return Response(result, status=status.HTTP_200_OK)
+            try:
+                result = sync_historical_sales_to_google_sheets(
+                    limit=limit,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                return Response(result, status=status.HTTP_200_OK)
+            except Exception as e:
+                import traceback
+                error_trace = traceback.format_exc()
+                logger.error("Historical sync failed: %s", error_trace)
+                return Response(
+                    {
+                        "ok": False,
+                        "message": "Historical sync failed",
+                        "detail": str(e),
+                        "synced": 0,
+                        "failed": 0,
+                        "errors": [str(e)],
+                    },
+                    status=status.HTTP_200_OK,
+                )
 
         return Response(
             {"detail": "Unsupported action. Use 'test_connection' or 'sync_historical'."},
