@@ -24,6 +24,7 @@ urlpatterns = [
         name="employee-restore",
     ),
     path("settings/", views.SystemSettingsView.as_view(), name="system-settings"),
+    path("settings/google-sheets-sync/", views.GoogleSheetsSyncView.as_view(), name="google-sheets-sync"),
     path("maintenance/", views.ServerMaintenanceView.as_view(), name="server-maintenance"),
     path("maintenance/backups/<str:filename>/", views.BackupDownloadView.as_view(), name="backup-download"),
     path("maintenance/restore/", views.BackupUploadRestoreView.as_view(), name="backup-restore"),

@@ -1,3 +1,5 @@
+import json
+
 from rest_framework import serializers
 from django.core.exceptions import ValidationError as DjangoValidationError
 from users.models import CustomUser, SystemSettings, CashAdvanceMovement
@@ -275,6 +277,36 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
 
     def get_google_service_account_configured(self, obj):
         return bool((obj.google_service_account_json or "").strip())
+
+    def validate_google_service_account_json(self, value):
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return ""
+
+        try:
+            parsed = json.loads(cleaned)
+        except Exception as exc:
+            raise serializers.ValidationError(f"Invalid JSON: {exc}")
+
+        required_keys = {
+            "type",
+            "project_id",
+            "private_key_id",
+            "private_key",
+            "client_email",
+            "client_id",
+            "token_uri",
+        }
+        missing = sorted(required_keys - set(parsed.keys()))
+        if missing:
+            raise serializers.ValidationError(
+                f"Missing required keys: {', '.join(missing)}"
+            )
+
+        if parsed.get("type") != "service_account":
+            raise serializers.ValidationError("JSON 'type' must be 'service_account'.")
+
+        return cleaned
 
 
 class CashAdvanceMovementSerializer(serializers.ModelSerializer):

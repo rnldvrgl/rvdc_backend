@@ -259,6 +259,84 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
             pass
 
 
+class GoogleSheetsSyncView(APIView):
+    """Status + manual operations for Google Sheets sales sync."""
+
+    permission_classes = [IsAdminOrManager]
+
+    def get(self, request):
+        from sales.integrations.google_sheets import get_google_sheets_sync_status
+
+        return Response(get_google_sheets_sync_status())
+
+    def post(self, request):
+        action = (request.data.get("action") or "").strip()
+
+        if action == "test_connection":
+            from sales.integrations.google_sheets import get_google_sheets_sync_status
+
+            return Response(get_google_sheets_sync_status())
+
+        if action == "sync_historical":
+            from sales.integrations.google_sheets import sync_historical_sales_to_google_sheets
+            from django.utils.dateparse import parse_date
+
+            raw_limit = request.data.get("limit")
+            raw_start_date = (request.data.get("start_date") or "").strip()
+            raw_end_date = (request.data.get("end_date") or "").strip()
+            limit = None
+            start_date = None
+            end_date = None
+            if raw_limit not in (None, ""):
+                try:
+                    limit = int(raw_limit)
+                except (TypeError, ValueError):
+                    return Response(
+                        {"detail": "limit must be an integer."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if limit <= 0:
+                    return Response(
+                        {"detail": "limit must be greater than 0."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            if raw_start_date:
+                start_date = parse_date(raw_start_date)
+                if start_date is None:
+                    return Response(
+                        {"detail": "start_date must be in YYYY-MM-DD format."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            if raw_end_date:
+                end_date = parse_date(raw_end_date)
+                if end_date is None:
+                    return Response(
+                        {"detail": "end_date must be in YYYY-MM-DD format."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            if start_date and end_date and start_date > end_date:
+                return Response(
+                    {"detail": "start_date cannot be later than end_date."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            result = sync_historical_sales_to_google_sheets(
+                limit=limit,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            http_status = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
+            return Response(result, status=http_status)
+
+        return Response(
+            {"detail": "Unsupported action. Use 'test_connection' or 'sync_historical'."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+
 class CashAdvanceMovementViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing cash ban balance movements.
