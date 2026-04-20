@@ -92,12 +92,12 @@ def _get_sheets_api(sync_config: dict):
 
 
 def _ensure_headers(sheet_api, spreadsheet_id: str, worksheet_name: str):
-    header_range = f"{worksheet_name}!1:1"
+    header_range = _a1_range(worksheet_name, "1:1")
     header_resp = sheet_api.get(spreadsheetId=spreadsheet_id, range=header_range).execute()
     if not header_resp.get("values"):
         sheet_api.update(
             spreadsheetId=spreadsheet_id,
-            range=f"{worksheet_name}!A1:X1",
+            range=_a1_range(worksheet_name, "A1:X1"),
             valueInputOption="RAW",
             body={"values": [_headers()]},
         ).execute()
@@ -106,7 +106,7 @@ def _ensure_headers(sheet_api, spreadsheet_id: str, worksheet_name: str):
 def _upsert_transaction_row(sheet_api, spreadsheet_id: str, worksheet_name: str, transaction: SalesTransaction):
     id_column = sheet_api.get(
         spreadsheetId=spreadsheet_id,
-        range=f"{worksheet_name}!A2:A",
+        range=_a1_range(worksheet_name, "A2:A"),
     ).execute().get("values", [])
 
     target_row = None
@@ -119,18 +119,24 @@ def _upsert_transaction_row(sheet_api, spreadsheet_id: str, worksheet_name: str,
     if target_row:
         sheet_api.update(
             spreadsheetId=spreadsheet_id,
-            range=f"{worksheet_name}!A{target_row}:X{target_row}",
+            range=_a1_range(worksheet_name, f"A{target_row}:X{target_row}"),
             valueInputOption="USER_ENTERED",
             body={"values": [row_values]},
         ).execute()
     else:
         sheet_api.append(
             spreadsheetId=spreadsheet_id,
-            range=f"{worksheet_name}!A:X",
+            range=_a1_range(worksheet_name, "A:X"),
             valueInputOption="USER_ENTERED",
             insertDataOption="INSERT_ROWS",
             body={"values": [row_values]},
         ).execute()
+
+
+def _a1_range(worksheet_name: str, a1_notation: str) -> str:
+    # Quote sheet titles so names with spaces/special characters are valid A1 notation.
+    escaped = (worksheet_name or "").replace("'", "''")
+    return f"'{escaped}'!{a1_notation}"
 
 
 def get_google_sheets_sync_status() -> dict[str, Any]:
@@ -166,7 +172,7 @@ def get_google_sheets_sync_status() -> dict[str, Any]:
         # Validate spreadsheet + worksheet access.
         sheet_api.get(
             spreadsheetId=spreadsheet_id,
-            range=f"{worksheet_name}!A1:A1",
+            range=_a1_range(worksheet_name, "A1:A1"),
         ).execute()
         status["connection_ok"] = True
         status["message"] = "Connected successfully"
