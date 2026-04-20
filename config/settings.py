@@ -257,12 +257,13 @@ VAPID_ADMIN_EMAIL = config("VAPID_ADMIN_EMAIL", default="admin@example.com")
 GO2RTC_URL = config("GO2RTC_URL", default="")
 
 # ------------------------------------------------------------------------------
-# GOOGLE SHEETS (Sub-stall sales sync)
+# GOOGLE SHEETS (daily sales/remittance sync)
 # ------------------------------------------------------------------------------
 GOOGLE_SHEETS_SYNC_ENABLED = config(
     "GOOGLE_SHEETS_SYNC_ENABLED", default=False, cast=bool
 )
 GOOGLE_SHEETS_SPREADSHEET_ID = config("GOOGLE_SHEETS_SPREADSHEET_ID", default="")
+GOOGLE_SHEETS_MAIN_SPREADSHEET_ID = config("GOOGLE_SHEETS_MAIN_SPREADSHEET_ID", default="")
 GOOGLE_SHEETS_WORKSHEET_NAME = config(
     "GOOGLE_SHEETS_WORKSHEET_NAME", default="Sub Stall Sales"
 )

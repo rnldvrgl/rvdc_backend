@@ -46,11 +46,12 @@ class SystemSettingsAdmin(admin.ModelAdmin):
             'fields': [
                 'google_sheets_sync_enabled',
                 'google_sheets_spreadsheet_id',
+                'google_sheets_main_spreadsheet_id',
                 'google_sheets_worksheet_name',
                 'google_sheets_sub_stall_type',
                 'google_service_account_json',
             ],
-            'description': 'Configure automatic sub-stall sales sync to Google Sheets using a service account JSON.',
+            'description': 'Configure automatic daily sales/remittance sync to Google Sheets using a service account JSON.',
         }),
         ('Metadata', {
             'fields': ['updated_at'],

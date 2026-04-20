@@ -1,13 +1,18 @@
+import importlib
 import json
 import logging
-import importlib
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
 from django.conf import settings
+from django.db.models import Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
 
+from expenses.models import Expense
+from inventory.models import Stall
+from remittances.models import RemittanceRecord
 from sales.models import SalesTransaction
 
 logger = logging.getLogger(__name__)
@@ -16,9 +21,9 @@ logger = logging.getLogger(__name__)
 def _get_google_sync_config() -> dict:
     config = {
         "enabled": bool(getattr(settings, "GOOGLE_SHEETS_SYNC_ENABLED", False)),
-        "spreadsheet_id": getattr(settings, "GOOGLE_SHEETS_SPREADSHEET_ID", "").strip(),
-        "worksheet_name": getattr(settings, "GOOGLE_SHEETS_WORKSHEET_NAME", "Sub Stall Sales"),
-        "sub_stall_type": getattr(settings, "GOOGLE_SHEETS_SUB_STALL_TYPE", "sub"),
+        "sub_spreadsheet_id": getattr(settings, "GOOGLE_SHEETS_SPREADSHEET_ID", "").strip(),
+        "main_spreadsheet_id": getattr(settings, "GOOGLE_SHEETS_MAIN_SPREADSHEET_ID", "").strip(),
+        "sync_scope": getattr(settings, "GOOGLE_SHEETS_SUB_STALL_TYPE", "sub"),
         "service_account_json": getattr(settings, "GOOGLE_SERVICE_ACCOUNT_JSON", ""),
         "service_account_file": getattr(settings, "GOOGLE_SERVICE_ACCOUNT_FILE", ""),
     }
@@ -28,17 +33,22 @@ def _get_google_sync_config() -> dict:
 
         system_settings = SystemSettings.get_settings()
         config["enabled"] = bool(system_settings.google_sheets_sync_enabled)
-        config["spreadsheet_id"] = (system_settings.google_sheets_spreadsheet_id or "").strip()
-        config["worksheet_name"] = (
-            system_settings.google_sheets_worksheet_name or config["worksheet_name"]
-        )
-        config["sub_stall_type"] = (
-            system_settings.google_sheets_sub_stall_type or config["sub_stall_type"]
-        )
+        config["sub_spreadsheet_id"] = (system_settings.google_sheets_spreadsheet_id or "").strip()
+        config["main_spreadsheet_id"] = (
+            getattr(system_settings, "google_sheets_main_spreadsheet_id", "") or ""
+        ).strip()
+        config["sync_scope"] = (system_settings.google_sheets_sub_stall_type or "sub").strip().lower()
         if (system_settings.google_service_account_json or "").strip():
             config["service_account_json"] = system_settings.google_service_account_json
     except Exception as exc:
         logger.warning("Using environment Google Sheets config fallback: %s", exc)
+
+    # Backward compatibility: if main is empty, fallback to sub sheet.
+    if not config["main_spreadsheet_id"]:
+        config["main_spreadsheet_id"] = config["sub_spreadsheet_id"]
+
+    if config["sync_scope"] not in {"sub", "main", "both"}:
+        config["sync_scope"] = "sub"
 
     return config
 
@@ -70,146 +80,454 @@ def _get_service_account_credentials(sync_config: dict):
     return None
 
 
-def _get_sheets_api(sync_config: dict):
-    spreadsheet_id = (sync_config.get("spreadsheet_id") or "").strip()
-    worksheet_name = (sync_config.get("worksheet_name") or "Sub Stall Sales").strip()
+def _spreadsheet_id_for_stall(sync_config: dict, stall_type: str) -> str:
+    if stall_type == "main":
+        return (sync_config.get("main_spreadsheet_id") or "").strip()
+    return (sync_config.get("sub_spreadsheet_id") or "").strip()
+
+
+def _get_sheets_clients(sync_config: dict, spreadsheet_id: str):
     if not spreadsheet_id:
-        return None, None, "", worksheet_name, "Spreadsheet ID is missing"
+        return None, None, "Spreadsheet ID is missing"
 
     credentials = _get_service_account_credentials(sync_config)
     if credentials is None:
-        return (
-            None,
-            None,
-            spreadsheet_id,
-            worksheet_name,
-            "Service account credentials are not configured or invalid",
-        )
+        return None, None, "Service account credentials are not configured or invalid"
 
     try:
         discovery_module = importlib.import_module("googleapiclient.discovery")
         build = discovery_module.build
         service = build("sheets", "v4", credentials=credentials, cache_discovery=False)
-        sheet_api = service.spreadsheets().values()
-        return service, sheet_api, spreadsheet_id, worksheet_name, ""
+        return service, service.spreadsheets().values(), ""
     except Exception as exc:
         logger.exception("Failed to initialize Google Sheets API client: %s", exc)
-        return None, None, spreadsheet_id, worksheet_name, str(exc)
+        return None, None, str(exc)
 
 
-def _ensure_daily_sheet(service, sheet_api, spreadsheet_id: str, worksheet_name: str):
+def _scope_stall_types(sync_scope: str) -> list[str]:
+    if sync_scope == "both":
+        return ["sub", "main"]
+    if sync_scope == "main":
+        return ["main"]
+    return ["sub"]
+
+
+def _a1_range(worksheet_name: str, a1_notation: str) -> str:
+    escaped = (worksheet_name or "").replace("'", "''")
+    return f"'{escaped}'!{a1_notation}"
+
+
+def _daily_tab_name(target_date: date) -> str:
+    return target_date.strftime("%B %d").upper()
+
+
+def _effective_date(transaction: SalesTransaction) -> date:
+    if transaction.transaction_date:
+        return transaction.transaction_date
+    return timezone.localtime(transaction.created_at).date()
+
+
+def _serialize_decimal(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, Decimal):
+        return f"{value:.2f}"
+    return str(value)
+
+
+def _payment_method_label(transaction: SalesTransaction) -> str:
+    methods = []
+    for payment in transaction.payments.all().order_by("payment_date"):
+        method = (payment.payment_type or "").upper()
+        if method and method not in methods:
+            methods.append(method)
+    return ", ".join(methods)
+
+
+def _normalize_line_description(line) -> str:
+    line_desc = (line.description or "").strip()
+    if line_desc and line_desc.lower() != "custom item":
+        return line_desc
+
+    if line.item:
+        item_name = (line.item.name or "").strip()
+        if item_name and item_name.lower() != "custom item":
+            return item_name
+        item_desc = (line.item.description or "").strip()
+        if item_desc:
+            return item_desc
+
+    return line_desc
+
+
+def _build_sales_rows(transactions) -> list[list[str]]:
+    rows: list[list[str]] = []
+
+    for transaction in transactions:
+        client_name = transaction.client.full_name if transaction.client else ""
+        receipt_number = transaction.manual_receipt_number or ""
+        book_number = transaction.receipt_book or ""
+        payment_method = _payment_method_label(transaction)
+
+        line_rows = []
+        for line in transaction.items.all():
+            description = _normalize_line_description(line)
+            quantity = _serialize_decimal(line.quantity)
+            amount = _serialize_decimal(line.line_total)
+            line_rows.append([
+                quantity,
+                description,
+                amount,
+                client_name,
+                book_number,
+                receipt_number,
+                payment_method,
+            ])
+
+        if not line_rows:
+            line_rows.append([
+                "",
+                transaction.note or "",
+                _serialize_decimal(transaction.computed_total),
+                client_name,
+                book_number,
+                receipt_number,
+                payment_method,
+            ])
+
+        rows.extend(line_rows)
+
+    return rows
+
+
+def _get_expense_rows(stall: Stall, target_date: date) -> list[list[str]]:
+    expenses = (
+        Expense.objects.filter(stall=stall, expense_date=target_date, is_deleted=False)
+        .order_by("id")
+    )
+
+    rows: list[list[str]] = []
+    for expense in expenses:
+        source = "reimbursement" if expense.is_reimbursement else "expense"
+        label = (expense.description or expense.vendor or "").strip()
+        amount = expense.paid_amount or Decimal("0")
+        if expense.is_reimbursement:
+            amount = -amount
+        rows.append([source, label, _serialize_decimal(amount)])
+
+    return rows
+
+
+def _get_day_metrics(stall: Stall, target_date: date) -> dict[str, Any]:
+    remittance = (
+        RemittanceRecord.objects.select_related("cash_breakdown")
+        .filter(stall=stall, remittance_date=target_date)
+        .first()
+    )
+
+    metrics = {
+        "total_cash_sales": Decimal("0"),
+        "total_gcash_sales": Decimal("0"),
+        "total_credit_sales": Decimal("0"),
+        "total_debit_sales": Decimal("0"),
+        "total_cheque_sales": Decimal("0"),
+        "total_expenses": Decimal("0"),
+        "cod_for_today": Decimal("0"),
+        "expected_remittance": Decimal("0"),
+        "remitted_amount": Decimal("0"),
+        "declared_amount": Decimal("0"),
+        "balance": Decimal("0"),
+        "denominations": [],
+    }
+
+    cod_info = RemittanceRecord.get_cod_for_date(stall, target_date)
+    metrics["cod_for_today"] = Decimal(str(cod_info.get("cod_amount", 0) or 0))
+
+    expense_total = (
+        Expense.objects.filter(stall=stall, expense_date=target_date, is_deleted=False)
+        .aggregate(total=Coalesce(Sum("paid_amount"), Decimal("0")))
+        .get("total")
+        or Decimal("0")
+    )
+    metrics["total_expenses"] = expense_total
+
+    if remittance:
+        metrics["total_cash_sales"] = remittance.total_sales_cash or Decimal("0")
+        metrics["total_gcash_sales"] = remittance.total_sales_gcash or Decimal("0")
+        metrics["total_credit_sales"] = remittance.total_sales_credit or Decimal("0")
+        metrics["total_debit_sales"] = remittance.total_sales_debit or Decimal("0")
+        metrics["total_cheque_sales"] = remittance.total_sales_cheque or Decimal("0")
+        metrics["total_expenses"] = remittance.total_expenses or Decimal("0")
+        metrics["expected_remittance"] = remittance.expected_remittance or Decimal("0")
+        metrics["remitted_amount"] = Decimal(str(remittance.remitted_amount or 0))
+        metrics["declared_amount"] = Decimal(str(remittance.declared_amount or 0))
+        metrics["balance"] = remittance.balance or Decimal("0")
+
+        if hasattr(remittance, "cash_breakdown"):
+            b = remittance.cash_breakdown
+            denoms = [1000, 500, 200, 100, 50, 20, 10, 5, 1]
+            for d in denoms:
+                remitted_count = int(getattr(b, f"count_{d}", 0) or 0)
+                declared_count = int(getattr(b, f"declared_count_{d}", 0) or 0)
+                cod_count = max(0, declared_count - remitted_count)
+                metrics["denominations"].append([
+                    str(d),
+                    str(remitted_count),
+                    str(declared_count),
+                    str(cod_count),
+                ])
+
+    return metrics
+
+
+def _write_block(sheet_api, spreadsheet_id: str, tab_name: str, a1: str, values):
+    sheet_api.update(
+        spreadsheetId=spreadsheet_id,
+        range=_a1_range(tab_name, a1),
+        valueInputOption="USER_ENTERED",
+        body={"values": values},
+    ).execute()
+
+
+def _ensure_tab(service, spreadsheet_id: str, tab_name: str):
     metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
     existing_titles = {
         sheet.get("properties", {}).get("title")
         for sheet in metadata.get("sheets", [])
     }
 
-    if worksheet_name not in existing_titles:
+    if tab_name not in existing_titles:
         service.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id,
-            body={"requests": [{"addSheet": {"properties": {"title": worksheet_name}}}]},
-        ).execute()
-
-def _ensure_headers(sheet_api, spreadsheet_id: str, worksheet_name: str):
-    header_range = _a1_range(worksheet_name, "1:1")
-    header_resp = sheet_api.get(spreadsheetId=spreadsheet_id, range=header_range).execute()
-    if not header_resp.get("values"):
-        sheet_api.update(
-            spreadsheetId=spreadsheet_id,
-            range=_a1_range(worksheet_name, "A1:F1"),
-            valueInputOption="RAW",
-            body={"values": [_headers()]},
+            body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]},
         ).execute()
 
 
-def _effective_date(transaction: SalesTransaction):
-    if transaction.transaction_date:
-        return transaction.transaction_date
-    return timezone.localtime(transaction.created_at).date()
-
-
-def _daily_tab_name(transaction: SalesTransaction) -> str:
-    return _effective_date(transaction).strftime("%B %d").upper()
-
-
-def _build_rows(transaction: SalesTransaction):
-    client_name = transaction.client.full_name if transaction.client else ""
-    receipt_number = transaction.manual_receipt_number or str(transaction.system_receipt_number)
-
-    rows = []
-    for line in transaction.items.all():
-        description = line.description or (line.item.name if line.item else "")
-        rows.append([
-            receipt_number,
-            _serialize_decimal(line.quantity),
-            description,
-            _serialize_decimal(line.line_total),
-            client_name,
-            str(transaction.id),
-        ])
-
-    if not rows:
-        rows.append([
-            receipt_number,
-            "",
-            transaction.note or "(No line items)",
-            _serialize_decimal(transaction.computed_total),
-            client_name,
-            str(transaction.id),
-        ])
-
-    return rows
-
-
-def _upsert_transaction_row(sheet_api, spreadsheet_id: str, worksheet_name: str, transaction: SalesTransaction):
-    rows_to_write = _build_rows(transaction)
-
-    id_column = sheet_api.get(
+def _clear_day_tab(sheet_api, spreadsheet_id: str, tab_name: str):
+    sheet_api.clear(
         spreadsheetId=spreadsheet_id,
-        range=_a1_range(worksheet_name, "F2:F"),
-    ).execute().get("values", [])
-
-    existing_rows = []
-    for idx, row in enumerate(id_column, start=2):
-        if row and row[0] == str(transaction.id):
-            existing_rows.append(idx)
-
-    # Clear old rows for this transaction to avoid duplicates on updates.
-    for row_idx in existing_rows:
-        sheet_api.update(
-            spreadsheetId=spreadsheet_id,
-            range=_a1_range(worksheet_name, f"A{row_idx}:F{row_idx}"),
-            valueInputOption="RAW",
-            body={"values": [["", "", "", "", "", ""]]},
-        ).execute()
-
-    sheet_api.append(
-        spreadsheetId=spreadsheet_id,
-        range=_a1_range(worksheet_name, "A:F"),
-        valueInputOption="USER_ENTERED",
-        insertDataOption="INSERT_ROWS",
-        body={"values": rows_to_write},
+        range=_a1_range(tab_name, "A1:Z200"),
+        body={},
     ).execute()
 
 
-def _a1_range(worksheet_name: str, a1_notation: str) -> str:
-    # Quote sheet titles so names with spaces/special characters are valid A1 notation.
-    escaped = (worksheet_name or "").replace("'", "''")
-    return f"'{escaped}'!{a1_notation}"
+def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count: int):
+    metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    sheet_id = None
+    for sheet in metadata.get("sheets", []):
+        props = sheet.get("properties", {})
+        if props.get("title") == tab_name:
+            sheet_id = props.get("sheetId")
+            break
+
+    if sheet_id is None:
+        return
+
+    sales_end_row = max(4, 4 + sales_rows_count)
+    requests = [
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 12,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.10, "green": 0.16, "blue": 0.24},
+                        "horizontalAlignment": "CENTER",
+                        "textFormat": {
+                            "foregroundColor": {"red": 1, "green": 1, "blue": 1},
+                            "fontSize": 14,
+                            "bold": True,
+                        },
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+            }
+        },
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 3,
+                    "endRowIndex": 4,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 7,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.89, "green": 0.93, "blue": 0.98},
+                        "textFormat": {"bold": True},
+                        "horizontalAlignment": "CENTER",
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+            }
+        },
+        {
+            "setBasicFilter": {
+                "filter": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 3,
+                        "endRowIndex": sales_end_row,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": 7,
+                    }
+                }
+            }
+        },
+        {
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": sheet_id,
+                    "gridProperties": {"frozenRowCount": 4},
+                },
+                "fields": "gridProperties.frozenRowCount",
+            }
+        },
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 15,
+                    "endRowIndex": 16,
+                    "startColumnIndex": 8,
+                    "endColumnIndex": 11,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.93, "green": 0.95, "blue": 0.98},
+                        "textFormat": {"bold": True},
+                        "horizontalAlignment": "CENTER",
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+            }
+        },
+    ]
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": requests},
+    ).execute()
+
+
+def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, target_date: date):
+    tab_name = _daily_tab_name(target_date)
+    _ensure_tab(service, spreadsheet_id, tab_name)
+    _clear_day_tab(sheet_api, spreadsheet_id, tab_name)
+
+    transactions = (
+        SalesTransaction.objects.select_related("client", "stall")
+        .prefetch_related("items__item", "payments")
+        .filter(
+            stall=stall,
+            voided=False,
+            is_deleted=False,
+        )
+        .annotate(effective_date=Coalesce("transaction_date", TruncDate("created_at")))
+        .filter(effective_date=target_date)
+        .order_by("manual_receipt_number", "id")
+    )
+
+    sales_rows = _build_sales_rows(transactions)
+    expense_rows = _get_expense_rows(stall, target_date)
+    metrics = _get_day_metrics(stall, target_date)
+
+    title = f"{stall.name.upper()} SALES"
+    subtitle = target_date.strftime("%A, %B %d, %Y")
+
+    _write_block(sheet_api, spreadsheet_id, tab_name, "A1:G1", [[title]])
+    _write_block(sheet_api, spreadsheet_id, tab_name, "A2:G2", [[subtitle]])
+    _write_block(
+        sheet_api,
+        spreadsheet_id,
+        tab_name,
+        "A4:G4",
+        [["Quantity", "Description", "Amount", "Client Name", "Book #", "Receipt #", "Payment Method"]],
+    )
+
+    if sales_rows:
+        _write_block(
+            sheet_api,
+            spreadsheet_id,
+            tab_name,
+            f"A5:G{4 + len(sales_rows)}",
+            sales_rows,
+        )
+
+    _write_block(sheet_api, spreadsheet_id, tab_name, "I1:J1", [["REMITTANCE SUMMARY", ""]])
+    _write_block(
+        sheet_api,
+        spreadsheet_id,
+        tab_name,
+        "I2:J11",
+        [
+            ["Total Cash Sales", _serialize_decimal(metrics["total_cash_sales"])],
+            ["Total GCash Sales", _serialize_decimal(metrics["total_gcash_sales"])],
+            ["Total Credit Sales", _serialize_decimal(metrics["total_credit_sales"])],
+            ["Total Debit Sales", _serialize_decimal(metrics["total_debit_sales"])],
+            ["Total Cheque Sales", _serialize_decimal(metrics["total_cheque_sales"])],
+            ["Total Expenses", _serialize_decimal(metrics["total_expenses"])],
+            ["COD (Prev Day)", _serialize_decimal(metrics["cod_for_today"])],
+            ["Expected Remittance", _serialize_decimal(metrics["expected_remittance"])],
+            ["Remitted Amount", _serialize_decimal(metrics["remitted_amount"])],
+            ["Declared Amount", _serialize_decimal(metrics["declared_amount"])],
+        ],
+    )
+
+    _write_block(
+        sheet_api,
+        spreadsheet_id,
+        tab_name,
+        "I12:J12",
+        [["Over / Short", _serialize_decimal(metrics["balance"]) ]],
+    )
+
+    _write_block(sheet_api, spreadsheet_id, tab_name, "I15:K15", [["EXPENSES / GCASH", "", ""]])
+    _write_block(sheet_api, spreadsheet_id, tab_name, "I16:K16", [["Type", "Description", "Amount"]])
+    if expense_rows:
+        _write_block(
+            sheet_api,
+            spreadsheet_id,
+            tab_name,
+            f"I17:K{16 + len(expense_rows)}",
+            expense_rows,
+        )
+
+    _write_block(sheet_api, spreadsheet_id, tab_name, "A14:D14", [["CASH / COINS BREAKDOWN", "", "", ""]])
+    _write_block(sheet_api, spreadsheet_id, tab_name, "A15:D15", [["Denomination", "Remitted", "Declared", "COD"]])
+    denom_rows = metrics["denominations"] or [["1000", "0", "0", "0"], ["500", "0", "0", "0"], ["200", "0", "0", "0"], ["100", "0", "0", "0"], ["50", "0", "0", "0"], ["20", "0", "0", "0"], ["10", "0", "0", "0"], ["5", "0", "0", "0"], ["1", "0", "0", "0"]]
+    _write_block(
+        sheet_api,
+        spreadsheet_id,
+        tab_name,
+        f"A16:D{15 + len(denom_rows)}",
+        denom_rows,
+    )
+
+    _style_day_tab(
+        service,
+        spreadsheet_id,
+        tab_name,
+        sales_rows_count=len(sales_rows),
+    )
 
 
 def get_google_sheets_sync_status() -> dict[str, Any]:
     sync_config = _get_google_sync_config()
-    spreadsheet_id = (sync_config.get("spreadsheet_id") or "").strip()
-    worksheet_name = (sync_config.get("worksheet_name") or "Sub Stall Sales").strip()
     raw_json = (sync_config.get("service_account_json") or "").strip()
     json_path = (sync_config.get("service_account_file") or "").strip()
 
     status: dict[str, Any] = {
         "enabled": bool(sync_config.get("enabled")),
-        "spreadsheet_id": spreadsheet_id,
-        "worksheet_name": worksheet_name,
-        "sub_stall_type": sync_config.get("sub_stall_type", "sub"),
+        "sub_spreadsheet_id": sync_config.get("sub_spreadsheet_id", ""),
+        "main_spreadsheet_id": sync_config.get("main_spreadsheet_id", ""),
+        "sync_scope": sync_config.get("sync_scope", "sub"),
         "credential_configured": bool(raw_json or json_path),
         "connection_ok": False,
         "message": "",
@@ -222,23 +540,56 @@ def get_google_sheets_sync_status() -> dict[str, Any]:
             status["message"] = f"Service account JSON is invalid: {exc}"
             return status
 
-    service, sheet_api, spreadsheet_id, worksheet_name, init_error = _get_sheets_api(sync_config)
-    if sheet_api is None or service is None:
-        status["message"] = init_error or "Unable to initialize Google Sheets API"
-        return status
+    checks = []
+    for stall_type in _scope_stall_types(sync_config.get("sync_scope", "sub")):
+        spreadsheet_id = _spreadsheet_id_for_stall(sync_config, stall_type)
+        service, sheet_api, init_error = _get_sheets_clients(sync_config, spreadsheet_id)
+        if service is None or sheet_api is None:
+            checks.append(f"{stall_type}: {init_error}")
+            continue
+
+        try:
+            today_tab = _daily_tab_name(timezone.localdate())
+            _ensure_tab(service, spreadsheet_id, today_tab)
+            _write_block(sheet_api, spreadsheet_id, today_tab, "A1:A1", [["SYNC READY"]])
+            checks.append(f"{stall_type}: ok")
+        except Exception as exc:
+            logger.exception("Google Sheets status check failed for %s: %s", stall_type, exc)
+            checks.append(f"{stall_type}: {exc}")
+
+    status["connection_ok"] = all(c.endswith("ok") for c in checks)
+    status["message"] = " | ".join(checks) if checks else "No scope selected"
+    return status
+
+
+def sync_sales_day_to_google_sheet(stall_id: int, target_date: date) -> bool:
+    sync_config = _get_google_sync_config()
+    if not sync_config.get("enabled"):
+        return False
 
     try:
-        # Validate spreadsheet access and auto-prepare today's tab.
-        today_tab = timezone.localdate().strftime("%B %d").upper()
-        _ensure_daily_sheet(service, sheet_api, spreadsheet_id, today_tab)
-        _ensure_headers(sheet_api, spreadsheet_id, today_tab)
-        status["connection_ok"] = True
-        status["message"] = f"Connected successfully (daily tab: {today_tab})"
-        return status
+        stall = Stall.objects.get(pk=stall_id)
+    except Stall.DoesNotExist:
+        logger.warning("Google Sheets day sync skipped: stall %s does not exist", stall_id)
+        return False
+
+    spreadsheet_id = _spreadsheet_id_for_stall(sync_config, stall.stall_type)
+    service, sheet_api, init_error = _get_sheets_clients(sync_config, spreadsheet_id)
+    if service is None or sheet_api is None:
+        logger.warning("Google Sheets day sync skipped: %s", init_error)
+        return False
+
+    try:
+        _render_day_tab(service, sheet_api, spreadsheet_id, stall, target_date)
+        return True
     except Exception as exc:
-        logger.exception("Google Sheets status check failed: %s", exc)
-        status["message"] = str(exc)
-        return status
+        logger.exception(
+            "Google Sheets day sync failed for stall=%s date=%s: %s",
+            stall_id,
+            target_date,
+            exc,
+        )
+        return False
 
 
 def sync_historical_sales_to_google_sheets(
@@ -257,52 +608,58 @@ def sync_historical_sales_to_google_sheets(
             "errors": [],
         }
 
-    service, sheet_api, spreadsheet_id, worksheet_name, init_error = _get_sheets_api(sync_config)
-    if sheet_api is None or service is None:
-        return {
-            "ok": False,
-            "message": init_error or "Unable to initialize Google Sheets API",
-            "synced": 0,
-            "failed": 0,
-            "considered": 0,
-            "errors": [],
-        }
+    stall_types = _scope_stall_types(sync_config.get("sync_scope", "sub"))
+    stalls = Stall.objects.filter(stall_type__in=stall_types, is_deleted=False)
 
-    sub_stall_type = sync_config.get("sub_stall_type", "sub")
-    queryset = (
-        SalesTransaction.objects.select_related("stall", "client", "sales_clerk")
-        .prefetch_related("items__item", "payments")
-        .filter(stall__stall_type=sub_stall_type, is_deleted=False)
+    day_targets = set()
+
+    sales_qs = (
+        SalesTransaction.objects.select_related("stall")
         .annotate(effective_date=Coalesce("transaction_date", TruncDate("created_at")))
-        .order_by("id")
+        .filter(stall__in=stalls)
+        .filter(voided=False, is_deleted=False)
     )
     if start_date:
-        queryset = queryset.filter(effective_date__gte=start_date)
+        sales_qs = sales_qs.filter(effective_date__gte=start_date)
     if end_date:
-        queryset = queryset.filter(effective_date__lte=end_date)
+        sales_qs = sales_qs.filter(effective_date__lte=end_date)
+
+    for tx in sales_qs.order_by("id"):
+        day_targets.add((tx.stall_id, tx.effective_date))
+
+    remit_qs = RemittanceRecord.objects.filter(stall__in=stalls)
+    if start_date:
+        remit_qs = remit_qs.filter(remittance_date__gte=start_date)
+    if end_date:
+        remit_qs = remit_qs.filter(remittance_date__lte=end_date)
+    for rem in remit_qs:
+        if rem.remittance_date:
+            day_targets.add((rem.stall_id, rem.remittance_date))
+
+    exp_qs = Expense.objects.filter(stall__in=stalls, is_deleted=False)
+    if start_date:
+        exp_qs = exp_qs.filter(expense_date__gte=start_date)
+    if end_date:
+        exp_qs = exp_qs.filter(expense_date__lte=end_date)
+    for expense in exp_qs:
+        if expense.expense_date:
+            day_targets.add((expense.stall_id, expense.expense_date))
+
+    ordered_targets = sorted(day_targets, key=lambda x: (x[0], x[1]))
     if isinstance(limit, int) and limit > 0:
-        queryset = queryset[:limit]
+        ordered_targets = ordered_targets[:limit]
 
     synced = 0
     failed = 0
     errors: list[str] = []
 
-    ensured_tabs: set[str] = set()
-
-    for transaction in queryset:
-        try:
-            tab_name = _daily_tab_name(transaction)
-            if tab_name not in ensured_tabs:
-                _ensure_daily_sheet(service, sheet_api, spreadsheet_id, tab_name)
-                _ensure_headers(sheet_api, spreadsheet_id, tab_name)
-                ensured_tabs.add(tab_name)
-
-            _upsert_transaction_row(sheet_api, spreadsheet_id, tab_name, transaction)
+    for stall_id, target_date in ordered_targets:
+        ok = sync_sales_day_to_google_sheet(stall_id, target_date)
+        if ok:
             synced += 1
-        except Exception as exc:
+        else:
             failed += 1
-            errors.append(f"{transaction.id}: {exc}")
-            logger.exception("Historical sync failed for transaction %s: %s", transaction.id, exc)
+            errors.append(f"stall={stall_id}, date={target_date}")
 
     return {
         "ok": failed == 0,
@@ -314,117 +671,18 @@ def sync_historical_sales_to_google_sheets(
     }
 
 
-def _serialize_decimal(value):
-    if value is None:
-        return ""
-    if isinstance(value, Decimal):
-        return f"{value:.2f}"
-    return str(value)
-
-
-def _summarize_items(transaction: SalesTransaction) -> str:
-    parts = []
-    for line in transaction.items.all():
-        label = line.description or (line.item.name if line.item else "Item")
-        unit_price = _serialize_decimal(line.final_price_per_unit)
-        parts.append(f"{line.quantity} x {label} @ {unit_price}")
-    return " | ".join(parts)
-
-
-def _summarize_payments(transaction: SalesTransaction) -> str:
-    parts = []
-    for payment in transaction.payments.all().order_by("payment_date"):
-        paid_at = timezone.localtime(payment.payment_date).strftime("%Y-%m-%d %H:%M:%S")
-        parts.append(f"{payment.payment_type}:{_serialize_decimal(payment.amount)} ({paid_at})")
-    return " | ".join(parts)
-
-
-def _build_row(transaction: SalesTransaction):
-    effective_date = transaction.transaction_date or timezone.localdate(transaction.created_at)
-    created_local = timezone.localtime(transaction.created_at).strftime("%Y-%m-%d %H:%M:%S")
-    updated_local = timezone.localtime(transaction.updated_at).strftime("%Y-%m-%d %H:%M:%S")
-    client_name = transaction.client.full_name if transaction.client else ""
-    clerk_name = ""
-    if transaction.sales_clerk:
-        clerk_name = transaction.sales_clerk.get_full_name() or transaction.sales_clerk.username
-
-    return [
-        str(transaction.id),
-        str(transaction.system_receipt_number),
-        transaction.receipt_book or "",
-        transaction.manual_receipt_number or "",
-        transaction.document_type,
-        transaction.transaction_type,
-        str(effective_date),
-        created_local,
-        updated_local,
-        transaction.stall.name if transaction.stall else "",
-        transaction.stall.stall_type if transaction.stall else "",
-        client_name,
-        clerk_name,
-        transaction.payment_status,
-        _serialize_decimal(transaction.total_items),
-        _serialize_decimal(transaction.subtotal),
-        _serialize_decimal(transaction.order_discount),
-        _serialize_decimal(transaction.computed_total),
-        _serialize_decimal(transaction.total_paid),
-        _serialize_decimal(transaction.change_amount),
-        "TRUE" if transaction.voided else "FALSE",
-        "TRUE" if transaction.is_deleted else "FALSE",
-        _summarize_items(transaction),
-        _summarize_payments(transaction),
-    ]
-
-
-def _headers():
-    return [
-        "RECEIPT #",
-        "QTY",
-        "DESCRIPTION",
-        "AMOUNT",
-        "client_name",
-        "transaction_id",
-    ]
-
-
 def sync_sales_transaction_to_google_sheet(transaction_id: int) -> bool:
     sync_config = _get_google_sync_config()
-
-    if not sync_config["enabled"]:
+    if not sync_config.get("enabled"):
         return False
-
-    spreadsheet_id = sync_config["spreadsheet_id"]
-    if not spreadsheet_id:
-        logger.warning("Google Sheets sync skipped: spreadsheet ID is missing")
-        return False
-
-    sub_stall_type = sync_config["sub_stall_type"]
 
     try:
-        transaction = (
-            SalesTransaction.objects.select_related("stall", "client", "sales_clerk")
-            .prefetch_related("items__item", "payments")
-            .get(pk=transaction_id)
-        )
+        transaction = SalesTransaction.objects.select_related("stall").get(pk=transaction_id)
     except SalesTransaction.DoesNotExist:
         logger.warning("Google Sheets sync skipped: SalesTransaction %s does not exist", transaction_id)
         return False
 
-    if not transaction.stall or transaction.stall.stall_type != sub_stall_type:
+    if not transaction.stall:
         return False
 
-    service, sheet_api, spreadsheet_id, worksheet_name, init_error = _get_sheets_api(sync_config)
-    if sheet_api is None or service is None:
-        logger.warning("Google Sheets sync skipped: %s", init_error)
-        return False
-
-    try:
-        tab_name = _daily_tab_name(transaction)
-        _ensure_daily_sheet(service, sheet_api, spreadsheet_id, tab_name)
-        _ensure_headers(sheet_api, spreadsheet_id, tab_name)
-        _upsert_transaction_row(sheet_api, spreadsheet_id, tab_name, transaction)
-
-        return True
-    except Exception as exc:
-        logger.exception("Google Sheets sync failed for transaction %s: %s", transaction_id, exc)
-        return False
+    return sync_sales_day_to_google_sheet(transaction.stall_id, _effective_date(transaction))

@@ -5,7 +5,7 @@ import threading
 
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models.signals import post_save
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,23 @@ def _queue_google_sheets_sync(transaction_id: int) -> None:
         from sales.integrations.google_sheets import sync_sales_transaction_to_google_sheet
 
         sync_sales_transaction_to_google_sheet(transaction_id)
+
+    worker = threading.Thread(target=_run_sync, daemon=True)
+    worker.start()
+
+
+def _queue_google_sheets_day_sync(stall_id: int, target_date) -> None:
+    if not stall_id or target_date is None:
+        return
+
+    dedupe_key = f"google_sheets_sync_day:{stall_id}:{target_date.isoformat()}"
+    if not cache.add(dedupe_key, True, timeout=15):
+        return
+
+    def _run_sync():
+        from sales.integrations.google_sheets import sync_sales_day_to_google_sheet
+
+        sync_sales_day_to_google_sheet(stall_id, target_date)
 
     worker = threading.Thread(target=_run_sync, daemon=True)
     worker.start()
@@ -43,6 +60,14 @@ def push_sales_transaction_update(sender, instance, created, **kwargs):
     transaction.on_commit(lambda: _queue_google_sheets_sync(instance.id))
 
 
+@receiver(post_delete, sender="sales.SalesTransaction")
+def push_sales_transaction_delete(sender, instance, **kwargs):
+    if instance.stall_id and instance.transaction_date:
+        transaction.on_commit(
+            lambda: _queue_google_sheets_day_sync(instance.stall_id, instance.transaction_date)
+        )
+
+
 @receiver(post_save, sender="sales.SalesPayment")
 def push_sales_payment_update(sender, instance, created, **kwargs):
     from analytics.ws_utils import push_dashboard_event
@@ -51,3 +76,21 @@ def push_sales_payment_update(sender, instance, created, **kwargs):
         push_dashboard_event("sales_payment_created", {
             "transaction_id": instance.transaction_id,
         })
+
+    # Payment edits can change per-day payment-method display.
+    transaction.on_commit(lambda: _queue_google_sheets_sync(instance.transaction_id))
+
+
+@receiver(post_delete, sender="sales.SalesPayment")
+def push_sales_payment_delete(sender, instance, **kwargs):
+    transaction.on_commit(lambda: _queue_google_sheets_sync(instance.transaction_id))
+
+
+@receiver(post_save, sender="sales.SalesItem")
+def push_sales_item_update(sender, instance, **kwargs):
+    transaction.on_commit(lambda: _queue_google_sheets_sync(instance.transaction_id))
+
+
+@receiver(post_delete, sender="sales.SalesItem")
+def push_sales_item_delete(sender, instance, **kwargs):
+    transaction.on_commit(lambda: _queue_google_sheets_sync(instance.transaction_id))
