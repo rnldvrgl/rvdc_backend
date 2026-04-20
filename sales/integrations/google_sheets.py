@@ -2,7 +2,7 @@ import importlib
 import json
 import logging
 import time
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -143,6 +143,13 @@ def _scope_stall_types(sync_scope: str) -> list[str]:
     return ["sub"]
 
 
+def _inclusive_date_range(start_date: date, end_date: date):
+    current = start_date
+    while current <= end_date:
+        yield current
+        current += timedelta(days=1)
+
+
 def _a1_range(worksheet_name: str, a1_notation: str) -> str:
     escaped = (worksheet_name or "").replace("'", "''")
     return f"'{escaped}'!{a1_notation}"
@@ -264,6 +271,7 @@ def _get_day_metrics(stall: Stall, target_date: date) -> dict[str, Any]:
         "total_cheque_sales": Decimal("0"),
         "total_expenses": Decimal("0"),
         "cod_for_today": Decimal("0"),
+        "cod_for_next_day": Decimal("0"),
         "expected_remittance": Decimal("0"),
         "remitted_amount": Decimal("0"),
         "declared_amount": Decimal("0"),
@@ -293,6 +301,8 @@ def _get_day_metrics(stall: Stall, target_date: date) -> dict[str, Any]:
         metrics["remitted_amount"] = Decimal(str(remittance.remitted_amount or 0))
         metrics["declared_amount"] = Decimal(str(remittance.declared_amount or 0))
         metrics["balance"] = remittance.balance or Decimal("0")
+        if hasattr(remittance, "cash_breakdown"):
+            metrics["cod_for_next_day"] = Decimal(str(remittance.cash_breakdown.cod_amount or 0))
 
         if hasattr(remittance, "cash_breakdown"):
             b = remittance.cash_breakdown
@@ -390,21 +400,125 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
     sales_end_row = max(4, 4 + sales_rows_count)
     requests = [
         {
+            "unmergeCells": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": 2,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 7,
+                }
+            }
+        },
+        {
+            "unmergeCells": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": 1,
+                    "startColumnIndex": 9,
+                    "endColumnIndex": 13,
+                }
+            }
+        },
+        {
+            "unmergeCells": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 14,
+                    "endRowIndex": 15,
+                    "startColumnIndex": 9,
+                    "endColumnIndex": 13,
+                }
+            }
+        },
+        {
+            "unmergeCells": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 26,
+                    "endRowIndex": 27,
+                    "startColumnIndex": 9,
+                    "endColumnIndex": 12,
+                }
+            }
+        },
+        {
+            "mergeCells": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 7,
+                },
+                "mergeType": "MERGE_ALL",
+            }
+        },
+        {
+            "mergeCells": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 1,
+                    "endRowIndex": 2,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 7,
+                },
+                "mergeType": "MERGE_ALL",
+            }
+        },
+        {
+            "mergeCells": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": 1,
+                    "startColumnIndex": 9,
+                    "endColumnIndex": 13,
+                },
+                "mergeType": "MERGE_ALL",
+            }
+        },
+        {
+            "mergeCells": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 14,
+                    "endRowIndex": 15,
+                    "startColumnIndex": 9,
+                    "endColumnIndex": 13,
+                },
+                "mergeType": "MERGE_ALL",
+            }
+        },
+        {
+            "mergeCells": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 26,
+                    "endRowIndex": 27,
+                    "startColumnIndex": 9,
+                    "endColumnIndex": 12,
+                },
+                "mergeType": "MERGE_ALL",
+            }
+        },
+        {
             "repeatCell": {
                 "range": {
                     "sheetId": sheet_id,
                     "startRowIndex": 0,
                     "endRowIndex": 1,
                     "startColumnIndex": 0,
-                    "endColumnIndex": 12,
+                    "endColumnIndex": 7,
                 },
                 "cell": {
                     "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.10, "green": 0.16, "blue": 0.24},
+                        "backgroundColor": {"red": 0.09, "green": 0.20, "blue": 0.32},
                         "horizontalAlignment": "CENTER",
                         "textFormat": {
                             "foregroundColor": {"red": 1, "green": 1, "blue": 1},
-                            "fontSize": 14,
+                            "fontSize": 15,
                             "bold": True,
                         },
                     }
@@ -423,9 +537,78 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 },
                 "cell": {
                     "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.89, "green": 0.93, "blue": 0.98},
+                        "backgroundColor": {"red": 0.92, "green": 0.95, "blue": 0.98},
                         "textFormat": {"bold": True},
                         "horizontalAlignment": "CENTER",
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+            }
+        },
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 1,
+                    "endRowIndex": 2,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 7,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.94, "green": 0.97, "blue": 0.99},
+                        "horizontalAlignment": "CENTER",
+                        "textFormat": {
+                            "foregroundColor": {"red": 0.12, "green": 0.22, "blue": 0.33},
+                            "fontSize": 11,
+                            "bold": True,
+                        },
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+            }
+        },
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": 1,
+                    "startColumnIndex": 9,
+                    "endColumnIndex": 13,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.10, "green": 0.16, "blue": 0.24},
+                        "horizontalAlignment": "CENTER",
+                        "textFormat": {
+                            "foregroundColor": {"red": 1, "green": 1, "blue": 1},
+                            "fontSize": 13,
+                            "bold": True,
+                        },
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+            }
+        },
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 14,
+                    "endRowIndex": 15,
+                    "startColumnIndex": 9,
+                    "endColumnIndex": 13,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.11, "green": 0.24, "blue": 0.18},
+                        "horizontalAlignment": "CENTER",
+                        "textFormat": {
+                            "foregroundColor": {"red": 1, "green": 1, "blue": 1},
+                            "fontSize": 12,
+                            "bold": True,
+                        },
                     }
                 },
                 "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
@@ -460,11 +643,11 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "startRowIndex": 15,
                     "endRowIndex": 16,
                     "startColumnIndex": 8,
-                    "endColumnIndex": 11,
+                    "endColumnIndex": 13,
                 },
                 "cell": {
                     "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.93, "green": 0.95, "blue": 0.98},
+                        "backgroundColor": {"red": 0.92, "green": 0.95, "blue": 0.98},
                         "textFormat": {"bold": True},
                         "horizontalAlignment": "CENTER",
                     }
@@ -472,12 +655,185 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
             }
         },
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 26,
+                    "endRowIndex": 27,
+                    "startColumnIndex": 9,
+                    "endColumnIndex": 12,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.92, "green": 0.95, "blue": 0.98},
+                        "textFormat": {"bold": True},
+                        "horizontalAlignment": "CENTER",
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+            }
+        },
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 27,
+                    "endRowIndex": 28,
+                    "startColumnIndex": 9,
+                    "endColumnIndex": 12,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.89, "green": 0.93, "blue": 0.98},
+                        "textFormat": {"bold": True},
+                        "horizontalAlignment": "CENTER",
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+            }
+        },
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 1,
+                    "endRowIndex": 13,
+                    "startColumnIndex": 10,
+                    "endColumnIndex": 11,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "horizontalAlignment": "RIGHT",
+                    }
+                },
+                "fields": "userEnteredFormat(horizontalAlignment)",
+            }
+        },
+    ]
+
+    conditional_rules = [
+        {
+            "addConditionalFormatRule": {
+                "index": 0,
+                "rule": {
+                    "ranges": [
+                        {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 12,
+                            "endRowIndex": 13,
+                            "startColumnIndex": 10,
+                            "endColumnIndex": 11,
+                        }
+                    ],
+                    "booleanRule": {
+                        "condition": {"type": "NUMBER_GREATER", "values": [{"userEnteredValue": "0"}]},
+                        "format": {
+                            "backgroundColor": {"red": 0.82, "green": 0.94, "blue": 0.84},
+                            "textFormat": {"bold": True, "foregroundColor": {"red": 0.05, "green": 0.45, "blue": 0.12}},
+                        },
+                    },
+                },
+            }
+        },
+        {
+            "addConditionalFormatRule": {
+                "index": 0,
+                "rule": {
+                    "ranges": [
+                        {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 12,
+                            "endRowIndex": 13,
+                            "startColumnIndex": 10,
+                            "endColumnIndex": 11,
+                        }
+                    ],
+                    "booleanRule": {
+                        "condition": {"type": "NUMBER_LESS", "values": [{"userEnteredValue": "0"}]},
+                        "format": {
+                            "backgroundColor": {"red": 0.98, "green": 0.88, "blue": 0.88},
+                            "textFormat": {"bold": True, "foregroundColor": {"red": 0.72, "green": 0.12, "blue": 0.12}},
+                        },
+                    },
+                },
+            }
+        },
+        {
+            "addConditionalFormatRule": {
+                "index": 0,
+                "rule": {
+                    "ranges": [
+                        {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 12,
+                            "endRowIndex": 13,
+                            "startColumnIndex": 10,
+                            "endColumnIndex": 11,
+                        }
+                    ],
+                    "booleanRule": {
+                        "condition": {"type": "NUMBER_EQ", "values": [{"userEnteredValue": "0"}]},
+                        "format": {
+                            "backgroundColor": {"red": 0.95, "green": 0.95, "blue": 0.95},
+                            "textFormat": {"bold": True, "foregroundColor": {"red": 0.35, "green": 0.35, "blue": 0.35}},
+                        },
+                    },
+                },
+            }
+        },
+        {
+            "addConditionalFormatRule": {
+                "index": 0,
+                "rule": {
+                    "ranges": [
+                        {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 7,
+                            "endRowIndex": 8,
+                            "startColumnIndex": 10,
+                            "endColumnIndex": 11,
+                        }
+                    ],
+                    "booleanRule": {
+                        "condition": {"type": "NUMBER_GREATER", "values": [{"userEnteredValue": "0"}]},
+                        "format": {
+                            "backgroundColor": {"red": 0.93, "green": 0.97, "blue": 0.87},
+                            "textFormat": {"bold": True, "foregroundColor": {"red": 0.20, "green": 0.45, "blue": 0.08}},
+                        },
+                    },
+                },
+            }
+        },
+        {
+            "addConditionalFormatRule": {
+                "index": 0,
+                "rule": {
+                    "ranges": [
+                        {
+                            "sheetId": sheet_id,
+                            "startRowIndex": 8,
+                            "endRowIndex": 9,
+                            "startColumnIndex": 10,
+                            "endColumnIndex": 11,
+                        }
+                    ],
+                    "booleanRule": {
+                        "condition": {"type": "NUMBER_GREATER", "values": [{"userEnteredValue": "0"}]},
+                        "format": {
+                            "backgroundColor": {"red": 0.93, "green": 0.97, "blue": 0.87},
+                            "textFormat": {"bold": True, "foregroundColor": {"red": 0.20, "green": 0.45, "blue": 0.08}},
+                        },
+                    },
+                },
+            }
+        },
     ]
 
     _execute_with_backoff(
         service.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id,
-            body={"requests": requests},
+            body={"requests": requests + conditional_rules},
         ),
         operation=f"spreadsheets.batchUpdate style {tab_name}",
     )
@@ -505,7 +861,8 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
     expense_rows = _get_expense_rows(stall, target_date)
     metrics = _get_day_metrics(stall, target_date)
 
-    title = f"{stall.name.upper()} SALES"
+    stall_label = "MAIN STALL" if stall.stall_type == "main" else "SUB STALL"
+    title = f"{stall_label} SALES"
     subtitle = target_date.strftime("%A, %B %d, %Y")
 
     blocks: list[dict[str, Any]] = [
@@ -515,9 +872,9 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
             "a1": "A4:G4",
             "values": [["Quantity", "Description", "Amount", "Client Name", "Book #", "Receipt #", "Payment Method"]],
         },
-        {"a1": "I1:J1", "values": [["REMITTANCE SUMMARY", ""]]},
+        {"a1": "J1:M1", "values": [["REMITTANCES SUMMARY", "", "", ""]]},
         {
-            "a1": "I2:J11",
+            "a1": "J2:K13",
             "values": [
                 ["Total Cash Sales", _serialize_decimal(metrics["total_cash_sales"])],
                 ["Total GCash Sales", _serialize_decimal(metrics["total_gcash_sales"])],
@@ -526,16 +883,17 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
                 ["Total Cheque Sales", _serialize_decimal(metrics["total_cheque_sales"])],
                 ["Total Expenses", _serialize_decimal(metrics["total_expenses"])],
                 ["COD (Prev Day)", _serialize_decimal(metrics["cod_for_today"])],
+                ["COD (Next Day)", _serialize_decimal(metrics["cod_for_next_day"])],
                 ["Expected Remittance", _serialize_decimal(metrics["expected_remittance"])],
                 ["Remitted Amount", _serialize_decimal(metrics["remitted_amount"])],
                 ["Declared Amount", _serialize_decimal(metrics["declared_amount"])],
+                ["Over / Short", _serialize_decimal(metrics["balance"])],
             ],
         },
-        {"a1": "I12:J12", "values": [["Over / Short", _serialize_decimal(metrics["balance"])] ]},
-        {"a1": "I15:K15", "values": [["EXPENSES / GCASH", "", ""]]},
-        {"a1": "I16:K16", "values": [["Type", "Description", "Amount"]]},
-        {"a1": "A14:D14", "values": [["CASH / COINS BREAKDOWN", "", "", ""]]},
-        {"a1": "A15:D15", "values": [["Denomination", "Remitted", "Declared", "COD"]]},
+        {"a1": "J15:M15", "values": [["CASH / COINS BREAKDOWN", "", "", ""]]},
+        {"a1": "J16:M16", "values": [["Denomination", "Remitted", "Declared", "COD"]]},
+        {"a1": "J27:L27", "values": [["EXPENSES", "", ""]]},
+        {"a1": "J28:L28", "values": [["Type", "Description", "Amount"]]},
     ]
 
     if sales_rows:
@@ -544,17 +902,17 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
             "values": sales_rows,
         })
 
-    if expense_rows:
-        blocks.append({
-            "a1": f"I17:K{16 + len(expense_rows)}",
-            "values": expense_rows,
-        })
-
     denom_rows = metrics["denominations"] or [["1000", "0", "0", "0"], ["500", "0", "0", "0"], ["200", "0", "0", "0"], ["100", "0", "0", "0"], ["50", "0", "0", "0"], ["20", "0", "0", "0"], ["10", "0", "0", "0"], ["5", "0", "0", "0"], ["1", "0", "0", "0"]]
     blocks.append({
-        "a1": f"A16:D{15 + len(denom_rows)}",
+        "a1": f"J17:M{16 + len(denom_rows)}",
         "values": denom_rows,
     })
+
+    if expense_rows:
+        blocks.append({
+            "a1": f"J29:L{28 + len(expense_rows)}",
+            "values": expense_rows,
+        })
 
     _write_blocks(sheet_api, spreadsheet_id, tab_name, blocks)
 
@@ -667,9 +1025,9 @@ def sync_historical_sales_to_google_sheets(
         }
 
     stall_types = _scope_stall_types(sync_config.get("sync_scope", "sub"))
-    stalls = Stall.objects.filter(stall_type__in=stall_types, is_deleted=False)
+    stalls = list(Stall.objects.filter(stall_type__in=stall_types, is_deleted=False))
 
-    day_targets = set()
+    day_targets_by_stall: dict[int, set[date]] = {stall.id: set() for stall in stalls}
 
     sales_qs = (
         SalesTransaction.objects.select_related("stall")
@@ -683,7 +1041,7 @@ def sync_historical_sales_to_google_sheets(
         sales_qs = sales_qs.filter(effective_date__lte=end_date)
 
     for tx in sales_qs.order_by("id"):
-        day_targets.add((tx.stall_id, tx.effective_date))
+        day_targets_by_stall.setdefault(tx.stall_id, set()).add(tx.effective_date)
 
     remit_qs = RemittanceRecord.objects.filter(stall__in=stalls)
     if start_date:
@@ -692,7 +1050,7 @@ def sync_historical_sales_to_google_sheets(
         remit_qs = remit_qs.filter(remittance_date__lte=end_date)
     for rem in remit_qs:
         if rem.remittance_date:
-            day_targets.add((rem.stall_id, rem.remittance_date))
+            day_targets_by_stall.setdefault(rem.stall_id, set()).add(rem.remittance_date)
 
     exp_qs = Expense.objects.filter(stall__in=stalls, is_deleted=False)
     if start_date:
@@ -701,9 +1059,29 @@ def sync_historical_sales_to_google_sheets(
         exp_qs = exp_qs.filter(expense_date__lte=end_date)
     for expense in exp_qs:
         if expense.expense_date:
-            day_targets.add((expense.stall_id, expense.expense_date))
+            day_targets_by_stall.setdefault(expense.stall_id, set()).add(expense.expense_date)
 
-    ordered_targets = sorted(day_targets, key=lambda x: (x[0], x[1]))
+    if start_date and end_date:
+        for stall_id in day_targets_by_stall:
+            for target_date in _inclusive_date_range(start_date, end_date):
+                day_targets_by_stall[stall_id].add(target_date)
+    else:
+        for stall_id, dates in day_targets_by_stall.items():
+            if not dates:
+                continue
+            min_date = min(dates)
+            max_date = max(dates)
+            for target_date in _inclusive_date_range(min_date, max_date):
+                dates.add(target_date)
+
+    ordered_targets = sorted(
+        {
+            (stall_id, target_date)
+            for stall_id, dates in day_targets_by_stall.items()
+            for target_date in dates
+        },
+        key=lambda x: (x[0], x[1]),
+    )
     if isinstance(limit, int) and limit > 0:
         ordered_targets = ordered_targets[:limit]
 
