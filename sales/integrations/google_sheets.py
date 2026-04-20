@@ -74,22 +74,41 @@ def _get_sheets_api(sync_config: dict):
     spreadsheet_id = (sync_config.get("spreadsheet_id") or "").strip()
     worksheet_name = (sync_config.get("worksheet_name") or "Sub Stall Sales").strip()
     if not spreadsheet_id:
-        return None, "", worksheet_name, "Spreadsheet ID is missing"
+        return None, None, "", worksheet_name, "Spreadsheet ID is missing"
 
     credentials = _get_service_account_credentials(sync_config)
     if credentials is None:
-        return None, spreadsheet_id, worksheet_name, "Service account credentials are not configured or invalid"
+        return (
+            None,
+            None,
+            spreadsheet_id,
+            worksheet_name,
+            "Service account credentials are not configured or invalid",
+        )
 
     try:
         discovery_module = importlib.import_module("googleapiclient.discovery")
         build = discovery_module.build
         service = build("sheets", "v4", credentials=credentials, cache_discovery=False)
         sheet_api = service.spreadsheets().values()
-        return sheet_api, spreadsheet_id, worksheet_name, ""
+        return service, sheet_api, spreadsheet_id, worksheet_name, ""
     except Exception as exc:
         logger.exception("Failed to initialize Google Sheets API client: %s", exc)
-        return None, spreadsheet_id, worksheet_name, str(exc)
+        return None, None, spreadsheet_id, worksheet_name, str(exc)
 
+
+def _ensure_daily_sheet(service, sheet_api, spreadsheet_id: str, worksheet_name: str):
+    metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    existing_titles = {
+        sheet.get("properties", {}).get("title")
+        for sheet in metadata.get("sheets", [])
+    }
+
+    if worksheet_name not in existing_titles:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": worksheet_name}}}]},
+        ).execute()
 
 def _ensure_headers(sheet_api, spreadsheet_id: str, worksheet_name: str):
     header_range = _a1_range(worksheet_name, "1:1")
@@ -97,40 +116,80 @@ def _ensure_headers(sheet_api, spreadsheet_id: str, worksheet_name: str):
     if not header_resp.get("values"):
         sheet_api.update(
             spreadsheetId=spreadsheet_id,
-            range=_a1_range(worksheet_name, "A1:X1"),
+            range=_a1_range(worksheet_name, "A1:F1"),
             valueInputOption="RAW",
             body={"values": [_headers()]},
         ).execute()
 
 
+def _effective_date(transaction: SalesTransaction):
+    if transaction.transaction_date:
+        return transaction.transaction_date
+    return timezone.localtime(transaction.created_at).date()
+
+
+def _daily_tab_name(transaction: SalesTransaction) -> str:
+    return _effective_date(transaction).strftime("%B %d").upper()
+
+
+def _build_rows(transaction: SalesTransaction):
+    client_name = transaction.client.full_name if transaction.client else ""
+    receipt_number = transaction.manual_receipt_number or str(transaction.system_receipt_number)
+
+    rows = []
+    for line in transaction.items.all():
+        description = line.description or (line.item.name if line.item else "")
+        rows.append([
+            receipt_number,
+            _serialize_decimal(line.quantity),
+            description,
+            _serialize_decimal(line.line_total),
+            client_name,
+            str(transaction.id),
+        ])
+
+    if not rows:
+        rows.append([
+            receipt_number,
+            "",
+            transaction.note or "(No line items)",
+            _serialize_decimal(transaction.computed_total),
+            client_name,
+            str(transaction.id),
+        ])
+
+    return rows
+
+
 def _upsert_transaction_row(sheet_api, spreadsheet_id: str, worksheet_name: str, transaction: SalesTransaction):
+    rows_to_write = _build_rows(transaction)
+
     id_column = sheet_api.get(
         spreadsheetId=spreadsheet_id,
-        range=_a1_range(worksheet_name, "A2:A"),
+        range=_a1_range(worksheet_name, "F2:F"),
     ).execute().get("values", [])
 
-    target_row = None
+    existing_rows = []
     for idx, row in enumerate(id_column, start=2):
         if row and row[0] == str(transaction.id):
-            target_row = idx
-            break
+            existing_rows.append(idx)
 
-    row_values = _build_row(transaction)
-    if target_row:
+    # Clear old rows for this transaction to avoid duplicates on updates.
+    for row_idx in existing_rows:
         sheet_api.update(
             spreadsheetId=spreadsheet_id,
-            range=_a1_range(worksheet_name, f"A{target_row}:X{target_row}"),
-            valueInputOption="USER_ENTERED",
-            body={"values": [row_values]},
+            range=_a1_range(worksheet_name, f"A{row_idx}:F{row_idx}"),
+            valueInputOption="RAW",
+            body={"values": [["", "", "", "", "", ""]]},
         ).execute()
-    else:
-        sheet_api.append(
-            spreadsheetId=spreadsheet_id,
-            range=_a1_range(worksheet_name, "A:X"),
-            valueInputOption="USER_ENTERED",
-            insertDataOption="INSERT_ROWS",
-            body={"values": [row_values]},
-        ).execute()
+
+    sheet_api.append(
+        spreadsheetId=spreadsheet_id,
+        range=_a1_range(worksheet_name, "A:F"),
+        valueInputOption="USER_ENTERED",
+        insertDataOption="INSERT_ROWS",
+        body={"values": rows_to_write},
+    ).execute()
 
 
 def _a1_range(worksheet_name: str, a1_notation: str) -> str:
@@ -163,19 +222,18 @@ def get_google_sheets_sync_status() -> dict[str, Any]:
             status["message"] = f"Service account JSON is invalid: {exc}"
             return status
 
-    sheet_api, spreadsheet_id, worksheet_name, init_error = _get_sheets_api(sync_config)
-    if sheet_api is None:
+    service, sheet_api, spreadsheet_id, worksheet_name, init_error = _get_sheets_api(sync_config)
+    if sheet_api is None or service is None:
         status["message"] = init_error or "Unable to initialize Google Sheets API"
         return status
 
     try:
-        # Validate spreadsheet + worksheet access.
-        sheet_api.get(
-            spreadsheetId=spreadsheet_id,
-            range=_a1_range(worksheet_name, "A1:A1"),
-        ).execute()
+        # Validate spreadsheet access and auto-prepare today's tab.
+        today_tab = timezone.localdate().strftime("%B %d").upper()
+        _ensure_daily_sheet(service, sheet_api, spreadsheet_id, today_tab)
+        _ensure_headers(sheet_api, spreadsheet_id, today_tab)
         status["connection_ok"] = True
-        status["message"] = "Connected successfully"
+        status["message"] = f"Connected successfully (daily tab: {today_tab})"
         return status
     except Exception as exc:
         logger.exception("Google Sheets status check failed: %s", exc)
@@ -199,8 +257,8 @@ def sync_historical_sales_to_google_sheets(
             "errors": [],
         }
 
-    sheet_api, spreadsheet_id, worksheet_name, init_error = _get_sheets_api(sync_config)
-    if sheet_api is None:
+    service, sheet_api, spreadsheet_id, worksheet_name, init_error = _get_sheets_api(sync_config)
+    if sheet_api is None or service is None:
         return {
             "ok": False,
             "message": init_error or "Unable to initialize Google Sheets API",
@@ -229,22 +287,17 @@ def sync_historical_sales_to_google_sheets(
     failed = 0
     errors: list[str] = []
 
-    try:
-        _ensure_headers(sheet_api, spreadsheet_id, worksheet_name)
-    except Exception as exc:
-        logger.exception("Failed ensuring sheet headers: %s", exc)
-        return {
-            "ok": False,
-            "message": str(exc),
-            "synced": 0,
-            "failed": 0,
-            "considered": queryset.count(),
-            "errors": [],
-        }
+    ensured_tabs: set[str] = set()
 
     for transaction in queryset:
         try:
-            _upsert_transaction_row(sheet_api, spreadsheet_id, worksheet_name, transaction)
+            tab_name = _daily_tab_name(transaction)
+            if tab_name not in ensured_tabs:
+                _ensure_daily_sheet(service, sheet_api, spreadsheet_id, tab_name)
+                _ensure_headers(sheet_api, spreadsheet_id, tab_name)
+                ensured_tabs.add(tab_name)
+
+            _upsert_transaction_row(sheet_api, spreadsheet_id, tab_name, transaction)
             synced += 1
         except Exception as exc:
             failed += 1
@@ -325,30 +378,12 @@ def _build_row(transaction: SalesTransaction):
 
 def _headers():
     return [
-        "transaction_id",
-        "system_receipt_number",
-        "receipt_book",
-        "manual_receipt_number",
-        "document_type",
-        "transaction_type",
-        "transaction_date",
-        "created_at",
-        "updated_at",
-        "stall_name",
-        "stall_type",
+        "RECEIPT #",
+        "QTY",
+        "DESCRIPTION",
+        "AMOUNT",
         "client_name",
-        "sales_clerk",
-        "payment_status",
-        "total_items",
-        "subtotal",
-        "order_discount",
-        "computed_total",
-        "total_paid",
-        "change_amount",
-        "voided",
-        "is_deleted",
-        "items_summary",
-        "payments_summary",
+        "transaction_id",
     ]
 
 
@@ -378,14 +413,16 @@ def sync_sales_transaction_to_google_sheet(transaction_id: int) -> bool:
     if not transaction.stall or transaction.stall.stall_type != sub_stall_type:
         return False
 
-    sheet_api, spreadsheet_id, worksheet_name, init_error = _get_sheets_api(sync_config)
-    if sheet_api is None:
+    service, sheet_api, spreadsheet_id, worksheet_name, init_error = _get_sheets_api(sync_config)
+    if sheet_api is None or service is None:
         logger.warning("Google Sheets sync skipped: %s", init_error)
         return False
 
     try:
-        _ensure_headers(sheet_api, spreadsheet_id, worksheet_name)
-        _upsert_transaction_row(sheet_api, spreadsheet_id, worksheet_name, transaction)
+        tab_name = _daily_tab_name(transaction)
+        _ensure_daily_sheet(service, sheet_api, spreadsheet_id, tab_name)
+        _ensure_headers(sheet_api, spreadsheet_id, tab_name)
+        _upsert_transaction_row(sheet_api, spreadsheet_id, tab_name, transaction)
 
         return True
     except Exception as exc:

@@ -213,7 +213,7 @@ class SystemSettings(models.Model):
         max_length=10,
         default="sub",
         blank=True,
-        help_text="Only transactions from this stall_type are synced (e.g. sub)"
+        help_text="Only transactions from this stall_type are synced (sub for parts, main for services)"
     )
     google_service_account_json = models.TextField(
         blank=True,
