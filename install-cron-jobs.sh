@@ -520,7 +520,11 @@ echo -e "${YELLOW}Installing cron jobs...${NC}"
 # Get existing crontab (if any)
 TEMP_CRON=$(mktemp)
 if crontab -l > /dev/null 2>&1; then
-    crontab -l | sed '/^# RVDC Attendance & Payroll Management Cron Jobs/,/^# END RVDC Cron Jobs/d' > "$TEMP_CRON"
+    crontab -l \
+        | sed '/^# RVDC Attendance & Payroll Management Cron Jobs/,/^# END RVDC Cron Jobs/d' \
+        | grep -v '/opt/cron-scripts/' \
+        | grep -v '^CRON_TZ=Asia/Manila$' \
+        | grep -v '^TZ=Asia/Manila$' > "$TEMP_CRON"
 fi
 
 # Add RVDC cron jobs
@@ -583,6 +587,8 @@ CRON_TZ=Asia/Manila
 
 # 1st of every month at 3:00 AM Philippines - Delete old log files (90+ days)
 0 3 1 * * find /var/log/cron-*.log -type f -mtime +90 -delete
+
+# END RVDC Cron Jobs
 
 CRONEND
 
