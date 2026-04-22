@@ -2,7 +2,7 @@ import importlib
 import json
 import logging
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -157,6 +157,48 @@ def _a1_range(worksheet_name: str, a1_notation: str) -> str:
 
 def _daily_tab_name(target_date: date) -> str:
     return target_date.strftime("%B %d").upper()
+
+
+def _parse_daily_tab_date(title: str, today: date) -> date | None:
+    """Parse tab titles like 'APRIL 22' into a comparable date near today."""
+    raw = (title or "").strip()
+    if not raw:
+        return None
+
+    try:
+        parsed = datetime.strptime(raw.title(), "%B %d").date().replace(year=today.year)
+    except Exception:
+        return None
+
+    # Keep parsed date aligned around today across year boundaries.
+    if (parsed - today).days > 180:
+        parsed = parsed.replace(year=today.year - 1)
+    elif (today - parsed).days > 180:
+        parsed = parsed.replace(year=today.year + 1)
+    return parsed
+
+
+def _latest_daily_tab_gid(sheets: list[dict[str, Any]]) -> int | None:
+    today = timezone.localdate()
+    latest_gid: int | None = None
+    latest_date: date | None = None
+
+    for sheet in sheets or []:
+        props = sheet.get("properties", {})
+        title = props.get("title", "")
+        sheet_id = props.get("sheetId")
+        if sheet_id is None:
+            continue
+
+        parsed = _parse_daily_tab_date(title, today)
+        if parsed is None:
+            continue
+
+        if latest_date is None or parsed > latest_date:
+            latest_date = parsed
+            latest_gid = int(sheet_id)
+
+    return latest_gid
 
 
 def _effective_date(transaction: SalesTransaction) -> date:
@@ -631,7 +673,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "updateSheetProperties": {
                 "properties": {
                     "sheetId": sheet_id,
-                    "gridProperties": {"frozenRowCount": 4},
+                    "gridProperties": {"frozenRowCount": 0},
                 },
                 "fields": "gridProperties.frozenRowCount",
             }
@@ -936,6 +978,8 @@ def get_google_sheets_sync_status() -> dict[str, Any]:
         "sync_scope": sync_config.get("sync_scope", "sub"),
         "credential_configured": bool(raw_json or json_path),
         "connection_ok": False,
+        "sub_latest_gid": None,
+        "main_latest_gid": None,
         "message": "",
     }
 
@@ -956,13 +1000,18 @@ def get_google_sheets_sync_status() -> dict[str, Any]:
 
         try:
             # Read-only connection check to avoid consuming write quota during status checks.
-            _execute_with_backoff(
+            sheet_meta = _execute_with_backoff(
                 service.spreadsheets().get(
                     spreadsheetId=spreadsheet_id,
-                    fields="spreadsheetId,properties.title",
+                    fields="spreadsheetId,properties.title,sheets(properties(sheetId,title,index))",
                 ),
                 operation=f"status check {stall_type}",
             )
+            latest_gid = _latest_daily_tab_gid(sheet_meta.get("sheets", []))
+            if stall_type == "sub":
+                status["sub_latest_gid"] = latest_gid
+            elif stall_type == "main":
+                status["main_latest_gid"] = latest_gid
             checks.append(f"{stall_type}: ok")
         except Exception as exc:
             logger.exception("Google Sheets status check failed for %s: %s", stall_type, exc)
