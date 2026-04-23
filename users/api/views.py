@@ -1,4 +1,6 @@
 import logging
+import threading
+from uuid import uuid4
 from rest_framework import generics, parsers, permissions, filters, viewsets, status
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
@@ -10,9 +12,100 @@ from users.models import CustomUser, SystemSettings, CashAdvanceMovement
 from users.api.serializers import EmployeesSerializer, UserSerializer, SystemSettingsSerializer, CashAdvanceMovementSerializer
 from django_filters.rest_framework import DjangoFilterBackend
 from django.conf import settings as django_settings
+from django.core.cache import cache
 from django.core.files.storage import default_storage
 
 logger = logging.getLogger(__name__)
+
+GOOGLE_SHEETS_SYNC_JOB_TIMEOUT_SECONDS = 6 * 60 * 60
+GOOGLE_SHEETS_SYNC_ACTIVE_JOB_KEY = "google_sheets_sync:active_job"
+
+
+def _google_sheets_sync_job_key(job_id: str) -> str:
+    return f"google_sheets_sync:job:{job_id}"
+
+
+def _set_google_sheets_sync_job(job_id: str, payload: dict) -> None:
+    cache.set(
+        _google_sheets_sync_job_key(job_id),
+        payload,
+        timeout=GOOGLE_SHEETS_SYNC_JOB_TIMEOUT_SECONDS,
+    )
+
+
+def _get_google_sheets_sync_job(job_id: str):
+    return cache.get(_google_sheets_sync_job_key(job_id))
+
+
+def _run_google_sheets_sync_historical_job(
+    *,
+    job_id: str,
+    limit: int | None,
+    start_date,
+    end_date,
+) -> None:
+    started_at = timezone.now().isoformat()
+    _set_google_sheets_sync_job(
+        job_id,
+        {
+            "job_id": job_id,
+            "state": "running",
+            "started_at": started_at,
+            "finished_at": None,
+            "ok": None,
+            "message": "Historical sync is running",
+            "synced": 0,
+            "failed": 0,
+            "considered": 0,
+            "errors": [],
+        },
+    )
+
+    try:
+        from sales.integrations.google_sheets import sync_historical_sales_to_google_sheets
+
+        result = sync_historical_sales_to_google_sheets(
+            limit=limit,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        _set_google_sheets_sync_job(
+            job_id,
+            {
+                "job_id": job_id,
+                "state": "completed",
+                "started_at": started_at,
+                "finished_at": timezone.now().isoformat(),
+                "ok": bool(result.get("ok", False)),
+                "message": result.get("message", "Historical sync completed"),
+                "synced": int(result.get("synced", 0) or 0),
+                "failed": int(result.get("failed", 0) or 0),
+                "considered": int(result.get("considered", 0) or 0),
+                "errors": list(result.get("errors", []) or [])[:20],
+            },
+        )
+    except Exception as exc:
+        logger.exception("Historical Google Sheets sync job failed")
+        _set_google_sheets_sync_job(
+            job_id,
+            {
+                "job_id": job_id,
+                "state": "failed",
+                "started_at": started_at,
+                "finished_at": timezone.now().isoformat(),
+                "ok": False,
+                "message": "Historical sync failed",
+                "synced": 0,
+                "failed": 0,
+                "considered": 0,
+                "errors": [str(exc)],
+            },
+        )
+    finally:
+        active_job_id = cache.get(GOOGLE_SHEETS_SYNC_ACTIVE_JOB_KEY)
+        if active_job_id == job_id:
+            cache.delete(GOOGLE_SHEETS_SYNC_ACTIVE_JOB_KEY)
 
 
 # List all users (admin only)
@@ -281,6 +374,26 @@ class GoogleSheetsSyncView(APIView):
         if denied:
             return denied
 
+        job_id = (request.query_params.get("job_id") or "").strip()
+        if job_id:
+            job_payload = _get_google_sheets_sync_job(job_id)
+            if not job_payload:
+                return Response(
+                    {"detail": "Sync job not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            return Response(job_payload, status=status.HTTP_200_OK)
+
+        if request.query_params.get("current_job") == "1":
+            active_job_id = cache.get(GOOGLE_SHEETS_SYNC_ACTIVE_JOB_KEY)
+            if not active_job_id:
+                return Response({"job": None}, status=status.HTTP_200_OK)
+            job_payload = _get_google_sheets_sync_job(active_job_id)
+            if not job_payload:
+                cache.delete(GOOGLE_SHEETS_SYNC_ACTIVE_JOB_KEY)
+                return Response({"job": None}, status=status.HTTP_200_OK)
+            return Response({"job": job_payload}, status=status.HTTP_200_OK)
+
         from sales.integrations.google_sheets import get_google_sheets_sync_status
 
         return Response(get_google_sheets_sync_status())
@@ -298,7 +411,6 @@ class GoogleSheetsSyncView(APIView):
             return Response(get_google_sheets_sync_status())
 
         if action == "sync_historical":
-            from sales.integrations.google_sheets import sync_historical_sales_to_google_sheets
             from django.utils.dateparse import parse_date
 
             raw_limit = request.data.get("limit")
@@ -343,28 +455,61 @@ class GoogleSheetsSyncView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            try:
-                result = sync_historical_sales_to_google_sheets(
-                    limit=limit,
-                    start_date=start_date,
-                    end_date=end_date,
-                )
-                return Response(result, status=status.HTTP_200_OK)
-            except Exception as e:
-                import traceback
-                error_trace = traceback.format_exc()
-                logger.error("Historical sync failed: %s", error_trace)
-                return Response(
-                    {
-                        "ok": False,
-                        "message": "Historical sync failed",
-                        "detail": str(e),
-                        "synced": 0,
-                        "failed": 0,
-                        "errors": [str(e)],
-                    },
-                    status=status.HTTP_200_OK,
-                )
+            active_job_id = cache.get(GOOGLE_SHEETS_SYNC_ACTIVE_JOB_KEY)
+            if active_job_id:
+                active_job_payload = _get_google_sheets_sync_job(active_job_id)
+                if active_job_payload and active_job_payload.get("state") in {"queued", "running"}:
+                    return Response(
+                        {
+                            "accepted": True,
+                            "message": "A historical sync is already in progress.",
+                            "job_id": active_job_id,
+                        },
+                        status=status.HTTP_202_ACCEPTED,
+                    )
+
+            job_id = str(uuid4())
+            queued_at = timezone.now().isoformat()
+            _set_google_sheets_sync_job(
+                job_id,
+                {
+                    "job_id": job_id,
+                    "state": "queued",
+                    "started_at": queued_at,
+                    "finished_at": None,
+                    "ok": None,
+                    "message": "Historical sync has been queued",
+                    "synced": 0,
+                    "failed": 0,
+                    "considered": 0,
+                    "errors": [],
+                },
+            )
+            cache.set(
+                GOOGLE_SHEETS_SYNC_ACTIVE_JOB_KEY,
+                job_id,
+                timeout=GOOGLE_SHEETS_SYNC_JOB_TIMEOUT_SECONDS,
+            )
+
+            threading.Thread(
+                target=_run_google_sheets_sync_historical_job,
+                kwargs={
+                    "job_id": job_id,
+                    "limit": limit,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                },
+                daemon=True,
+            ).start()
+
+            return Response(
+                {
+                    "accepted": True,
+                    "message": "Historical sync started",
+                    "job_id": job_id,
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
 
         return Response(
             {"detail": "Unsupported action. Use 'test_connection' or 'sync_historical'."},
