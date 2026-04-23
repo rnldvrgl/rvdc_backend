@@ -1,10 +1,12 @@
 from decimal import Decimal
 from django.db import models
 from django.utils.timezone import localdate
+from django.db.models import Sum
 from datetime import timedelta
 
 from users.models import CustomUser
 from inventory.models import Stall
+from expenses.models import Expense
 
 
 class RemittanceRecord(models.Model):
@@ -73,8 +75,63 @@ class RemittanceRecord(models.Model):
 
     @property
     def expected_remittance(self):
-        collected_cash = self.total_sales_cash or Decimal("0")
-        expenses = self.total_expenses or Decimal("0")
+        """
+        Compute expected remittance.
+        For non-remitted remittances: compute live from current sales/expenses.
+        For remitted remittances: use stored snapshot.
+        """
+        # For already-remitted records, use stored values (snapshots at remittance time)
+        if self.is_remitted:
+            collected_cash = self.total_sales_cash or Decimal("0")
+            expenses = self.total_expenses or Decimal("0")
+        else:
+            # For pending remittances, compute live to ensure freshness for exports
+            from sales.models import SalesPayment, PaymentStatus, SalesTransaction
+            
+            target_date = self.remittance_date or (self.created_at.date() if self.created_at else None)
+            if not target_date:
+                return Decimal("0")
+            
+            # Compute live cash sales
+            total_payments = SalesPayment.objects.filter(
+                transaction__stall=self.stall,
+                payment_date__date=target_date,
+                transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                transaction__voided=False,
+                transaction__is_deleted=False,
+                payment_type="cash",
+            ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+            
+            total_change = SalesTransaction.objects.filter(
+                stall=self.stall,
+                payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                voided=False,
+                is_deleted=False,
+                payments__payment_date__date=target_date,
+            ).distinct().aggregate(
+                total=Sum("change_amount")
+            )["total"] or Decimal("0")
+            
+            collected_cash = total_payments - total_change
+            
+            # Compute live expenses
+            normal_expenses = (
+                Expense.objects.filter(
+                    stall=self.stall, expense_date=target_date, is_deleted=False, is_reimbursement=False
+                ).aggregate(
+                    total=Sum("paid_amount")
+                )["total"]
+                or Decimal("0")
+            )
+            reimbursements = (
+                Expense.objects.filter(
+                    stall=self.stall, expense_date=target_date, is_deleted=False, is_reimbursement=True
+                ).aggregate(
+                    total=Sum("paid_amount")
+                )["total"]
+                or Decimal("0")
+            )
+            expenses = normal_expenses - reimbursements
 
         # Use remittance_date (business date) to look up the previous COD
         target = self.remittance_date or (self.created_at.date() if self.created_at else None)

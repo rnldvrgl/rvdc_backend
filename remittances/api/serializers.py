@@ -40,9 +40,14 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
     remitted_by = serializers.SerializerMethodField()
     expected_remittance = serializers.SerializerMethodField()
     balance = serializers.SerializerMethodField()
-    total_collected = serializers.DecimalField(
-        read_only=True, max_digits=10, decimal_places=2
-    )
+    # Live-computed sales totals (always fresh, never cached)
+    total_sales_cash = serializers.SerializerMethodField()
+    total_sales_gcash = serializers.SerializerMethodField()
+    total_sales_credit = serializers.SerializerMethodField()
+    total_sales_debit = serializers.SerializerMethodField()
+    total_sales_cheque = serializers.SerializerMethodField()
+    total_expenses = serializers.SerializerMethodField()
+    total_collected = serializers.SerializerMethodField()
     is_remitted = serializers.BooleanField(read_only=True)
     cod_for_next_day = serializers.SerializerMethodField()
     cod_for_today = serializers.SerializerMethodField()
@@ -140,10 +145,29 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         return None
 
     def get_expected_remittance(self, obj):
-        return obj.expected_remittance or Decimal("0.00")
+        """Compute expected remittance from live-computed cash and expenses."""
+        collected_cash = self._get_sales_total(obj, "cash") or Decimal("0")
+        expenses = self.get_total_expenses(obj) or Decimal("0")
+
+        # Use remittance_date (business date) to look up the previous COD
+        target = obj.remittance_date or (obj.created_at.date() if obj.created_at else None)
+        if target:
+            cod_info = RemittanceRecord.get_cod_for_date(obj.stall, target)
+        else:
+            cod_info = RemittanceRecord.get_cod_for_today(obj.stall)
+        cod_yesterday = Decimal(cod_info.get("cod_amount", 0) or 0)
+
+        expected = max(Decimal("0"), collected_cash + cod_yesterday - expenses)
+        return expected or Decimal("0.00")
 
     def get_balance(self, obj):
-        return obj.balance or Decimal("0.00")
+        """Live-computed balance = declared amount - expected remittance."""
+        expected = self.get_expected_remittance(obj)
+        try:
+            declared = Decimal(obj.cash_breakdown.total_cash_declared)
+        except:
+            declared = Decimal("0")
+        return (declared - expected) or Decimal("0.00")
 
     def get_cod_for_next_day(self, obj):
         return getattr(obj.cash_breakdown, "cod_amount", 0)
@@ -153,6 +177,93 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         if obj.created_at:
             return RemittanceRecord.get_cod_for_date(obj.stall, obj.created_at.date())
         return RemittanceRecord.get_cod_for_today(obj.stall)
+
+    def _get_sales_total(self, obj, payment_type: str):
+        """Compute live sales total for a specific payment type and date."""
+        target_date = obj.remittance_date or (obj.created_at.date() if obj.created_at else None)
+        if not target_date:
+            return Decimal("0.00")
+        
+        # Sum all payments of this type for paid/partial transactions on this date
+        total_payments = SalesPayment.objects.filter(
+            transaction__stall=obj.stall,
+            payment_date__date=target_date,
+            transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+            transaction__voided=False,
+            transaction__is_deleted=False,
+            payment_type=payment_type,
+        ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+
+        # Change is always given in cash, so only subtract from cash totals.
+        # Subtract once per transaction (not per payment) to avoid double-counting.
+        if payment_type == "cash":
+            from sales.models import SalesTransaction
+            total_change = SalesTransaction.objects.filter(
+                stall=obj.stall,
+                payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                voided=False,
+                is_deleted=False,
+                payments__payment_date__date=target_date,
+            ).distinct().aggregate(
+                total=Sum("change_amount")
+            )["total"] or Decimal("0")
+            return total_payments - total_change
+
+        return total_payments
+
+    def get_total_sales_cash(self, obj):
+        """Live-computed cash sales total."""
+        return self._get_sales_total(obj, "cash") or Decimal("0.00")
+
+    def get_total_sales_gcash(self, obj):
+        """Live-computed GCash sales total."""
+        return self._get_sales_total(obj, "gcash") or Decimal("0.00")
+
+    def get_total_sales_credit(self, obj):
+        """Live-computed credit sales total."""
+        return self._get_sales_total(obj, "credit") or Decimal("0.00")
+
+    def get_total_sales_debit(self, obj):
+        """Live-computed debit sales total."""
+        return self._get_sales_total(obj, "debit") or Decimal("0.00")
+
+    def get_total_sales_cheque(self, obj):
+        """Live-computed cheque sales total."""
+        return self._get_sales_total(obj, "cheque") or Decimal("0.00")
+
+    def get_total_expenses(self, obj):
+        """Live-computed total expenses for the remittance date."""
+        target_date = obj.remittance_date or (obj.created_at.date() if obj.created_at else None)
+        if not target_date:
+            return Decimal("0.00")
+        
+        normal_expenses = (
+            Expense.objects.filter(
+                stall=obj.stall, expense_date=target_date, is_deleted=False, is_reimbursement=False
+            ).aggregate(
+                total=Sum("paid_amount")
+            )["total"]
+            or Decimal("0")
+        )
+        reimbursements = (
+            Expense.objects.filter(
+                stall=obj.stall, expense_date=target_date, is_deleted=False, is_reimbursement=True
+            ).aggregate(
+                total=Sum("paid_amount")
+            )["total"]
+            or Decimal("0")
+        )
+        return max(Decimal("0"), normal_expenses - reimbursements)
+
+    def get_total_collected(self, obj):
+        """Live-computed total collected across all payment methods."""
+        return (
+            self._get_sales_total(obj, "cash")
+            + self._get_sales_total(obj, "gcash")
+            + self._get_sales_total(obj, "credit")
+            + self._get_sales_total(obj, "debit")
+            + self._get_sales_total(obj, "cheque")
+        ) or Decimal("0.00")
 
     @staticmethod
     def is_empty_breakdown(data: dict) -> bool:
