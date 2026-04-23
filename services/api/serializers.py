@@ -2175,7 +2175,7 @@ class ServiceCompletionSerializer(serializers.Serializer):
 
     def validate(self, data):
         """Validate service can be completed."""
-        from utils.enums import ServiceStatus
+        from utils.enums import ServiceStatus, ServiceType
 
         service = self.context.get("service")
         if not service:
@@ -2220,6 +2220,24 @@ class ServiceCompletionSerializer(serializers.Serializer):
                 "Cannot complete service: service-level items have not been confirmed. "
                 "Please review and confirm the service items before completing."
             )
+
+        # For installation services, ensure parts/items are properly allocated
+        if service.service_type == ServiceType.INSTALLATION:
+            # Check if any appliance has items added
+            has_appliance_items = service.appliances.filter(
+                items_used__isnull=False
+            ).distinct().exists()
+
+            # Check if there are service-level items
+            has_service_items = service.service_items.exists()
+
+            # If no items at all and there are installation units, this is likely an issue
+            # (installation services should have either parts, service items, or at minimum parts allocation)
+            if not has_appliance_items and not has_service_items and service.installation_units.exists():
+                raise ValidationError(
+                    "Cannot complete installation service without parts allocation. "
+                    "Please ensure all aircon units have been properly configured with parts or cost allocation."
+                )
 
         return data
 

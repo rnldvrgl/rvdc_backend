@@ -242,7 +242,8 @@ class RevenueCalculator:
             if appliance.unit_price and appliance.serial_number not in installation_unit_serials:
                 main_revenue += appliance.unit_price
 
-        # Add aircon unit prices for installation services (Main stall revenue)
+        # Add aircon unit prices for installation services
+        # Split: cost_price → sub stall, (selling_price - cost_price) → main stall
         if service.service_type == 'installation':
             for unit in service.installation_units.all():
                 if unit.model:
@@ -251,10 +252,20 @@ class RevenueCalculator:
                         serial_number=unit.serial_number
                     ).first()
                     if matching_appliance and matching_appliance.unit_price:
-                        main_revenue += matching_appliance.unit_price
+                        # Custom override price: split as margin (selling - cost) to main, cost to sub
+                        custom_price = matching_appliance.unit_price
+                        cost_portion = unit.model.cost_price
+                        margin_portion = max(custom_price - cost_portion, Decimal('0.00'))
+                        sub_revenue += cost_portion
+                        main_revenue += margin_portion
                     else:
                         # Use selling_price which is promo_price if set, else retail
-                        main_revenue += unit.model.selling_price
+                        selling_price = unit.model.selling_price
+                        cost_price = unit.model.cost_price
+                        margin = max(selling_price - cost_price, Decimal('0.00'))
+                        # Sub stall gets cost, main stall gets margin
+                        sub_revenue += cost_price
+                        main_revenue += margin
 
         # Calculate parts revenue (Sub stall revenue) with discounts
         for appliance in service.appliances.all():
@@ -470,6 +481,18 @@ class ServiceCompletionHandler:
                                 final_price_per_unit=part['unit_price'],
                             )
 
+                        # Add aircon unit cost prices for installation services (Sub stall revenue)
+                        if service.service_type == 'installation':
+                            for unit in service.installation_units.all():
+                                if unit.model and unit.model.cost_price > 0:
+                                    SalesItem.objects.create(
+                                        transaction=sub_sales,
+                                        item=None,
+                                        description=f"Aircon Unit Cost: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                                        quantity=1,
+                                        final_price_per_unit=unit.model.cost_price,
+                                    )
+
                         # Link sub transaction to service
                         service.related_sub_transaction = sub_sales
                         service.save(update_fields=['related_sub_transaction'])
@@ -586,7 +609,8 @@ class ServiceCompletionHandler:
                                 final_price_per_unit=labor_charge,
                             )
 
-                    # Add aircon unit prices for installation services (Main stall revenue)
+                    # Add aircon unit prices for installation services
+                    # Split: cost_price → sub stall, (selling_price - cost_price) → main stall
                     if service.service_type == 'installation':
                         for unit in service.installation_units.all():
                             if unit.model:
@@ -595,9 +619,15 @@ class ServiceCompletionHandler:
                                     serial_number=unit.serial_number
                                 ).first()
                                 if matching_appliance and matching_appliance.unit_price:
-                                    unit_final_price = matching_appliance.unit_price
+                                    custom_price = matching_appliance.unit_price
+                                    cost_portion = unit.model.cost_price
+                                    margin_portion = max(custom_price - cost_portion, Decimal('0.00'))
+                                    unit_final_price = margin_portion
                                 else:
-                                    unit_final_price = unit.model.selling_price
+                                    selling_price = unit.model.selling_price
+                                    cost_price = unit.model.cost_price
+                                    unit_final_price = max(selling_price - cost_price, Decimal('0.00'))
+
                                 if unit_final_price > 0:
                                     SalesItem.objects.create(
                                         transaction=main_receipt,
@@ -1266,6 +1296,10 @@ class ServicePaymentManager:
         charged parts on the service.  Call this whenever ApplianceItemUsed or
         ServiceItemUsed records are added/changed/deleted on a *completed*
         service so the sub TX total stays in step with service.sub_stall_revenue.
+
+        Includes:
+        - All parts (appliance and service level)
+        - Aircon unit cost prices for installation services
         """
         from sales.models import SalesItem
 
@@ -1305,6 +1339,18 @@ class ServicePaymentManager:
                     quantity=charged_qty,
                     final_price_per_unit=item_used.discounted_price,
                 )
+
+        # Add aircon unit cost prices for installation services (Sub stall revenue)
+        if service.service_type == 'installation':
+            for unit in service.installation_units.all():
+                if unit.model and unit.model.cost_price > 0:
+                    SalesItem.objects.create(
+                        transaction=sub_tx,
+                        item=None,
+                        description=f"Aircon Unit Cost: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                        quantity=1,
+                        final_price_per_unit=unit.model.cost_price,
+                    )
 
         sub_tx.update_payment_status()
 
@@ -1363,7 +1409,8 @@ class ServicePaymentManager:
                     final_price_per_unit=appliance.unit_price,
                 )
 
-        # Add aircon unit prices for installation services (Main stall revenue)
+        # Add aircon unit prices for installation services
+        # Split: cost_price → sub stall, (selling_price - cost_price) → main stall
         if service.service_type == 'installation':
             for unit in service.installation_units.all():
                 if unit.model:
@@ -1372,9 +1419,15 @@ class ServicePaymentManager:
                         serial_number=unit.serial_number
                     ).first()
                     if matching_appliance and matching_appliance.unit_price:
-                        unit_final_price = matching_appliance.unit_price
+                        custom_price = matching_appliance.unit_price
+                        cost_portion = unit.model.cost_price
+                        margin_portion = max(custom_price - cost_portion, Decimal('0.00'))
+                        unit_final_price = margin_portion
                     else:
-                        unit_final_price = unit.model.selling_price
+                        selling_price = unit.model.selling_price
+                        cost_price = unit.model.cost_price
+                        unit_final_price = max(selling_price - cost_price, Decimal('0.00'))
+
                     if unit_final_price > 0:
                         SalesItem.objects.create(
                             transaction=sales_transaction,
