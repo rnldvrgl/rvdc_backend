@@ -305,12 +305,44 @@ def _get_day_metrics(stall: Stall, target_date: date) -> dict[str, Any]:
         .first()
     )
 
+    def sum_sales(payment_type: str) -> Decimal:
+        total_payments = (
+            SalesPayment.objects.filter(
+                transaction__stall=stall,
+                payment_date__date=target_date,
+                transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                transaction__voided=False,
+                transaction__is_deleted=False,
+                payment_type=payment_type,
+            ).aggregate(total=Sum("amount"))["total"]
+            or Decimal("0")
+        )
+
+        if payment_type == "cash":
+            total_change = (
+                SalesTransaction.objects.filter(
+                    stall=stall,
+                    payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                    voided=False,
+                    is_deleted=False,
+                    payments__payment_date__date=target_date,
+                )
+                .distinct()
+                .aggregate(total=Sum("change_amount"))["total"]
+                or Decimal("0")
+            )
+            return total_payments - total_change
+
+        return total_payments
+
+    live_sales = {pt: sum_sales(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]}
+
     metrics = {
-        "total_cash_sales": Decimal("0"),
-        "total_gcash_sales": Decimal("0"),
-        "total_credit_sales": Decimal("0"),
-        "total_debit_sales": Decimal("0"),
-        "total_cheque_sales": Decimal("0"),
+        "total_cash_sales": live_sales["cash"],
+        "total_gcash_sales": live_sales["gcash"],
+        "total_credit_sales": live_sales["credit"],
+        "total_debit_sales": live_sales["debit"],
+        "total_cheque_sales": live_sales["cheque"],
         "total_expenses": Decimal("0"),
         "cod_for_today": Decimal("0"),
         "cod_for_next_day": Decimal("0"),
@@ -332,14 +364,12 @@ def _get_day_metrics(stall: Stall, target_date: date) -> dict[str, Any]:
     )
     metrics["total_expenses"] = expense_total
 
+    cash_sales = live_sales["cash"]
+    live_expected = max(Decimal("0"), cash_sales + metrics["cod_for_today"] - expense_total)
+    metrics["expected_remittance"] = live_expected
+
     if remittance:
-        metrics["total_cash_sales"] = remittance.total_sales_cash or Decimal("0")
-        metrics["total_gcash_sales"] = remittance.total_sales_gcash or Decimal("0")
-        metrics["total_credit_sales"] = remittance.total_sales_credit or Decimal("0")
-        metrics["total_debit_sales"] = remittance.total_sales_debit or Decimal("0")
-        metrics["total_cheque_sales"] = remittance.total_sales_cheque or Decimal("0")
         metrics["total_expenses"] = remittance.total_expenses or Decimal("0")
-        metrics["expected_remittance"] = remittance.expected_remittance or Decimal("0")
         metrics["remitted_amount"] = Decimal(str(remittance.remitted_amount or 0))
         metrics["declared_amount"] = Decimal(str(remittance.declared_amount or 0))
         metrics["balance"] = remittance.balance or Decimal("0")
