@@ -7,12 +7,12 @@ from rest_framework.exceptions import NotFound
 from django_filters.rest_framework import DjangoFilterBackend
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
-from django.db.models import Q, Sum, Count
+from django.db.models import Q, Sum, Count, F, Value, DecimalField, ExpressionWrapper, OuterRef, Subquery
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone as dj_timezone
 from django.utils.dateparse import parse_date
 
-from sales.models import SalesPayment, SalesTransaction
+from sales.models import SalesItem, SalesPayment, SalesTransaction
 from sales.api.serializers import SalesPaymentSerializer, SalesTransactionSerializer
 from utils.sales import void_sales_transaction, unvoid_sales_transaction
 from sales.api.filters import SalesTransactionFilter
@@ -250,9 +250,37 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         else:
             qs = qs.none()
 
-        agg = qs.aggregate(
-            count=Count("id"),
-            total=Sum("computed_total"),
+        transaction_ids = qs.values_list("id", flat=True).distinct()
+
+        line_total_expr = ExpressionWrapper(
+            Coalesce(F("quantity"), Value(0))
+            * Coalesce(F("final_price_per_unit"), Value(0))
+            * (Value(1) - Coalesce(F("line_discount_rate"), Value(0))),
+            output_field=DecimalField(max_digits=12, decimal_places=2),
+        )
+
+        item_total_subquery = (
+            SalesItem.objects.filter(transaction_id=OuterRef("pk"))
+            .annotate(line_total=line_total_expr)
+            .values("transaction_id")
+            .annotate(total=Sum("line_total"))
+            .values("total")[:1]
+        )
+
+        totals_qs = SalesTransaction.objects.filter(id__in=transaction_ids).annotate(
+            calculated_total=Coalesce(
+                Subquery(
+                    item_total_subquery,
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                ),
+                Value(0),
+                output_field=DecimalField(max_digits=12, decimal_places=2),
+            )
+        )
+
+        agg = totals_qs.aggregate(
+            count=Count("id", distinct=True),
+            total=Sum("calculated_total"),
         )
         return Response({
             "count": agg["count"] or 0,

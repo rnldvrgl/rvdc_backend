@@ -15,10 +15,16 @@ from decouple import config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
+def _csv_env(name: str, default: str = "") -> list[str]:
+    """Parse comma-separated env vars into a trimmed, non-empty list."""
+    raw = config(name, default=default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
 SECRET_KEY = config("SECRET_KEY")
 DEBUG = config("DEBUG", default=False, cast=bool)
-ALLOWED_HOSTS = config("DJANGO_ALLOWED_HOSTS", default="localhost").split(",")
-CSRF_TRUSTED_ORIGINS = config("CSRF_TRUSTED_ORIGINS", default="").split(",")
+ALLOWED_HOSTS = _csv_env("DJANGO_ALLOWED_HOSTS", default="localhost")
+CSRF_TRUSTED_ORIGINS = _csv_env("CSRF_TRUSTED_ORIGINS")
 # ------------------------------------------------------------------------------
 # APPLICATION DEFINITION
 # ------------------------------------------------------------------------------
@@ -208,7 +214,8 @@ CORS_ALLOW_HEADERS = [
     "x-requested-with",
 ]
 
-CORS_ALLOWED_ORIGINS = config("CORS_ALLOWED_ORIGINS", default="").split(",")
+CORS_ALLOWED_ORIGINS = _csv_env("CORS_ALLOWED_ORIGINS")
+CORS_ALLOWED_ORIGIN_REGEXES = _csv_env("CORS_ALLOWED_ORIGIN_REGEXES")
 
 # ------------------------------------------------------------------------------
 # MISC
