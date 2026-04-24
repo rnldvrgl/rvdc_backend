@@ -64,6 +64,7 @@ def _run_google_sheets_sync_historical_job(
                 "progress_pct": int(progress.get("progress_pct", 0) or 0),
                 "current_stall_id": progress.get("current_stall_id"),
                 "current_date": progress.get("current_date"),
+                "latest_error": str(progress.get("latest_error") or ""),
                 "errors": [],
             },
         )
@@ -85,6 +86,7 @@ def _run_google_sheets_sync_historical_job(
             "progress_pct": 0,
             "current_stall_id": None,
             "current_date": None,
+            "latest_error": "",
             "errors": [],
         },
     )
@@ -116,6 +118,7 @@ def _run_google_sheets_sync_historical_job(
                 "progress_pct": 100,
                 "current_stall_id": None,
                 "current_date": None,
+                "latest_error": "",
                 "errors": list(result.get("errors", []) or [])[:20],
             },
         )
@@ -138,6 +141,7 @@ def _run_google_sheets_sync_historical_job(
                 "progress_pct": 0,
                 "current_stall_id": None,
                 "current_date": None,
+                "latest_error": str(exc),
                 "errors": [str(exc)],
             },
         )
@@ -526,6 +530,7 @@ class GoogleSheetsSyncView(APIView):
                     "progress_pct": 0,
                     "current_stall_id": None,
                     "current_date": None,
+                    "latest_error": "",
                     "errors": [],
                 },
             )

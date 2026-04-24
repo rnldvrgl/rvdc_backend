@@ -1170,6 +1170,7 @@ def sync_historical_sales_to_google_sheets(
     synced = 0
     failed = 0
     errors: list[str] = []
+    latest_error = ""
 
     if progress_callback:
         progress_callback(
@@ -1181,6 +1182,7 @@ def sync_historical_sales_to_google_sheets(
                 "failed": 0,
                 "progress_pct": 0,
                 "message": "Historical sync is running",
+                    "latest_error": "",
             }
         )
 
@@ -1192,8 +1194,10 @@ def sync_historical_sales_to_google_sheets(
             failed += 1
             if error_detail:
                 errors.append(f"stall={stall_id}, date={target_date}: {error_detail}")
+                latest_error = str(error_detail)
             else:
                 errors.append(f"stall={stall_id}, date={target_date}")
+                latest_error = f"stall={stall_id}, date={target_date}"
 
         if progress_callback:
             progress_callback(
@@ -1207,6 +1211,7 @@ def sync_historical_sales_to_google_sheets(
                     "current_date": str(target_date),
                     "progress_pct": int((index * 100) / total_targets) if total_targets > 0 else 100,
                     "message": "Historical sync is running",
+                    "latest_error": latest_error,
                 }
             )
 
