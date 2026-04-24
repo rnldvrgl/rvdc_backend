@@ -1474,14 +1474,14 @@ class ServicePaymentManager:
                 else:
                     unit_final_price = Decimal('0.00')
 
-                    if unit_final_price > 0:
-                        SalesItem.objects.create(
-                            transaction=sales_transaction,
-                            item=None,
-                            description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
-                            quantity=1,
-                            final_price_per_unit=unit_final_price,
-                        )
+                if unit_final_price > 0:
+                    SalesItem.objects.create(
+                        transaction=sales_transaction,
+                        item=None,
+                        description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                        quantity=1,
+                        final_price_per_unit=unit_final_price,
+                    )
 
         # Add extra charges (e.g. special bracket, hauling fee) to the main transaction
         for ec in service.extra_charges.all():

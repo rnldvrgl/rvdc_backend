@@ -174,6 +174,9 @@ class Command(BaseCommand):
         error_count = 0
         tx_type_fixed = 0
         ghost_cleaned = 0
+        affected_client_ids = set(
+            services_to_fix.filter(client__isnull=False).values_list('client_id', flat=True)
+        )
 
         for idx, service in enumerate(services_to_fix, 1):
             try:
@@ -268,10 +271,11 @@ class Command(BaseCommand):
         linked_ids = linked_main_ids | linked_sub_ids
 
         ghost_candidates = SalesTransaction.objects.filter(
-            transaction_type=TransactionType.SERVICE,
+            transaction_type__in=[TransactionType.SERVICE, TransactionType.SALE],
             created_at__gte=target_date,
             payment_status='unpaid',
             voided=False,
+            client_id__in=affected_client_ids,
         ).exclude(id__in=linked_ids)
 
         for tx in ghost_candidates:
