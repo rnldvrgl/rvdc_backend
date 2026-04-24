@@ -261,6 +261,7 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             'birthday_greeting_variant',
             'maintenance_mode',
             'check_stock_on_sale',
+            'sub_stall_unit_revenue_additional',
             'notification_sound',
             'google_sheets_sync_enabled',
             'google_sheets_spreadsheet_id',

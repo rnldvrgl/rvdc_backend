@@ -30,6 +30,54 @@ def get_sub_stall():
     return Stall.objects.filter(stall_type='sub', is_system=True).first()
 
 
+def get_sub_stall_unit_revenue_additional():
+    """Get configured additional unit allocation shifted from main to sub stall."""
+    from users.models import SystemSettings
+
+    try:
+        settings_obj = SystemSettings.get_settings()
+        configured = settings_obj.sub_stall_unit_revenue_additional or Decimal('0.00')
+    except Exception:
+        configured = Decimal('0.00')
+
+    try:
+        value = Decimal(str(configured))
+    except Exception:
+        value = Decimal('0.00')
+
+    return max(value, Decimal('0.00')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+def get_installation_unit_revenue_split(service, unit):
+    """
+    Return per-unit split between main and sub stalls.
+
+    Rules:
+    - Base split: sub gets unit cost, main gets margin (selling - cost)
+    - Additional configured amount is shifted from main margin to sub
+    """
+    if not unit.model:
+        return Decimal('0.00'), Decimal('0.00')
+
+    matching_appliance = service.appliances.filter(
+        serial_number=unit.serial_number
+    ).first()
+
+    if matching_appliance and matching_appliance.unit_price:
+        selling_price = matching_appliance.unit_price
+    else:
+        selling_price = unit.model.selling_price or Decimal('0.00')
+
+    cost_price = unit.model.cost_price or Decimal('0.00')
+    margin = max(selling_price - cost_price, Decimal('0.00'))
+
+    additional_shift = min(get_sub_stall_unit_revenue_additional(), margin)
+    main_revenue = margin - additional_shift
+    sub_revenue = cost_price + additional_shift
+
+    return main_revenue, sub_revenue
+
+
 class StockReservationManager:
     """Manages stock reservations for service parts."""
 
@@ -246,26 +294,9 @@ class RevenueCalculator:
         # Split: cost_price → sub stall, (selling_price - cost_price) → main stall
         if service.service_type == 'installation':
             for unit in service.installation_units.all():
-                if unit.model:
-                    # Check if there's an appliance with a custom unit_price override
-                    matching_appliance = service.appliances.filter(
-                        serial_number=unit.serial_number
-                    ).first()
-                    if matching_appliance and matching_appliance.unit_price:
-                        # Custom override price: split as margin (selling - cost) to main, cost to sub
-                        custom_price = matching_appliance.unit_price
-                        cost_portion = unit.model.cost_price
-                        margin_portion = max(custom_price - cost_portion, Decimal('0.00'))
-                        sub_revenue += cost_portion
-                        main_revenue += margin_portion
-                    else:
-                        # Use selling_price which is promo_price if set, else retail
-                        selling_price = unit.model.selling_price
-                        cost_price = unit.model.cost_price
-                        margin = max(selling_price - cost_price, Decimal('0.00'))
-                        # Sub stall gets cost, main stall gets margin
-                        sub_revenue += cost_price
-                        main_revenue += margin
+                unit_main_revenue, unit_sub_revenue = get_installation_unit_revenue_split(service, unit)
+                sub_revenue += unit_sub_revenue
+                main_revenue += unit_main_revenue
 
         # Calculate parts revenue (Sub stall revenue) with discounts
         for appliance in service.appliances.all():
@@ -481,16 +512,21 @@ class ServiceCompletionHandler:
                                 final_price_per_unit=part['unit_price'],
                             )
 
-                        # Add aircon unit cost prices for installation services (Sub stall revenue)
+                        # Add aircon unit allocation for installation services (Sub stall revenue)
                         if service.service_type == 'installation':
                             for unit in service.installation_units.all():
-                                if unit.model and unit.model.cost_price > 0:
+                                if unit.model:
+                                    _, unit_sub_revenue = get_installation_unit_revenue_split(service, unit)
+                                else:
+                                    unit_sub_revenue = Decimal('0.00')
+
+                                if unit_sub_revenue > 0:
                                     SalesItem.objects.create(
                                         transaction=sub_sales,
                                         item=None,
                                         description=f"Aircon Unit Cost: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
                                         quantity=1,
-                                        final_price_per_unit=unit.model.cost_price,
+                                        final_price_per_unit=unit_sub_revenue,
                                     )
 
                         # Link sub transaction to service
@@ -610,23 +646,12 @@ class ServiceCompletionHandler:
                             )
 
                     # Add aircon unit prices for installation services
-                    # Split: cost_price → sub stall, (selling_price - cost_price) → main stall
                     if service.service_type == 'installation':
                         for unit in service.installation_units.all():
                             if unit.model:
-                                # Check for custom unit_price override on linked appliance
-                                matching_appliance = service.appliances.filter(
-                                    serial_number=unit.serial_number
-                                ).first()
-                                if matching_appliance and matching_appliance.unit_price:
-                                    custom_price = matching_appliance.unit_price
-                                    cost_portion = unit.model.cost_price
-                                    margin_portion = max(custom_price - cost_portion, Decimal('0.00'))
-                                    unit_final_price = margin_portion
-                                else:
-                                    selling_price = unit.model.selling_price
-                                    cost_price = unit.model.cost_price
-                                    unit_final_price = max(selling_price - cost_price, Decimal('0.00'))
+                                unit_final_price, _ = get_installation_unit_revenue_split(service, unit)
+                            else:
+                                unit_final_price = Decimal('0.00')
 
                                 if unit_final_price > 0:
                                     SalesItem.objects.create(
@@ -847,14 +872,7 @@ class ServiceCompletionHandler:
         if service.service_type == 'installation':
             for unit in service.installation_units.all():
                 if unit.model:
-                    # Check for appliance-level unit_price override
-                    matching_appliance = service.appliances.filter(
-                        serial_number=unit.serial_number
-                    ).first()
-                    if matching_appliance and matching_appliance.unit_price:
-                        unit_price = matching_appliance.unit_price
-                    else:
-                        unit_price = unit.model.selling_price
+                    unit_price, _ = get_installation_unit_revenue_split(service, unit)
                     if unit_price > 0:
                         SalesItem.objects.create(
                             transaction=receipt,
@@ -1340,16 +1358,21 @@ class ServicePaymentManager:
                     final_price_per_unit=item_used.discounted_price,
                 )
 
-        # Add aircon unit cost prices for installation services (Sub stall revenue)
+        # Add aircon unit allocation for installation services (Sub stall revenue)
         if service.service_type == 'installation':
             for unit in service.installation_units.all():
-                if unit.model and unit.model.cost_price > 0:
+                if unit.model:
+                    _, unit_sub_revenue = get_installation_unit_revenue_split(service, unit)
+                else:
+                    unit_sub_revenue = Decimal('0.00')
+
+                if unit_sub_revenue > 0:
                     SalesItem.objects.create(
                         transaction=sub_tx,
                         item=None,
                         description=f"Aircon Unit Cost: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
                         quantity=1,
-                        final_price_per_unit=unit.model.cost_price,
+                        final_price_per_unit=unit_sub_revenue,
                     )
 
         sub_tx.update_payment_status()
@@ -1410,23 +1433,12 @@ class ServicePaymentManager:
                 )
 
         # Add aircon unit prices for installation services
-        # Split: cost_price → sub stall, (selling_price - cost_price) → main stall
         if service.service_type == 'installation':
             for unit in service.installation_units.all():
                 if unit.model:
-                    # Check for custom unit_price override on linked appliance
-                    matching_appliance = service.appliances.filter(
-                        serial_number=unit.serial_number
-                    ).first()
-                    if matching_appliance and matching_appliance.unit_price:
-                        custom_price = matching_appliance.unit_price
-                        cost_portion = unit.model.cost_price
-                        margin_portion = max(custom_price - cost_portion, Decimal('0.00'))
-                        unit_final_price = margin_portion
-                    else:
-                        selling_price = unit.model.selling_price
-                        cost_price = unit.model.cost_price
-                        unit_final_price = max(selling_price - cost_price, Decimal('0.00'))
+                    unit_final_price, _ = get_installation_unit_revenue_split(service, unit)
+                else:
+                    unit_final_price = Decimal('0.00')
 
                     if unit_final_price > 0:
                         SalesItem.objects.create(
@@ -1539,14 +1551,7 @@ class ServicePaymentManager:
             if service.service_type == 'installation':
                 for unit in service.installation_units.all():
                     if unit.model:
-                        # Check for appliance-level unit_price override
-                        matching_appliance = service.appliances.filter(
-                            serial_number=unit.serial_number
-                        ).first()
-                        if matching_appliance and matching_appliance.unit_price:
-                            unit_price = matching_appliance.unit_price
-                        else:
-                            unit_price = unit.model.selling_price
+                        unit_price, _ = get_installation_unit_revenue_split(service, unit)
                         if unit_price > 0:
                             SalesItem.objects.create(
                                 transaction=sales_transaction,
@@ -1596,9 +1601,24 @@ class ServicePaymentManager:
                         'price': item_used.discounted_price,
                     })
 
-            # Create ONE sub stall transaction for ALL parts (if any)
+            # Build installation unit allocation lines for sub stall
+            sub_unit_items = []
+            if service.service_type == 'installation':
+                for unit in service.installation_units.all():
+                    if unit.model:
+                        _, unit_sub_revenue = get_installation_unit_revenue_split(service, unit)
+                    else:
+                        unit_sub_revenue = Decimal('0.00')
+
+                    if unit_sub_revenue > 0:
+                        sub_unit_items.append({
+                            'description': f"Aircon Unit Cost: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                            'price': unit_sub_revenue,
+                        })
+
+            # Create ONE sub stall transaction for ALL parts/unit allocations (if any)
             sub_sales_transaction = None
-            if parts_to_add:
+            if parts_to_add or sub_unit_items:
                 sub_sales_transaction = SalesTransaction.objects.create(
                     stall=sub_stall,
                     client=service.client,
@@ -1616,6 +1636,15 @@ class ServicePaymentManager:
                         description=part['description'],
                         quantity=part['quantity'],
                         final_price_per_unit=part['price'],
+                    )
+
+                for unit_item in sub_unit_items:
+                    SalesItem.objects.create(
+                        transaction=sub_sales_transaction,
+                        item=None,
+                        description=unit_item['description'],
+                        quantity=1,
+                        final_price_per_unit=unit_item['price'],
                     )
 
                 service.related_sub_transaction = sub_sales_transaction
@@ -1751,20 +1780,20 @@ class ServicePaymentManager:
 
                 # Collect aircon unit items for installation services
                 unit_items = []
+                sub_unit_items = []
                 if service.service_type == 'installation':
                     for unit in service.installation_units.all():
                         if unit.model:
-                            matching_appliance = service.appliances.filter(
-                                serial_number=unit.serial_number
-                            ).first()
-                            if matching_appliance and matching_appliance.unit_price:
-                                unit_price = matching_appliance.unit_price
-                            else:
-                                unit_price = unit.model.selling_price
+                            unit_price, sub_unit_price = get_installation_unit_revenue_split(service, unit)
                             if unit_price > 0:
                                 unit_items.append({
                                     'description': f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
                                     'price': unit_price,
+                                })
+                            if sub_unit_price > 0:
+                                sub_unit_items.append({
+                                    'description': f"Aircon Unit Cost: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                                    'price': sub_unit_price,
                                 })
 
                 # Only create main stall TX if there are labor/unit items
@@ -1827,7 +1856,7 @@ class ServicePaymentManager:
                         })
 
                 # Find or create sub stall transaction for parts
-                if parts_to_add:
+                if parts_to_add or sub_unit_items:
                     # Check if service already has a linked sub transaction
                     if service.related_sub_transaction_id:
                         try:
@@ -1868,6 +1897,15 @@ class ServicePaymentManager:
                                 description=part['description'],
                                 quantity=part['quantity'],
                                 final_price_per_unit=part['price'],
+                            )
+
+                        for unit_item in sub_unit_items:
+                            SalesItem.objects.create(
+                                transaction=sub_sales_tx,
+                                item=None,
+                                description=unit_item['description'],
+                                quantity=1,
+                                final_price_per_unit=unit_item['price'],
                             )
 
                 # Link transactions to service

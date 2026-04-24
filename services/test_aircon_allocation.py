@@ -15,7 +15,7 @@ from django.test import TransactionTestCase
 from installations.models import AirconBrand, AirconModel, AirconUnit
 from inventory.models import Item, ProductCategory, Stall, Stock
 from rest_framework.exceptions import ValidationError
-from users.models import CustomUser
+from users.models import CustomUser, SystemSettings
 from utils.enums import ApplianceStatus, ServiceType
 
 from services.business_logic import (
@@ -294,6 +294,44 @@ class TestAirconUnitRevenueAllocation(AirconUnitAllocationTestSetup):
 
         self.assertEqual(revenue["main_revenue"], expected_main)
         self.assertEqual(revenue["sub_revenue"], expected_sub)
+
+    def test_installation_unit_additional_revenue_shifted_to_sub_stall(self):
+        """Configured additional unit revenue should move from main to sub stall."""
+        settings_obj = SystemSettings.get_settings()
+        settings_obj.sub_stall_unit_revenue_additional = Decimal("2000.00")
+        settings_obj.save(update_fields=["sub_stall_unit_revenue_additional"])
+
+        service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            service_type=ServiceType.INSTALLATION,
+        )
+
+        ServiceAppliance.objects.create(
+            service=service,
+            appliance_type=self.appliance_type,
+            labor_fee=Decimal("0.00"),
+        )
+
+        model_custom = AirconModel.objects.create(
+            brand=self.brand,
+            name="2.0 HP Additional",
+            retail_price=Decimal("24000.00"),
+            cost_price=Decimal("14500.00"),
+            promo_price=None,
+        )
+
+        unit = AirconUnit.objects.create(
+            model=model_custom,
+            serial_number="ADD-SUB-001",
+        )
+        service.installation_units.add(unit)
+
+        revenue = RevenueCalculator.calculate_service_revenue(service, save=False)
+
+        self.assertEqual(revenue["sub_revenue"], Decimal("16500.00"))
+        self.assertEqual(revenue["main_revenue"], Decimal("7500.00"))
+        self.assertEqual(revenue["total_revenue"], Decimal("24000.00"))
 
 
 class TestInstallationCompletionWithoutParts(AirconUnitAllocationTestSetup):

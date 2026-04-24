@@ -335,6 +335,7 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
             sensitive_fields = {
                 'maintenance_mode',
                 'check_stock_on_sale',
+                'sub_stall_unit_revenue_additional',
                 'google_sheets_sync_enabled',
                 'google_sheets_spreadsheet_id',
                 'google_sheets_main_spreadsheet_id',

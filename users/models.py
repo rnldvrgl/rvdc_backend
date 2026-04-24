@@ -183,6 +183,12 @@ class SystemSettings(models.Model):
         default=True,
         help_text="Check and deduct stock when creating or editing a sales transaction"
     )
+    sub_stall_unit_revenue_additional = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Additional amount per installation unit to shift from main stall to sub stall revenue"
+    )
 
     # Notification Settings
     notification_sound = models.CharField(
