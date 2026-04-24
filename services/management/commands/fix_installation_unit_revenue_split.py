@@ -10,8 +10,6 @@ from datetime import datetime
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 from django.utils import timezone
-from decimal import Decimal
-
 from services.models import Service
 from services.business_logic import ServicePaymentManager
 from utils.enums import ServiceStatus
@@ -40,11 +38,17 @@ class Command(BaseCommand):
             type=int,
             help='Fix only a specific service ID (for testing)',
         )
+        parser.add_argument(
+            '--include-in-progress',
+            action='store_true',
+            help='Include in-progress installation services that already have payments/transactions',
+        )
 
     def handle(self, *args, **options):
         date_str = options.get('date')
         dry_run = options.get('dry_run', False)
         service_id = options.get('service_id')
+        include_in_progress = options.get('include_in_progress', False)
 
         # Parse the date
         try:
@@ -55,13 +59,16 @@ class Command(BaseCommand):
             raise CommandError(f"Invalid date format: {date_str}. Use YYYY-MM-DD")
 
         # Build query for affected services
-        query = Q(
-            status=ServiceStatus.COMPLETED,
-            created_at__gte=target_date,
-        )
+        allowed_statuses = [ServiceStatus.COMPLETED]
+        if include_in_progress:
+            allowed_statuses.append(ServiceStatus.IN_PROGRESS)
 
-        # Add filter for services that have installation units
-        query &= Q(installation_units__isnull=False)
+        query = Q(
+            created_at__gte=target_date,
+            installation_units__isnull=False,
+            payments__isnull=False,
+            status__in=allowed_statuses,
+        )
 
         if service_id:
             query &= Q(id=service_id)
@@ -72,7 +79,7 @@ class Command(BaseCommand):
         if count == 0:
             self.stdout.write(
                 self.style.WARNING(
-                    f"No completed installation services found from {date_str} onwards"
+                    f"No matching installation services with payments found from {date_str} onwards"
                 )
             )
             return
@@ -91,7 +98,7 @@ class Command(BaseCommand):
                 self.stdout.write(
                     f"\n[{idx}/{count}] Processing Service #{service.id} "
                     f"({service.client.name if service.client else 'Unknown'}) "
-                    f"- Created: {service.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"- Status: {service.status} - Created: {service.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
                 )
 
                 # Check for installation units
@@ -104,58 +111,20 @@ class Command(BaseCommand):
 
                 self.stdout.write(f"  ℹ Found {units.count()} installation unit(s)")
 
-                # Show current state before fix
-                if service.related_transaction:
-                    main_items = service.related_transaction.transaction_items.filter(
-                        item_type='service',
-                        appliance__isnull=False,
-                    )
-                    main_unit_revenue = sum(
-                        item.amount for item in main_items
-                    )
-                    self.stdout.write(f"  ℹ Current Main stall unit revenue: ₱{main_unit_revenue}")
-
-                if service.related_sub_transaction:
-                    sub_items = service.related_sub_transaction.transaction_items.filter(
-                        item_type='service',
-                        appliance__isnull=False,
-                    )
-                    sub_unit_revenue = sum(
-                        item.amount for item in sub_items
-                    )
-                    self.stdout.write(f"  ℹ Current Sub stall unit revenue: ₱{sub_unit_revenue}")
-
                 # Regenerate transactions with new split logic
                 if not dry_run:
                     new_transaction = ServicePaymentManager.recreate_sales_transaction(service)
                     if new_transaction:
-                        # Show new state after fix
-                        main_items = new_transaction.transaction_items.filter(
-                            item_type='service',
-                            appliance__isnull=False,
-                        )
-                        main_unit_revenue = sum(
-                            item.amount for item in main_items
-                        )
                         self.stdout.write(
                             self.style.SUCCESS(
-                                f"  ✓ Regenerated Main stall transaction #{new_transaction.id} "
-                                f"with unit revenue: ₱{main_unit_revenue}"
+                                f"  ✓ Rebuilt transactions. Main TX #{new_transaction.id}"
                             )
                         )
 
                         if service.related_sub_transaction:
-                            sub_items = service.related_sub_transaction.transaction_items.filter(
-                                item_type='service',
-                                appliance__isnull=False,
-                            )
-                            sub_unit_revenue = sum(
-                                item.amount for item in sub_items
-                            )
                             self.stdout.write(
                                 self.style.SUCCESS(
-                                    f"  ✓ Sub stall transaction #{service.related_sub_transaction.id} "
-                                    f"with unit revenue: ₱{sub_unit_revenue}"
+                                    f"  ✓ Sub stall transaction #{service.related_sub_transaction.id} linked"
                                 )
                             )
                         fixed_count += 1
@@ -168,9 +137,10 @@ class Command(BaseCommand):
                     # Dry-run: just report what would happen
                     self.stdout.write(
                         self.style.WARNING(
-                            f"  ⊲ [DRY-RUN] Would regenerate sales transactions "
+                            f"  ⊲ [DRY-RUN] Would rebuild installation sales split "
                             f"(Main: #{service.related_transaction.id if service.related_transaction else 'N/A'}, "
-                            f"Sub: #{service.related_sub_transaction.id if service.related_sub_transaction else 'N/A'})"
+                            f"Sub: #{service.related_sub_transaction.id if service.related_sub_transaction else 'N/A'}, "
+                            f"Payments: {service.payments.count()})"
                         )
                     )
                     fixed_count += 1
@@ -200,5 +170,6 @@ class Command(BaseCommand):
                 self.style.WARNING(
                     f"\nTo apply these changes, run without --dry-run:\n"
                     f"  python manage.py fix_installation_unit_revenue_split --date {date_str}"
+                    f"{' --include-in-progress' if include_in_progress else ''}"
                 )
             )

@@ -536,23 +536,6 @@ class ServiceCompletionHandler:
                                 final_price_per_unit=unit_item['price'],
                             )
 
-                        # Add aircon unit allocation for installation services (Sub stall revenue)
-                        if service.service_type == 'installation':
-                            for unit in service.installation_units.all():
-                                if unit.model:
-                                    _, unit_sub_revenue = get_installation_unit_revenue_split(service, unit)
-                                else:
-                                    unit_sub_revenue = Decimal('0.00')
-
-                                if unit_sub_revenue > 0:
-                                    SalesItem.objects.create(
-                                        transaction=sub_sales,
-                                        item=None,
-                                        description=f"Aircon Unit Cost: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
-                                        quantity=1,
-                                        final_price_per_unit=unit_sub_revenue,
-                                    )
-
                         # Link sub transaction to service
                         service.related_sub_transaction = sub_sales
                         service.save(update_fields=['related_sub_transaction'])
@@ -737,9 +720,24 @@ class ServiceCompletionHandler:
                             item.save(update_fields=['final_price_per_unit'])
                             remaining_discount -= item_discount
 
-                # Create Sub stall transaction for parts if any paid parts exist
+                # Build installation unit allocation lines for sub stall
+                sub_unit_items = []
+                if service.service_type == 'installation':
+                    for unit in service.installation_units.all():
+                        if unit.model:
+                            _, unit_sub_revenue = get_installation_unit_revenue_split(service, unit)
+                        else:
+                            unit_sub_revenue = Decimal('0.00')
+
+                        if unit_sub_revenue > 0:
+                            sub_unit_items.append({
+                                'description': f"Aircon Unit Cost: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                                'price': unit_sub_revenue,
+                            })
+
+                # Create Sub stall transaction for parts/unit allocations if needed
                 # Only if not already created earlier (check if one exists from the parts_to_sell logic)
-                if has_paid_parts:
+                if has_paid_parts or sub_unit_items:
                     # First check linked sub transaction
                     existing_sub_transaction = None
                     if service.related_sub_transaction_id:
@@ -802,6 +800,15 @@ class ServiceCompletionHandler:
                                     final_price_per_unit=item_used.discounted_price,
                                 )
 
+                        for unit_item in sub_unit_items:
+                            SalesItem.objects.create(
+                                transaction=sub_receipt,
+                                item=None,
+                                description=unit_item['description'],
+                                quantity=1,
+                                final_price_per_unit=unit_item['price'],
+                            )
+
                         # Link sub receipt to service
                         service.related_sub_transaction = sub_receipt
                         service.save(update_fields=['related_sub_transaction'])
@@ -824,15 +831,6 @@ class ServiceCompletionHandler:
                             actual_sub_tx = service.related_sub_transaction
 
                         main_total = main_receipt.computed_total or Decimal('0')
-
-                        # How much of the service payment was already mirrored to
-                        # the sub TX (before this call created the main TX)?
-                        sub_already_mirrored = (
-                            sum(p.amount for p in actual_sub_tx.payments.all())
-                            if actual_sub_tx else Decimal('0')
-                        )
-
-                        total_svc_paid = sum(p.amount for p in existing_svc_payments)
 
                         # Waterfall-allocate any existing service payments to the
                         # new sales transactions: sub stall first, then main.
@@ -1686,7 +1684,7 @@ class ServicePaymentManager:
                 service.related_sub_transaction = sub_sales_transaction
                 service.save(update_fields=["related_sub_transaction"])
 
-            # Waterfall-allocate payments: fill main first, then sub
+            # Waterfall-allocate payments: fill sub first, then main
             main_total = sales_transaction.computed_total or Decimal("0")
             sub_total = (sub_sales_transaction.computed_total or Decimal("0")) if sub_sales_transaction else Decimal("0")
             main_filled = Decimal("0")
@@ -1698,12 +1696,6 @@ class ServicePaymentManager:
                     main_total - main_filled,
                     sub_total - sub_filled,
                 )
-                SalesPayment.objects.create(
-                    transaction=sales_transaction,
-                    payment_type=service_payment.payment_type,
-                    amount=m_share,
-                    payment_date=service_payment.payment_date,
-                )
                 if s_share > 0 and sub_sales_transaction:
                     SalesPayment.objects.create(
                         transaction=sub_sales_transaction,
@@ -1711,6 +1703,12 @@ class ServicePaymentManager:
                         amount=s_share,
                         payment_date=service_payment.payment_date,
                     )
+                SalesPayment.objects.create(
+                    transaction=sales_transaction,
+                    payment_type=service_payment.payment_type,
+                    amount=m_share,
+                    payment_date=service_payment.payment_date,
+                )
                 main_filled += m_share
                 sub_filled += s_share
 
