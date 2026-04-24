@@ -281,16 +281,11 @@ class RevenueCalculator:
                 service.installation_units.values_list('serial_number', flat=True)
             )
 
-        # Calculate labor fees (Main stall revenue) with discounts
+        # Calculate labor fees (Main stall revenue) with discounts.
+        # Installation services use the per-unit split helper for main share,
+        # so appliance labor rows must not be added to main revenue.
         for appliance in service.appliances.all():
-            # Installation units contribute main share via get_installation_unit_revenue_split()
-            # to avoid double counting labor + unit margin on main stall.
-            if (
-                service.service_type == 'installation'
-                and appliance.serial_number in installation_unit_serials
-            ):
-                pass
-            else:
+            if service.service_type != 'installation':
                 # Use discounted_labor_fee which accounts for labor discounts
                 main_revenue += appliance.discounted_labor_fee or Decimal('0.00')
 
@@ -624,10 +619,14 @@ class ServiceCompletionHandler:
                 main_stall = get_main_stall()
                 sub_stall = get_sub_stall()
 
-                # Check if there's any paid labor
-                has_paid_labor = any(
-                    appl.discounted_labor_fee > 0 and not appl.labor_is_free
-                    for appl in service.appliances.all()
+                # Installation main share is represented via unit split lines,
+                # not appliance labor rows.
+                has_paid_labor = (
+                    service.service_type != 'installation'
+                    and any(
+                        appl.discounted_labor_fee > 0 and not appl.labor_is_free
+                        for appl in service.appliances.all()
+                    )
                 )
 
                 # Check if there's any paid parts (appliance-level + service-level)
@@ -651,16 +650,17 @@ class ServiceCompletionHandler:
                         with_2307=getattr(service, 'with_2307', False),
                     )
 
-                    for appliance in service.appliances.all():
-                        labor_charge = appliance.discounted_labor_fee
-                        if labor_charge > 0 and not appliance.labor_is_free:
-                            SalesItem.objects.create(
-                                transaction=main_receipt,
-                                item=None,
-                                description=f"Labor: {appliance.appliance_type.name if appliance.appliance_type else 'Service'}",
-                                quantity=1,
-                                final_price_per_unit=labor_charge,
-                            )
+                    if service.service_type != 'installation':
+                        for appliance in service.appliances.all():
+                            labor_charge = appliance.discounted_labor_fee
+                            if labor_charge > 0 and not appliance.labor_is_free:
+                                SalesItem.objects.create(
+                                    transaction=main_receipt,
+                                    item=None,
+                                    description=f"Labor: {appliance.appliance_type.name if appliance.appliance_type else 'Service'}",
+                                    quantity=1,
+                                    final_price_per_unit=labor_charge,
+                                )
 
                     # Add aircon unit prices for installation services
                     if service.service_type == 'installation':
@@ -670,14 +670,14 @@ class ServiceCompletionHandler:
                             else:
                                 unit_final_price = Decimal('0.00')
 
-                                if unit_final_price > 0:
-                                    SalesItem.objects.create(
-                                        transaction=main_receipt,
-                                        item=None,
-                                        description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
-                                        quantity=1,
-                                        final_price_per_unit=unit_final_price,
-                                    )
+                            if unit_final_price > 0:
+                                SalesItem.objects.create(
+                                    transaction=main_receipt,
+                                    item=None,
+                                    description=f"Aircon Unit: {unit.model.brand.name} {unit.model.name} (SN: {unit.serial_number})",
+                                    quantity=1,
+                                    final_price_per_unit=unit_final_price,
+                                )
 
                     # Add extra charges (e.g. special bracket, hauling fee)
                     for ec in service.extra_charges.all():
@@ -1584,18 +1584,19 @@ class ServicePaymentManager:
             service.save(update_fields=["related_transaction"])
 
             # Create sales items for labor fees (main stall)
-            for appliance in service.appliances.all():
-                labor_charge = appliance.discounted_labor_fee or Decimal('0.00')
-                if labor_charge > 0 and not appliance.labor_is_free:
-                    appliance_name = appliance.appliance_type.name if appliance.appliance_type else "Appliance"
-                    brand_info = f" ({appliance.brand})" if appliance.brand else ""
-                    SalesItem.objects.create(
-                        transaction=sales_transaction,
-                        item=None,
-                        description=f"Labor Fee - {appliance_name}{brand_info}",
-                        quantity=1,
-                        final_price_per_unit=labor_charge,
-                    )
+            if service.service_type != 'installation':
+                for appliance in service.appliances.all():
+                    labor_charge = appliance.discounted_labor_fee or Decimal('0.00')
+                    if labor_charge > 0 and not appliance.labor_is_free:
+                        appliance_name = appliance.appliance_type.name if appliance.appliance_type else "Appliance"
+                        brand_info = f" ({appliance.brand})" if appliance.brand else ""
+                        SalesItem.objects.create(
+                            transaction=sales_transaction,
+                            item=None,
+                            description=f"Labor Fee - {appliance_name}{brand_info}",
+                            quantity=1,
+                            final_price_per_unit=labor_charge,
+                        )
 
             # Add aircon unit prices for installation services (Main stall revenue)
             if service.service_type == 'installation':
@@ -1818,15 +1819,16 @@ class ServicePaymentManager:
             if not sales_transaction:
                 # Collect labor items first to decide whether main TX is needed
                 labor_items = []
-                for appliance in service.appliances.all():
-                    labor_charge = appliance.discounted_labor_fee or Decimal('0.00')
-                    if labor_charge > 0 and not appliance.labor_is_free:
-                        appliance_name = appliance.appliance_type.name if appliance.appliance_type else "Appliance"
-                        brand_info = f" ({appliance.brand})" if appliance.brand else ""
-                        labor_items.append({
-                            'description': f"Labor Fee - {appliance_name}{brand_info}",
-                            'fee': labor_charge,
-                        })
+                if service.service_type != 'installation':
+                    for appliance in service.appliances.all():
+                        labor_charge = appliance.discounted_labor_fee or Decimal('0.00')
+                        if labor_charge > 0 and not appliance.labor_is_free:
+                            appliance_name = appliance.appliance_type.name if appliance.appliance_type else "Appliance"
+                            brand_info = f" ({appliance.brand})" if appliance.brand else ""
+                            labor_items.append({
+                                'description': f"Labor Fee - {appliance_name}{brand_info}",
+                                'fee': labor_charge,
+                            })
 
                 # Collect aircon unit items for installation services
                 unit_items = []

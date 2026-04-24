@@ -194,6 +194,10 @@ class Command(BaseCommand):
 
                 self.stdout.write(f"  ℹ Found {units.count()} installation unit(s)")
 
+                # Always refresh revenue summary fields for affected services.
+                if not dry_run:
+                    RevenueCalculator.calculate_service_revenue(service, save=True)
+
                 # Update transaction types for any linked sales records in the date range.
                 linked_txs = []
                 if service.related_transaction_id:
@@ -219,6 +223,7 @@ class Command(BaseCommand):
 
                 if not main_tx:
                     self.stdout.write(self.style.WARNING("  ⊘ No linked main sales transaction to update"))
+                    fixed_count += 1
                     continue
 
                 # Ensure there is a sub transaction so the installation split exists in full.
