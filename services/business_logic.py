@@ -686,7 +686,7 @@ class ServiceCompletionHandler:
                             SalesItem.objects.create(
                                 transaction=main_receipt,
                                 item=None,
-                                description=ec.name,
+                                description=ec.description,
                                 quantity=1,
                                 final_price_per_unit=ec_amount,
                             )
@@ -964,7 +964,7 @@ class ServiceCompletionHandler:
                 SalesItem.objects.create(
                     transaction=receipt,
                     item=None,
-                    description=ec.name,
+                    description=ec.description,
                     quantity=1,
                     final_price_per_unit=ec_amount,
                 )
@@ -1506,7 +1506,7 @@ class ServicePaymentManager:
                 SalesItem.objects.create(
                     transaction=sales_transaction,
                     item=None,
-                    description=ec.name,
+                    description=ec.description,
                     quantity=1,
                     final_price_per_unit=ec_amount,
                 )
@@ -1619,7 +1619,7 @@ class ServicePaymentManager:
                     SalesItem.objects.create(
                         transaction=sales_transaction,
                         item=None,
-                        description=ec.name,
+                        description=ec.description,
                         quantity=1,
                         final_price_per_unit=ec_amount,
                     )
