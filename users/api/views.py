@@ -45,6 +45,29 @@ def _run_google_sheets_sync_historical_job(
     end_date,
 ) -> None:
     started_at = timezone.now().isoformat()
+
+    def _publish_progress(progress: dict) -> None:
+        _set_google_sheets_sync_job(
+            job_id,
+            {
+                "job_id": job_id,
+                "state": str(progress.get("state") or "running"),
+                "started_at": started_at,
+                "finished_at": None,
+                "ok": None,
+                "message": str(progress.get("message") or "Historical sync is running"),
+                "synced": int(progress.get("synced", 0) or 0),
+                "failed": int(progress.get("failed", 0) or 0),
+                "considered": int(progress.get("processed_targets", 0) or 0),
+                "total_targets": int(progress.get("total_targets", 0) or 0),
+                "processed_targets": int(progress.get("processed_targets", 0) or 0),
+                "progress_pct": int(progress.get("progress_pct", 0) or 0),
+                "current_stall_id": progress.get("current_stall_id"),
+                "current_date": progress.get("current_date"),
+                "errors": [],
+            },
+        )
+
     _set_google_sheets_sync_job(
         job_id,
         {
@@ -57,6 +80,11 @@ def _run_google_sheets_sync_historical_job(
             "synced": 0,
             "failed": 0,
             "considered": 0,
+            "total_targets": 0,
+            "processed_targets": 0,
+            "progress_pct": 0,
+            "current_stall_id": None,
+            "current_date": None,
             "errors": [],
         },
     )
@@ -68,6 +96,7 @@ def _run_google_sheets_sync_historical_job(
             limit=limit,
             start_date=start_date,
             end_date=end_date,
+            progress_callback=_publish_progress,
         )
 
         _set_google_sheets_sync_job(
@@ -82,6 +111,11 @@ def _run_google_sheets_sync_historical_job(
                 "synced": int(result.get("synced", 0) or 0),
                 "failed": int(result.get("failed", 0) or 0),
                 "considered": int(result.get("considered", 0) or 0),
+                "total_targets": int(result.get("total_targets", result.get("considered", 0)) or 0),
+                "processed_targets": int(result.get("processed_targets", result.get("considered", 0)) or 0),
+                "progress_pct": 100,
+                "current_stall_id": None,
+                "current_date": None,
                 "errors": list(result.get("errors", []) or [])[:20],
             },
         )
@@ -99,6 +133,11 @@ def _run_google_sheets_sync_historical_job(
                 "synced": 0,
                 "failed": 0,
                 "considered": 0,
+                "total_targets": 0,
+                "processed_targets": 0,
+                "progress_pct": 0,
+                "current_stall_id": None,
+                "current_date": None,
                 "errors": [str(exc)],
             },
         )
@@ -482,6 +521,11 @@ class GoogleSheetsSyncView(APIView):
                     "synced": 0,
                     "failed": 0,
                     "considered": 0,
+                    "total_targets": 0,
+                    "processed_targets": 0,
+                    "progress_pct": 0,
+                    "current_stall_id": None,
+                    "current_date": None,
                     "errors": [],
                 },
             )

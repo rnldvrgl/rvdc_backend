@@ -4,7 +4,7 @@ import logging
 import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
 from django.conf import settings
 from django.db.models import Sum
@@ -1091,6 +1091,7 @@ def sync_historical_sales_to_google_sheets(
     limit: int | None = None,
     start_date=None,
     end_date=None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     sync_config = _get_google_sync_config()
     if not sync_config.get("enabled"):
@@ -1164,11 +1165,26 @@ def sync_historical_sales_to_google_sheets(
     if isinstance(limit, int) and limit > 0:
         ordered_targets = ordered_targets[:limit]
 
+    total_targets = len(ordered_targets)
+
     synced = 0
     failed = 0
     errors: list[str] = []
 
-    for stall_id, target_date in ordered_targets:
+    if progress_callback:
+        progress_callback(
+            {
+                "state": "running",
+                "total_targets": total_targets,
+                "processed_targets": 0,
+                "synced": 0,
+                "failed": 0,
+                "progress_pct": 0,
+                "message": "Historical sync is running",
+            }
+        )
+
+    for index, (stall_id, target_date) in enumerate(ordered_targets, start=1):
         ok, error_detail = _sync_sales_day_to_google_sheet_result(stall_id, target_date)
         if ok:
             synced += 1
@@ -1179,12 +1195,29 @@ def sync_historical_sales_to_google_sheets(
             else:
                 errors.append(f"stall={stall_id}, date={target_date}")
 
+        if progress_callback:
+            progress_callback(
+                {
+                    "state": "running",
+                    "total_targets": total_targets,
+                    "processed_targets": index,
+                    "synced": synced,
+                    "failed": failed,
+                    "current_stall_id": stall_id,
+                    "current_date": str(target_date),
+                    "progress_pct": int((index * 100) / total_targets) if total_targets > 0 else 100,
+                    "message": "Historical sync is running",
+                }
+            )
+
     return {
         "ok": failed == 0,
         "message": "Historical sync completed" if failed == 0 else "Historical sync completed with errors",
         "synced": synced,
         "failed": failed,
         "considered": synced + failed,
+        "total_targets": total_targets,
+        "processed_targets": synced + failed,
         "errors": errors[:20],
     }
 
