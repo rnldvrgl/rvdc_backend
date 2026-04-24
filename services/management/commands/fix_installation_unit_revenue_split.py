@@ -15,7 +15,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from sales.models import DocumentType, SalesPayment, SalesTransaction, TransactionType
-from services.business_logic import ServicePaymentManager, get_sub_stall
+from services.business_logic import ServicePaymentManager, RevenueCalculator, get_sub_stall
 from services.models import Service
 from utils.enums import ServiceStatus
 
@@ -238,6 +238,9 @@ class Command(BaseCommand):
                     ServicePaymentManager.sync_sales_items(service)
                     if sub_tx:
                         ServicePaymentManager.sync_sub_sales_items(service)
+
+                    # Keep service-level revenue summary in sync with rebuilt items.
+                    RevenueCalculator.calculate_service_revenue(service, save=True)
 
                     if created_sub_tx:
                         self.stdout.write(self.style.SUCCESS(f"  ✓ Created linked sub TX #{sub_tx.id}"))

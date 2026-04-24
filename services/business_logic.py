@@ -283,8 +283,18 @@ class RevenueCalculator:
 
         # Calculate labor fees (Main stall revenue) with discounts
         for appliance in service.appliances.all():
+            # Installation units contribute main share via get_installation_unit_revenue_split()
+            # to avoid double counting labor + unit margin on main stall.
+            if (
+                service.service_type == 'installation'
+                and appliance.serial_number in installation_unit_serials
+            ):
+                pass
+            else:
+                # Use discounted_labor_fee which accounts for labor discounts
+                main_revenue += appliance.discounted_labor_fee or Decimal('0.00')
+
             # Use discounted_labor_fee which accounts for labor discounts
-            main_revenue += appliance.discounted_labor_fee or Decimal('0.00')
             # Add unit_price only for non-installation appliances.
             # Installation units are handled in the installation_units split loop below.
             if service.service_type != 'installation' and appliance.unit_price:
@@ -1445,6 +1455,12 @@ class ServicePaymentManager:
 
         # Add labor fees for each appliance (use discounted fee)
         for appliance in service.appliances.all():
+            if (
+                service.service_type == 'installation'
+                and appliance.serial_number in installation_unit_serials
+            ):
+                continue
+
             labor_charge = appliance.discounted_labor_fee or Decimal('0.00')
             if labor_charge > 0 and not appliance.labor_is_free:
                 appliance_name = appliance.appliance_type.name if appliance.appliance_type else "Appliance"
