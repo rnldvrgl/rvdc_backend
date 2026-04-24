@@ -173,6 +173,7 @@ class Command(BaseCommand):
         fixed_count = 0
         error_count = 0
         tx_type_fixed = 0
+        ghost_cleaned = 0
 
         for idx, service in enumerate(services_to_fix, 1):
             try:
@@ -256,11 +257,37 @@ class Command(BaseCommand):
                 error_count += 1
 
         self.stdout.write("\n" + "=" * 70)
+
+        # Cleanup orphan ghost service transactions in the same cutoff range.
+        linked_main_ids = set(
+            Service.objects.filter(related_transaction__isnull=False).values_list('related_transaction_id', flat=True)
+        )
+        linked_sub_ids = set(
+            Service.objects.filter(related_sub_transaction__isnull=False).values_list('related_sub_transaction_id', flat=True)
+        )
+        linked_ids = linked_main_ids | linked_sub_ids
+
+        ghost_candidates = SalesTransaction.objects.filter(
+            transaction_type=TransactionType.SERVICE,
+            created_at__gte=target_date,
+            payment_status='unpaid',
+            voided=False,
+        ).exclude(id__in=linked_ids)
+
+        for tx in ghost_candidates:
+            if tx.items.exists() or tx.payments.exists():
+                continue
+            ghost_cleaned += 1
+            if not dry_run:
+                tx.delete()
+
         if dry_run:
             self.stdout.write(self.style.WARNING("[DRY-RUN SUMMARY]"))
         self.stdout.write(self.style.SUCCESS(f"Successfully processed: {fixed_count}/{count} services"))
         if tx_type_fixed > 0:
             self.stdout.write(self.style.SUCCESS(f"Updated {tx_type_fixed} linked sales transaction type(s) to 'service'."))
+        if ghost_cleaned > 0:
+            self.stdout.write(self.style.SUCCESS(f"Cleaned {ghost_cleaned} orphan zero-value service transaction(s)."))
         if error_count > 0:
             self.stdout.write(self.style.WARNING(f"Errors encountered: {error_count}/{count} services"))
 

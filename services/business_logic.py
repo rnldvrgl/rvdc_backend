@@ -285,9 +285,9 @@ class RevenueCalculator:
         for appliance in service.appliances.all():
             # Use discounted_labor_fee which accounts for labor discounts
             main_revenue += appliance.discounted_labor_fee or Decimal('0.00')
-            # Add unit_price only for second-hand / non-installation appliances.
-            # Brand-new installation units are handled in the installation_units loop below.
-            if appliance.unit_price and appliance.serial_number not in installation_unit_serials:
+            # Add unit_price only for non-installation appliances.
+            # Installation units are handled in the installation_units split loop below.
+            if service.service_type != 'installation' and appliance.unit_price:
                 main_revenue += appliance.unit_price
 
         # Add aircon unit prices for installation services
@@ -1456,8 +1456,8 @@ class ServicePaymentManager:
                     quantity=1,
                     final_price_per_unit=labor_charge,
                 )
-            # Add unit_price for second-hand / non-installation appliances
-            if appliance.unit_price and appliance.serial_number not in installation_unit_serials:
+            # Add unit_price only for non-installation appliances.
+            if service.service_type != 'installation' and appliance.unit_price:
                 SalesItem.objects.create(
                     transaction=sales_transaction,
                     item=None,
