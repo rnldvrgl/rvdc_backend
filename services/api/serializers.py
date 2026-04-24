@@ -954,6 +954,8 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         decimal_places=2,
         read_only=True
     )
+    installation_labor_fee = serializers.SerializerMethodField()
+    installation_unit_fee = serializers.SerializerMethodField()
     is_labor_warranty_active = serializers.BooleanField(read_only=True)
     is_unit_warranty_active = serializers.BooleanField(read_only=True)
     total_parts_cost = serializers.SerializerMethodField()
@@ -989,6 +991,8 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             "is_labor_warranty_active",
             "is_unit_warranty_active",
             "discounted_labor_fee",
+            "installation_labor_fee",
+            "installation_unit_fee",
             "aircon_installation_data",
             "unit_type",
             "aircon_model",
@@ -1007,6 +1011,8 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "labor_original_amount",
             "discounted_labor_fee",
+            "installation_labor_fee",
+            "installation_unit_fee",
             "warranty_start_date",
             "labor_warranty_end_date",
             "unit_warranty_end_date",
@@ -1023,6 +1029,42 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             brand_name = obj.aircon_model.brand.name if obj.aircon_model.brand else ''
             return f"{brand_name} {obj.aircon_model.name}".strip()
         return None
+
+    def get_installation_labor_fee(self, obj):
+        """Return computed main-stall labor for installation units."""
+        service = getattr(obj, 'service', None)
+        if not service or getattr(service, 'service_type', None) != 'installation':
+            return Decimal('0.00')
+
+        if not obj.serial_number:
+            return Decimal('0.00')
+
+        from services.business_logic import get_installation_unit_revenue_split
+
+        unit = service.installation_units.filter(serial_number=obj.serial_number).first()
+        if not unit:
+            return Decimal('0.00')
+
+        unit_main_revenue, _ = get_installation_unit_revenue_split(service, unit)
+        return unit_main_revenue
+
+    def get_installation_unit_fee(self, obj):
+        """Return computed sub-stall unit allocation for installation units."""
+        service = getattr(obj, 'service', None)
+        if not service or getattr(service, 'service_type', None) != 'installation':
+            return Decimal('0.00')
+
+        if not obj.serial_number:
+            return Decimal('0.00')
+
+        from services.business_logic import get_installation_unit_revenue_split
+
+        unit = service.installation_units.filter(serial_number=obj.serial_number).first()
+        if not unit:
+            return Decimal('0.00')
+
+        _, unit_sub_revenue = get_installation_unit_revenue_split(service, unit)
+        return unit_sub_revenue
 
     def get_total_parts_cost(self, obj):
         """Calculate total cost of parts including discounts (excluding free items/quantities)."""
