@@ -61,7 +61,7 @@ class Command(BaseCommand):
         )
 
         # Add filter for services that have installation units
-        query &= Q(aircon_installations__isnull=False)
+        query &= Q(installation_units__isnull=False)
 
         if service_id:
             query &= Q(id=service_id)
@@ -95,7 +95,7 @@ class Command(BaseCommand):
                 )
 
                 # Check for installation units
-                units = service.aircon_installations.all()
+                units = service.installation_units.all()
                 if not units.exists():
                     self.stdout.write(
                         self.style.WARNING(f"  ⊘ No aircon units found for this service")
