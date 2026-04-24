@@ -14,7 +14,7 @@ from django.utils import timezone
 from expenses.models import Expense
 from inventory.models import Stall
 from remittances.models import RemittanceRecord
-from sales.models import SalesTransaction
+from sales.models import PaymentStatus, SalesPayment, SalesTransaction
 
 logger = logging.getLogger(__name__)
 
