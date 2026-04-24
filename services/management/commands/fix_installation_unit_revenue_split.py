@@ -95,9 +95,15 @@ class Command(BaseCommand):
 
         for idx, service in enumerate(services_to_fix, 1):
             try:
+                client_name = (
+                    getattr(service.client, 'full_name', None)
+                    or str(service.client)
+                    if service.client
+                    else 'Unknown'
+                )
                 self.stdout.write(
                     f"\n[{idx}/{count}] Processing Service #{service.id} "
-                    f"({service.client.name if service.client else 'Unknown'}) "
+                    f"({client_name}) "
                     f"- Status: {service.status} - Created: {service.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
                 )
 
