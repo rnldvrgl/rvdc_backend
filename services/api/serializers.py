@@ -949,11 +949,7 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True
     )
-    discounted_labor_fee = serializers.DecimalField(
-        max_digits=10,
-        decimal_places=2,
-        read_only=True
-    )
+    discounted_labor_fee = serializers.SerializerMethodField()
     installation_labor_fee = serializers.SerializerMethodField()
     installation_unit_fee = serializers.SerializerMethodField()
     is_labor_warranty_active = serializers.BooleanField(read_only=True)
@@ -1029,6 +1025,19 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
             brand_name = obj.aircon_model.brand.name if obj.aircon_model.brand else ''
             return f"{brand_name} {obj.aircon_model.name}".strip()
         return None
+
+    def get_discounted_labor_fee(self, obj):
+        """Return labor fee for display, using installation split where applicable."""
+        service = getattr(obj, 'service', None)
+        if service and getattr(service, 'service_type', None) == 'installation' and obj.serial_number:
+            from services.business_logic import get_installation_unit_revenue_split
+
+            unit = service.installation_units.filter(serial_number=obj.serial_number).first()
+            if unit:
+                unit_main_revenue, _ = get_installation_unit_revenue_split(service, unit)
+                return unit_main_revenue
+
+        return obj.discounted_labor_fee
 
     def get_installation_labor_fee(self, obj):
         """Return computed main-stall labor for installation units."""

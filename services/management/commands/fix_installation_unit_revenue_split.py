@@ -15,7 +15,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from sales.models import DocumentType, SalesPayment, SalesTransaction, TransactionType
-from services.business_logic import ServicePaymentManager
+from services.business_logic import ServicePaymentManager, get_sub_stall
 from services.models import Service
 from utils.enums import ServiceStatus
 
@@ -45,11 +45,29 @@ class Command(BaseCommand):
         )
 
     def _ensure_sub_transaction(self, service, main_tx, dry_run):
+        sub_stall = get_sub_stall()
+        if not sub_stall:
+            raise CommandError("Sub stall is not configured in system settings.")
+
         if service.related_sub_transaction_id:
             try:
                 candidate = service.related_sub_transaction
-                if not candidate.voided:
+                if not candidate.voided and candidate.stall_id == sub_stall.id:
                     return candidate, False
+
+                # Cleanup malformed linked sub TX from older buggy runs
+                # (e.g., linked to main stall with zero items/payments).
+                if (
+                    not dry_run
+                    and candidate
+                    and not candidate.voided
+                    and candidate.stall_id != sub_stall.id
+                    and not candidate.items.exists()
+                    and not candidate.payments.exists()
+                ):
+                    service.related_sub_transaction = None
+                    service.save(update_fields=['related_sub_transaction'])
+                    candidate.delete()
             except SalesTransaction.DoesNotExist:
                 pass
 
@@ -57,7 +75,7 @@ class Command(BaseCommand):
             return None, True
 
         sub_tx = SalesTransaction.objects.create(
-            stall=main_tx.stall if main_tx else None,
+            stall=sub_stall,
             client=service.client,
             sales_clerk=main_tx.sales_clerk if main_tx else None,
             transaction_type=TransactionType.SERVICE,
