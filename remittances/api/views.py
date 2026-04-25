@@ -307,10 +307,29 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
             .distinct()
         )
 
-        # Get sub stall transaction IDs that are service-linked
-        service_sub_tx_ids = services_with_parts.values_list(
-            "related_sub_transaction_id", flat=True
-        )
+        # Build unique sub transaction mapping and keep one canonical service per TX.
+        # This avoids duplicate settlement rows when legacy data links multiple
+        # services to the same related_sub_transaction.
+        canonical_service_by_sub_tx = {}
+        for svc in services_with_parts:
+            sub_tx = svc.related_sub_transaction
+            if not sub_tx:
+                continue
+
+            existing = canonical_service_by_sub_tx.get(sub_tx.id)
+            if not existing:
+                canonical_service_by_sub_tx[sub_tx.id] = svc
+                continue
+
+            # Prefer the service whose created_at is closest to TX creation time.
+            existing_delta = abs((existing.created_at - sub_tx.created_at).total_seconds())
+            candidate_delta = abs((svc.created_at - sub_tx.created_at).total_seconds())
+            if candidate_delta < existing_delta or (
+                candidate_delta == existing_delta and svc.id > existing.id
+            ):
+                canonical_service_by_sub_tx[sub_tx.id] = svc
+
+        service_sub_tx_ids = list(canonical_service_by_sub_tx.keys())
 
         def sum_service_sub_sales(payment_type: str):
             from sales.models import SalesTransaction
@@ -355,21 +374,22 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
         cash_payable = max(Decimal("0"), sales["cash"])
 
         # Services breakdown
+        paid_totals_by_tx = {
+            row["transaction"]: row["total"]
+            for row in SalesPayment.objects.filter(
+                transaction_id__in=service_sub_tx_ids,
+                payment_date__date=target_date,
+            )
+            .values("transaction")
+            .annotate(total=Sum("amount"))
+        }
+
         services_list = []
-        for svc in services_with_parts:
+        for sub_tx_id, svc in canonical_service_by_sub_tx.items():
             client_name = ""
             if svc.client:
                 client_name = svc.client.name if hasattr(svc.client, "name") else str(svc.client)
-            sub_tx = svc.related_sub_transaction
-            tx_total = Decimal("0")
-            if sub_tx:
-                tx_total = (
-                    SalesPayment.objects.filter(
-                        transaction=sub_tx,
-                        payment_date__date=target_date,
-                    ).aggregate(total=Sum("amount"))["total"]
-                    or Decimal("0")
-                )
+            tx_total = paid_totals_by_tx.get(sub_tx_id, Decimal("0")) or Decimal("0")
             services_list.append({
                 "service_id": svc.id,
                 "client_name": client_name,

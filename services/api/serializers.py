@@ -851,7 +851,7 @@ class TechnicianAssignmentPayloadSerializer(serializers.ModelSerializer):
     """Serializer for creating/updating technician assignments (write operations)."""
 
     technician = serializers.PrimaryKeyRelatedField(
-        queryset=CustomUser.all_objects.all(),
+        queryset=CustomUser.all_objects.filter(is_deleted=False),
         required=True
     )
     appliance = serializers.PrimaryKeyRelatedField(
@@ -866,13 +866,11 @@ class TechnicianAssignmentPayloadSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 f"{technician.get_full_name()} is not designated as a technician."
             )
-        # On create (root has no instance): only active technicians may be newly assigned.
-        # On update: allow inactive so existing assignments with deactivated staff can be preserved.
-        root = self.root
-        is_update = (root is not self) and (root.instance is not None)
-        if not is_update and (not technician.is_active or technician.is_deleted):
+        # Allow inactive staff to remain assignable if they still exist.
+        # Deleted users are the only ones that should fail validation.
+        if technician.is_deleted:
             raise serializers.ValidationError(
-                f"{technician.get_full_name()} is inactive and cannot be assigned."
+                f"{technician.get_full_name()} has been deleted and cannot be assigned."
             )
         return technician
 
@@ -1807,7 +1805,7 @@ class ServiceSerializer(serializers.ModelSerializer):
                 elif isinstance(technician, int):
                     # Integer ID - fetch the object
                     try:
-                        technician = CustomUser.objects.get(pk=technician)
+                        technician = CustomUser.all_objects.get(pk=technician, is_deleted=False)
                     except CustomUser.DoesNotExist:
                         raise ValidationError(f"Technician with ID {technician} does not exist.")
                 else:
@@ -1947,7 +1945,7 @@ class ServiceSerializer(serializers.ModelSerializer):
                     elif isinstance(technician, int):
                         # Integer ID - fetch the object
                         try:
-                            technician = CustomUser.objects.get(pk=technician)
+                            technician = CustomUser.all_objects.get(pk=technician, is_deleted=False)
                         except CustomUser.DoesNotExist:
                             raise ValidationError(f"Technician with ID {technician} does not exist.")
                     else:
