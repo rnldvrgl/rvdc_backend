@@ -240,8 +240,19 @@ def _normalize_line_description(line) -> str:
     return line_desc
 
 
-def _build_sales_rows(transactions) -> list[list[str]]:
+def _build_sales_rows(transactions, stall_type: str = "sub") -> list[list[str]]:
     rows: list[list[str]] = []
+
+    # For main stall, build service lookup map
+    service_map = {}
+    if stall_type == "main":
+        from services.models import Service
+        services = Service.objects.filter(
+            related_transaction__in=transactions
+        ).prefetch_related("technician_assignments__technician")
+        for svc in services:
+            if svc.related_transaction_id:
+                service_map[svc.related_transaction_id] = svc
 
     for transaction in transactions:
         client_name = transaction.client.full_name if transaction.client else ""
@@ -249,31 +260,69 @@ def _build_sales_rows(transactions) -> list[list[str]]:
         book_number = transaction.receipt_book or ""
         payment_method = _payment_method_label(transaction)
 
+        # Get service info if main stall
+        service_type = ""
+        technicians = ""
+        if stall_type == "main" and transaction.id in service_map:
+            svc = service_map[transaction.id]
+            service_type = svc.get_service_type_display() if hasattr(svc, 'get_service_type_display') else svc.service_type or ""
+            tech_names = [
+                ta.technician.get_full_name() 
+                for ta in svc.technician_assignments.all()
+            ]
+            technicians = ", ".join(tech_names) if tech_names else ""
+
         line_rows = []
         for line in transaction.items.all():
             description = _normalize_line_description(line)
             quantity = _serialize_decimal(line.quantity)
             amount = _serialize_decimal(line.line_total)
-            line_rows.append([
-                quantity,
-                description,
-                amount,
-                client_name,
-                book_number,
-                receipt_number,
-                payment_method,
-            ])
+            if stall_type == "main":
+                line_rows.append([
+                    quantity,
+                    description,
+                    amount,
+                    client_name,
+                    book_number,
+                    receipt_number,
+                    service_type,
+                    technicians,
+                    payment_method,
+                ])
+            else:
+                line_rows.append([
+                    quantity,
+                    description,
+                    amount,
+                    client_name,
+                    book_number,
+                    receipt_number,
+                    payment_method,
+                ])
 
         if not line_rows:
-            line_rows.append([
-                "",
-                transaction.note or "",
-                _serialize_decimal(transaction.computed_total),
-                client_name,
-                book_number,
-                receipt_number,
-                payment_method,
-            ])
+            if stall_type == "main":
+                line_rows.append([
+                    "",
+                    transaction.note or "",
+                    _serialize_decimal(transaction.computed_total),
+                    client_name,
+                    book_number,
+                    receipt_number,
+                    service_type,
+                    technicians,
+                    payment_method,
+                ])
+            else:
+                line_rows.append([
+                    "",
+                    transaction.note or "",
+                    _serialize_decimal(transaction.computed_total),
+                    client_name,
+                    book_number,
+                    receipt_number,
+                    payment_method,
+                ])
 
         rows.extend(line_rows)
 
@@ -454,7 +503,7 @@ def _clear_day_tab(sheet_api, spreadsheet_id: str, tab_name: str):
     _execute_with_backoff(request, operation=f"values.clear {tab_name}!A1:Z200")
 
 
-def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count: int):
+def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count: int, stall_type: str = "sub"):
     metadata = _execute_with_backoff(
         service.spreadsheets().get(spreadsheetId=spreadsheet_id),
         operation="spreadsheets.get style metadata",
@@ -470,7 +519,55 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
         return
 
     sales_end_row = max(4, 4 + sales_rows_count)
-    requests = [
+    sales_data_cols = 9 if stall_type == "main" else 7
+    
+    requests = []
+    
+    # Set column widths
+    # Column B (Description) = 240
+    # Column D (Client Name) = 200
+    # Column J (Labels) = 160
+    requests.extend([
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": 1,  # Column B
+                    "endIndex": 2,
+                },
+                "properties": {"pixelSize": 240},
+                "fields": "pixelSize",
+            }
+        },
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": 3,  # Column D
+                    "endIndex": 4,
+                },
+                "properties": {"pixelSize": 200},
+                "fields": "pixelSize",
+            }
+        },
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": 9,  # Column J
+                    "endIndex": 10,
+                },
+                "properties": {"pixelSize": 160},
+                "fields": "pixelSize",
+            }
+        },
+    ])
+    
+    # Unmerge cells first
+    requests.extend([
         {
             "unmergeCells": {
                 "range": {
@@ -478,7 +575,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "startRowIndex": 0,
                     "endRowIndex": 2,
                     "startColumnIndex": 0,
-                    "endColumnIndex": 7,
+                    "endColumnIndex": sales_data_cols,
                 }
             }
         },
@@ -515,6 +612,10 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 }
             }
         },
+    ])
+    
+    # Merge cells
+    requests.extend([
         {
             "mergeCells": {
                 "range": {
@@ -522,7 +623,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "startRowIndex": 0,
                     "endRowIndex": 1,
                     "startColumnIndex": 0,
-                    "endColumnIndex": 7,
+                    "endColumnIndex": sales_data_cols,
                 },
                 "mergeType": "MERGE_ALL",
             }
@@ -534,7 +635,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "startRowIndex": 1,
                     "endRowIndex": 2,
                     "startColumnIndex": 0,
-                    "endColumnIndex": 7,
+                    "endColumnIndex": sales_data_cols,
                 },
                 "mergeType": "MERGE_ALL",
             }
@@ -575,337 +676,391 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "mergeType": "MERGE_ALL",
             }
         },
-        {
+    ])
+    
+    # Title row (row 1) - Dark background with white bold text
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 0,
+                "endRowIndex": 1,
+                "startColumnIndex": 0,
+                "endColumnIndex": sales_data_cols,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {"red": 0.09, "green": 0.20, "blue": 0.32},
+                    "horizontalAlignment": "CENTER",
+                    "textFormat": {
+                        "foregroundColor": {"red": 1, "green": 1, "blue": 1},
+                        "fontSize": 15,
+                        "bold": True,
+                    },
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+        }
+    })
+    
+    # Subtitle row (row 2) - Light blue background with bold text
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,
+                "endRowIndex": 2,
+                "startColumnIndex": 0,
+                "endColumnIndex": sales_data_cols,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {"red": 0.94, "green": 0.97, "blue": 0.99},
+                    "horizontalAlignment": "CENTER",
+                    "textFormat": {
+                        "foregroundColor": {"red": 0.12, "green": 0.22, "blue": 0.33},
+                        "fontSize": 11,
+                        "bold": True,
+                    },
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+        }
+    })
+    
+    # Sales header row (row 4) - Bold with light blue background and borders
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 3,
+                "endRowIndex": 4,
+                "startColumnIndex": 0,
+                "endColumnIndex": sales_data_cols,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {"red": 0.92, "green": 0.95, "blue": 0.98},
+                    "textFormat": {"bold": True},
+                    "horizontalAlignment": "CENTER",
+                    "borders": {
+                        "left": {"style": "SOLID"},
+                        "right": {"style": "SOLID"},
+                        "top": {"style": "SOLID"},
+                        "bottom": {"style": "SOLID"},
+                    },
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)",
+        }
+    })
+    
+    # Sales data rows - borders
+    if sales_rows_count > 0:
+        requests.append({
             "repeatCell": {
                 "range": {
                     "sheetId": sheet_id,
-                    "startRowIndex": 0,
-                    "endRowIndex": 1,
+                    "startRowIndex": 4,
+                    "endRowIndex": sales_end_row,
                     "startColumnIndex": 0,
-                    "endColumnIndex": 7,
+                    "endColumnIndex": sales_data_cols,
                 },
                 "cell": {
                     "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.09, "green": 0.20, "blue": 0.32},
-                        "horizontalAlignment": "CENTER",
-                        "textFormat": {
-                            "foregroundColor": {"red": 1, "green": 1, "blue": 1},
-                            "fontSize": 15,
-                            "bold": True,
+                        "borders": {
+                            "left": {"style": "SOLID"},
+                            "right": {"style": "SOLID"},
+                            "top": {"style": "SOLID"},
+                            "bottom": {"style": "SOLID"},
                         },
+                        "wrapStrategy": "WRAP",
                     }
                 },
-                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+                "fields": "userEnteredFormat(borders,wrapStrategy)",
             }
-        },
-        {
-            "repeatCell": {
+        })
+    
+    # REMITTANCES SUMMARY header (row 1, cols J-M)
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 0,
+                "endRowIndex": 1,
+                "startColumnIndex": 9,
+                "endColumnIndex": 13,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {"red": 0.10, "green": 0.16, "blue": 0.24},
+                    "horizontalAlignment": "CENTER",
+                    "textFormat": {
+                        "foregroundColor": {"red": 1, "green": 1, "blue": 1},
+                        "fontSize": 13,
+                        "bold": True,
+                    },
+                    "borders": {
+                        "left": {"style": "SOLID"},
+                        "right": {"style": "SOLID"},
+                        "top": {"style": "SOLID"},
+                        "bottom": {"style": "SOLID"},
+                    },
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)",
+        }
+    })
+    
+    # Remittance metrics rows (rows 2-13, cols J-K) - bold labels + borders
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,
+                "endRowIndex": 13,
+                "startColumnIndex": 9,
+                "endColumnIndex": 11,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "textFormat": {"bold": True},
+                    "borders": {
+                        "left": {"style": "SOLID"},
+                        "right": {"style": "SOLID"},
+                        "top": {"style": "SOLID"},
+                        "bottom": {"style": "SOLID"},
+                    },
+                }
+            },
+            "fields": "userEnteredFormat(textFormat,borders)",
+        }
+    })
+    
+    # Remittance values (rows 2-13, cols L-M) - right aligned + borders
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,
+                "endRowIndex": 13,
+                "startColumnIndex": 10,
+                "endColumnIndex": 13,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "horizontalAlignment": "RIGHT",
+                    "borders": {
+                        "left": {"style": "SOLID"},
+                        "right": {"style": "SOLID"},
+                        "top": {"style": "SOLID"},
+                        "bottom": {"style": "SOLID"},
+                    },
+                }
+            },
+            "fields": "userEnteredFormat(horizontalAlignment,borders)",
+        }
+    })
+    
+    # CASH / COINS BREAKDOWN header (row 15, cols J-M)
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 14,
+                "endRowIndex": 15,
+                "startColumnIndex": 9,
+                "endColumnIndex": 13,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {"red": 0.11, "green": 0.24, "blue": 0.18},
+                    "horizontalAlignment": "CENTER",
+                    "textFormat": {
+                        "foregroundColor": {"red": 1, "green": 1, "blue": 1},
+                        "fontSize": 12,
+                        "bold": True,
+                    },
+                    "borders": {
+                        "left": {"style": "SOLID"},
+                        "right": {"style": "SOLID"},
+                        "top": {"style": "SOLID"},
+                        "bottom": {"style": "SOLID"},
+                    },
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)",
+        }
+    })
+    
+    # Denominations header row (row 16, cols J-M) - bold labels + borders
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 15,
+                "endRowIndex": 16,
+                "startColumnIndex": 9,
+                "endColumnIndex": 13,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {"red": 0.92, "green": 0.95, "blue": 0.98},
+                    "textFormat": {"bold": True},
+                    "horizontalAlignment": "CENTER",
+                    "borders": {
+                        "left": {"style": "SOLID"},
+                        "right": {"style": "SOLID"},
+                        "top": {"style": "SOLID"},
+                        "bottom": {"style": "SOLID"},
+                    },
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)",
+        }
+    })
+    
+    # Denominations data rows (rows 17-25, cols J-M) - RED denomination labels + borders
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 16,
+                "endRowIndex": 25,
+                "startColumnIndex": 9,
+                "endColumnIndex": 13,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "borders": {
+                        "left": {"style": "SOLID"},
+                        "right": {"style": "SOLID"},
+                        "top": {"style": "SOLID"},
+                        "bottom": {"style": "SOLID"},
+                    },
+                    "horizontalAlignment": "CENTER",
+                }
+            },
+            "fields": "userEnteredFormat(borders,horizontalAlignment)",
+        }
+    })
+    
+    # First column of denomination rows (denomination labels) - RED COLOR
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 16,
+                "endRowIndex": 25,
+                "startColumnIndex": 9,
+                "endColumnIndex": 10,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "textFormat": {
+                        "bold": True,
+                        "foregroundColor": {"red": 0.85, "green": 0.0, "blue": 0.0},
+                    },
+                    "borders": {
+                        "left": {"style": "SOLID"},
+                        "right": {"style": "SOLID"},
+                        "top": {"style": "SOLID"},
+                        "bottom": {"style": "SOLID"},
+                    },
+                }
+            },
+            "fields": "userEnteredFormat(textFormat,borders)",
+        }
+    })
+    
+    # EXPENSES header (row 27, cols J-L) - RED BACKGROUND + WHITE TEXT
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 26,
+                "endRowIndex": 27,
+                "startColumnIndex": 9,
+                "endColumnIndex": 12,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {"red": 0.85, "green": 0.0, "blue": 0.0},
+                    "horizontalAlignment": "CENTER",
+                    "textFormat": {
+                        "foregroundColor": {"red": 1, "green": 1, "blue": 1},
+                        "fontSize": 12,
+                        "bold": True,
+                    },
+                    "borders": {
+                        "left": {"style": "SOLID"},
+                        "right": {"style": "SOLID"},
+                        "top": {"style": "SOLID"},
+                        "bottom": {"style": "SOLID"},
+                    },
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)",
+        }
+    })
+    
+    # Expenses header row (row 28, cols J-L) - bold labels + light blue background + borders
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 27,
+                "endRowIndex": 28,
+                "startColumnIndex": 9,
+                "endColumnIndex": 12,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {"red": 0.92, "green": 0.95, "blue": 0.98},
+                    "textFormat": {"bold": True},
+                    "horizontalAlignment": "CENTER",
+                    "borders": {
+                        "left": {"style": "SOLID"},
+                        "right": {"style": "SOLID"},
+                        "top": {"style": "SOLID"},
+                        "bottom": {"style": "SOLID"},
+                    },
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)",
+        }
+    })
+    
+    # Basic filter
+    requests.append({
+        "setBasicFilter": {
+            "filter": {
                 "range": {
                     "sheetId": sheet_id,
                     "startRowIndex": 3,
-                    "endRowIndex": 4,
+                    "endRowIndex": sales_end_row,
                     "startColumnIndex": 0,
-                    "endColumnIndex": 7,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.92, "green": 0.95, "blue": 0.98},
-                        "textFormat": {"bold": True},
-                        "horizontalAlignment": "CENTER",
-                    }
-                },
-                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-            }
-        },
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 1,
-                    "endRowIndex": 2,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": 7,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.94, "green": 0.97, "blue": 0.99},
-                        "horizontalAlignment": "CENTER",
-                        "textFormat": {
-                            "foregroundColor": {"red": 0.12, "green": 0.22, "blue": 0.33},
-                            "fontSize": 11,
-                            "bold": True,
-                        },
-                    }
-                },
-                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-            }
-        },
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 0,
-                    "endRowIndex": 1,
-                    "startColumnIndex": 9,
-                    "endColumnIndex": 13,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.10, "green": 0.16, "blue": 0.24},
-                        "horizontalAlignment": "CENTER",
-                        "textFormat": {
-                            "foregroundColor": {"red": 1, "green": 1, "blue": 1},
-                            "fontSize": 13,
-                            "bold": True,
-                        },
-                    }
-                },
-                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-            }
-        },
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 14,
-                    "endRowIndex": 15,
-                    "startColumnIndex": 9,
-                    "endColumnIndex": 13,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.11, "green": 0.24, "blue": 0.18},
-                        "horizontalAlignment": "CENTER",
-                        "textFormat": {
-                            "foregroundColor": {"red": 1, "green": 1, "blue": 1},
-                            "fontSize": 12,
-                            "bold": True,
-                        },
-                    }
-                },
-                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-            }
-        },
-        {
-            "setBasicFilter": {
-                "filter": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": 3,
-                        "endRowIndex": sales_end_row,
-                        "startColumnIndex": 0,
-                        "endColumnIndex": 7,
-                    }
+                    "endColumnIndex": sales_data_cols,
                 }
             }
-        },
-        {
-            "updateSheetProperties": {
-                "properties": {
-                    "sheetId": sheet_id,
-                    "gridProperties": {"frozenRowCount": 0},
-                },
-                "fields": "gridProperties.frozenRowCount",
-            }
-        },
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 15,
-                    "endRowIndex": 16,
-                    "startColumnIndex": 8,
-                    "endColumnIndex": 13,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.92, "green": 0.95, "blue": 0.98},
-                        "textFormat": {"bold": True},
-                        "horizontalAlignment": "CENTER",
-                    }
-                },
-                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-            }
-        },
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 26,
-                    "endRowIndex": 27,
-                    "startColumnIndex": 9,
-                    "endColumnIndex": 12,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.92, "green": 0.95, "blue": 0.98},
-                        "textFormat": {"bold": True},
-                        "horizontalAlignment": "CENTER",
-                    }
-                },
-                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-            }
-        },
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 27,
-                    "endRowIndex": 28,
-                    "startColumnIndex": 9,
-                    "endColumnIndex": 12,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.89, "green": 0.93, "blue": 0.98},
-                        "textFormat": {"bold": True},
-                        "horizontalAlignment": "CENTER",
-                    }
-                },
-                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-            }
-        },
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 1,
-                    "endRowIndex": 13,
-                    "startColumnIndex": 10,
-                    "endColumnIndex": 11,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "horizontalAlignment": "RIGHT",
-                    }
-                },
-                "fields": "userEnteredFormat(horizontalAlignment)",
-            }
-        },
-    ]
-
-    conditional_rules = [
-        {
-            "addConditionalFormatRule": {
-                "index": 0,
-                "rule": {
-                    "ranges": [
-                        {
-                            "sheetId": sheet_id,
-                            "startRowIndex": 12,
-                            "endRowIndex": 13,
-                            "startColumnIndex": 10,
-                            "endColumnIndex": 11,
-                        }
-                    ],
-                    "booleanRule": {
-                        "condition": {"type": "NUMBER_GREATER", "values": [{"userEnteredValue": "0"}]},
-                        "format": {
-                            "backgroundColor": {"red": 0.82, "green": 0.94, "blue": 0.84},
-                            "textFormat": {"bold": True, "foregroundColor": {"red": 0.05, "green": 0.45, "blue": 0.12}},
-                        },
-                    },
-                },
-            }
-        },
-        {
-            "addConditionalFormatRule": {
-                "index": 0,
-                "rule": {
-                    "ranges": [
-                        {
-                            "sheetId": sheet_id,
-                            "startRowIndex": 12,
-                            "endRowIndex": 13,
-                            "startColumnIndex": 10,
-                            "endColumnIndex": 11,
-                        }
-                    ],
-                    "booleanRule": {
-                        "condition": {"type": "NUMBER_LESS", "values": [{"userEnteredValue": "0"}]},
-                        "format": {
-                            "backgroundColor": {"red": 0.98, "green": 0.88, "blue": 0.88},
-                            "textFormat": {"bold": True, "foregroundColor": {"red": 0.72, "green": 0.12, "blue": 0.12}},
-                        },
-                    },
-                },
-            }
-        },
-        {
-            "addConditionalFormatRule": {
-                "index": 0,
-                "rule": {
-                    "ranges": [
-                        {
-                            "sheetId": sheet_id,
-                            "startRowIndex": 12,
-                            "endRowIndex": 13,
-                            "startColumnIndex": 10,
-                            "endColumnIndex": 11,
-                        }
-                    ],
-                    "booleanRule": {
-                        "condition": {"type": "NUMBER_EQ", "values": [{"userEnteredValue": "0"}]},
-                        "format": {
-                            "backgroundColor": {"red": 0.95, "green": 0.95, "blue": 0.95},
-                            "textFormat": {"bold": True, "foregroundColor": {"red": 0.35, "green": 0.35, "blue": 0.35}},
-                        },
-                    },
-                },
-            }
-        },
-        {
-            "addConditionalFormatRule": {
-                "index": 0,
-                "rule": {
-                    "ranges": [
-                        {
-                            "sheetId": sheet_id,
-                            "startRowIndex": 7,
-                            "endRowIndex": 8,
-                            "startColumnIndex": 10,
-                            "endColumnIndex": 11,
-                        }
-                    ],
-                    "booleanRule": {
-                        "condition": {"type": "NUMBER_GREATER", "values": [{"userEnteredValue": "0"}]},
-                        "format": {
-                            "backgroundColor": {"red": 0.93, "green": 0.97, "blue": 0.87},
-                            "textFormat": {"bold": True, "foregroundColor": {"red": 0.20, "green": 0.45, "blue": 0.08}},
-                        },
-                    },
-                },
-            }
-        },
-        {
-            "addConditionalFormatRule": {
-                "index": 0,
-                "rule": {
-                    "ranges": [
-                        {
-                            "sheetId": sheet_id,
-                            "startRowIndex": 8,
-                            "endRowIndex": 9,
-                            "startColumnIndex": 10,
-                            "endColumnIndex": 11,
-                        }
-                    ],
-                    "booleanRule": {
-                        "condition": {"type": "NUMBER_GREATER", "values": [{"userEnteredValue": "0"}]},
-                        "format": {
-                            "backgroundColor": {"red": 0.93, "green": 0.97, "blue": 0.87},
-                            "textFormat": {"bold": True, "foregroundColor": {"red": 0.20, "green": 0.45, "blue": 0.08}},
-                        },
-                    },
-                },
-            }
-        },
-    ]
-
+        }
+    })
+    
+    # Update sheet properties
+    requests.append({
+        "updateSheetProperties": {
+            "properties": {
+                "sheetId": sheet_id,
+                "gridProperties": {"frozenRowCount": 0},
+            },
+            "fields": "gridProperties.frozenRowCount",
+        }
+    })
+    
     _execute_with_backoff(
         service.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id,
-            body={"requests": requests + conditional_rules},
+            body={"requests": requests},
         ),
         operation=f"spreadsheets.batchUpdate style {tab_name}",
     )
@@ -929,7 +1084,7 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
         .order_by("manual_receipt_number", "id")
     )
 
-    sales_rows = _build_sales_rows(transactions)
+    sales_rows = _build_sales_rows(transactions, stall.stall_type)
     expense_rows = _get_expense_rows(stall, target_date)
     metrics = _get_day_metrics(stall, target_date)
 
@@ -937,12 +1092,22 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
     title = f"{stall_label} SALES"
     subtitle = target_date.strftime("%A, %B %d, %Y")
 
+    # Different headers for Main vs Sub stall
+    if stall.stall_type == "main":
+        sales_header_end = "I4"
+        sales_headers = ["Quantity", "Description", "Amount", "Client Name", "Book #", "Receipt #", "Service Type", "Technicians", "Payment Method"]
+        sales_data_cols = 9
+    else:
+        sales_header_end = "G4"
+        sales_headers = ["Quantity", "Description", "Amount", "Client Name", "Book #", "Receipt #", "Payment Method"]
+        sales_data_cols = 7
+
     blocks: list[dict[str, Any]] = [
-        {"a1": "A1:G1", "values": [[title]]},
-        {"a1": "A2:G2", "values": [[subtitle]]},
+        {"a1": f"A1:{chr(64 + sales_data_cols)}1", "values": [[title]]},
+        {"a1": f"A2:{chr(64 + sales_data_cols)}2", "values": [[subtitle]]},
         {
-            "a1": "A4:G4",
-            "values": [["Quantity", "Description", "Amount", "Client Name", "Book #", "Receipt #", "Payment Method"]],
+            "a1": f"A4:{sales_header_end}",
+            "values": [sales_headers],
         },
         {"a1": "J1:M1", "values": [["REMITTANCES SUMMARY", "", "", ""]]},
         {
@@ -969,8 +1134,9 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
     ]
 
     if sales_rows:
+        sales_end_col = chr(64 + sales_data_cols)
         blocks.append({
-            "a1": f"A5:G{4 + len(sales_rows)}",
+            "a1": f"A5:{sales_end_col}{4 + len(sales_rows)}",
             "values": sales_rows,
         })
 
@@ -993,7 +1159,48 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
         spreadsheet_id,
         tab_name,
         sales_rows_count=len(sales_rows),
+        stall_type=stall.stall_type,
     )
+    
+    # Navigate to the latest daily tab on open
+    _navigate_to_latest_daily_tab(service, spreadsheet_id)
+
+
+def _navigate_to_latest_daily_tab(service, spreadsheet_id: str):
+    """Set the latest daily tab as the active sheet."""
+    try:
+        metadata = _execute_with_backoff(
+            service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id,
+                fields="sheets(properties(sheetId,title,index))"
+            ),
+            operation="spreadsheets.get sheets for navigation",
+        )
+        
+        latest_gid = _latest_daily_tab_gid(metadata.get("sheets", []))
+        if latest_gid is not None:
+            # Update the active sheet to the latest daily tab
+            _execute_with_backoff(
+                service.spreadsheets().batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={
+                        "requests": [
+                            {
+                                "updateSheetProperties": {
+                                    "properties": {
+                                        "sheetId": latest_gid,
+                                        "index": len(metadata.get("sheets", [])) - 1,
+                                    },
+                                    "fields": "index",
+                                }
+                            }
+                        ]
+                    },
+                ),
+                operation="spreadsheets.batchUpdate set active sheet",
+            )
+    except Exception as exc:
+        logger.debug("Failed to navigate to latest daily tab: %s", exc)
 
 
 def get_google_sheets_sync_status() -> dict[str, Any]:
