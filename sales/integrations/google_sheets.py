@@ -212,6 +212,8 @@ def _serialize_decimal(value) -> str:
         return ""
     if isinstance(value, Decimal):
         return f"{value:.2f}"
+    if isinstance(value, (int, float)):
+        return f"{Decimal(str(value)):.2f}"
     return str(value)
 
 
@@ -521,8 +523,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
     sales_end_row = max(4, 4 + sales_rows_count)
     sales_data_cols = 9 if stall_type == "main" else 7
     summary_start_col = 11 if stall_type == "main" else 9
-    summary_end_col = summary_start_col + 4
-    summary_metrics_end_col = summary_start_col + 2
+    remittance_end_col = summary_start_col + 2  # 2 columns: label + amount
+    cash_end_col = summary_start_col + 4  # 4 columns: denomination, remitted, declared, cod
     expenses_end_col = summary_start_col + 3
 
     requests = []
@@ -605,6 +607,35 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
         }
     })
 
+    # Reset side-panel staging area to remove stale legacy fills/borders from prior layouts.
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 0,
+                "endRowIndex": 200,
+                "startColumnIndex": 8,  # Column I
+                "endColumnIndex": 17,   # Through column Q
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": {"red": 1, "green": 1, "blue": 1},
+                    "textFormat": {
+                        "foregroundColor": {"red": 0, "green": 0, "blue": 0},
+                        "bold": False,
+                    },
+                    "borders": {
+                        "left": {"style": "NONE"},
+                        "right": {"style": "NONE"},
+                        "top": {"style": "NONE"},
+                        "bottom": {"style": "NONE"},
+                    },
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat,borders)",
+        }
+    })
+
     # Unmerge cells first
     # For main-stall sheets, old tabs may still have side-panel merges at J/M and J/L.
     # Unmerge those legacy ranges first so shifted ranges do not partially overlap.
@@ -664,7 +695,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "startRowIndex": 0,
                     "endRowIndex": 1,
                     "startColumnIndex": summary_start_col,
-                    "endColumnIndex": summary_end_col,
+                    "endColumnIndex": remittance_end_col,
                 }
             }
         },
@@ -675,7 +706,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "startRowIndex": 14,
                     "endRowIndex": 15,
                     "startColumnIndex": summary_start_col,
-                    "endColumnIndex": summary_end_col,
+                    "endColumnIndex": cash_end_col,
                 }
             }
         },
@@ -725,7 +756,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "startRowIndex": 0,
                     "endRowIndex": 1,
                     "startColumnIndex": summary_start_col,
-                    "endColumnIndex": summary_end_col,
+                    "endColumnIndex": remittance_end_col,
                 },
                 "mergeType": "MERGE_ALL",
             }
@@ -737,7 +768,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "startRowIndex": 14,
                     "endRowIndex": 15,
                     "startColumnIndex": summary_start_col,
-                    "endColumnIndex": summary_end_col,
+                    "endColumnIndex": cash_end_col,
                 },
                 "mergeType": "MERGE_ALL",
             }
@@ -859,7 +890,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             }
         })
 
-    # REMITTANCES SUMMARY header (row 1, cols J-M)
+    # REMITTANCES SUMMARY header (row 1, 2 columns)
     requests.append({
         "repeatCell": {
             "range": {
@@ -867,7 +898,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "startRowIndex": 0,
                 "endRowIndex": 1,
                 "startColumnIndex": summary_start_col,
-                "endColumnIndex": summary_end_col,
+                "endColumnIndex": remittance_end_col,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -890,7 +921,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
         }
     })
 
-    # Remittance metrics rows (rows 2-13, cols J-K) - bold labels + borders
+    # Remittance labels (rows 2-13, first column) - bold + borders
     requests.append({
         "repeatCell": {
             "range": {
@@ -898,7 +929,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "startRowIndex": 1,
                 "endRowIndex": 13,
                 "startColumnIndex": summary_start_col,
-                "endColumnIndex": summary_metrics_end_col,
+                "endColumnIndex": summary_start_col + 1,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -915,7 +946,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
         }
     })
 
-    # Remittance values (rows 2-13) - centered + borders
+    # Remittance values (rows 2-13, amount column) - centered + borders
     requests.append({
         "repeatCell": {
             "range": {
@@ -923,7 +954,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "startRowIndex": 1,
                 "endRowIndex": 13,
                 "startColumnIndex": summary_start_col + 1,
-                "endColumnIndex": summary_end_col,
+                "endColumnIndex": summary_start_col + 2,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -940,7 +971,29 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
         }
     })
 
-    # CASH / COINS BREAKDOWN header (row 15, cols J-M)
+    # Currency format for remittance amount column (Peso).
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1,
+                "endRowIndex": 13,
+                "startColumnIndex": summary_start_col + 1,
+                "endColumnIndex": summary_start_col + 2,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "numberFormat": {
+                        "type": "CURRENCY",
+                        "pattern": "\"PHP\" #,##0.00",
+                    }
+                }
+            },
+            "fields": "userEnteredFormat.numberFormat",
+        }
+    })
+
+    # CASH / COINS BREAKDOWN header (row 15, 4 columns)
     requests.append({
         "repeatCell": {
             "range": {
@@ -948,7 +1001,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "startRowIndex": 14,
                 "endRowIndex": 15,
                 "startColumnIndex": summary_start_col,
-                "endColumnIndex": summary_end_col,
+                "endColumnIndex": cash_end_col,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -971,7 +1024,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
         }
     })
 
-    # Denominations header row (row 16, cols J-M) - bold labels + borders
+    # Denominations header row (row 16, 4 columns) - bold labels + borders
     requests.append({
         "repeatCell": {
             "range": {
@@ -979,7 +1032,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "startRowIndex": 15,
                 "endRowIndex": 16,
                 "startColumnIndex": summary_start_col,
-                "endColumnIndex": summary_end_col,
+                "endColumnIndex": cash_end_col,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -998,7 +1051,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
         }
     })
 
-    # Denominations data rows (rows 17-25, cols J-M) - RED denomination labels + borders
+    # Denominations data rows (rows 17-25, 4 columns) - RED denomination labels + borders
     requests.append({
         "repeatCell": {
             "range": {
@@ -1006,7 +1059,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "startRowIndex": 16,
                 "endRowIndex": 25,
                 "startColumnIndex": summary_start_col,
-                "endColumnIndex": summary_end_col,
+                "endColumnIndex": cash_end_col,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -1109,6 +1162,50 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
         }
     })
 
+    # Currency format for sales amount column C (rows below header).
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 4,
+                "endRowIndex": max(5, sales_end_row),
+                "startColumnIndex": 2,
+                "endColumnIndex": 3,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "numberFormat": {
+                        "type": "CURRENCY",
+                        "pattern": "\"PHP\" #,##0.00",
+                    }
+                }
+            },
+            "fields": "userEnteredFormat.numberFormat",
+        }
+    })
+
+    # Currency format for expenses amount column (3rd col in expenses block).
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 28,
+                "endRowIndex": 200,
+                "startColumnIndex": summary_start_col + 2,
+                "endColumnIndex": summary_start_col + 3,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "numberFormat": {
+                        "type": "CURRENCY",
+                        "pattern": "\"PHP\" #,##0.00",
+                    }
+                }
+            },
+            "fields": "userEnteredFormat.numberFormat",
+        }
+    })
+
     # Basic filter
     requests.append({
         "setBasicFilter": {
@@ -1190,8 +1287,9 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
         return letter
 
     summary_start_col = _col_letter(summary_start_col_idx)
-    summary_end_col = _col_letter(summary_start_col_idx + 3)
+    remittance_end_col = _col_letter(summary_start_col_idx + 1)
     summary_values_col = _col_letter(summary_start_col_idx + 1)
+    cash_end_col = _col_letter(summary_start_col_idx + 3)
     expenses_end_col = _col_letter(summary_start_col_idx + 2)
 
     blocks: list[dict[str, Any]] = [
@@ -1201,7 +1299,7 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
             "a1": f"A4:{sales_header_end}",
             "values": [sales_headers],
         },
-        {"a1": f"{summary_start_col}1:{summary_end_col}1", "values": [["REMITTANCES SUMMARY", "", "", ""]]},
+        {"a1": f"{summary_start_col}1:{remittance_end_col}1", "values": [["REMITTANCES SUMMARY", ""]]},
         {
             "a1": f"{summary_start_col}2:{summary_values_col}13",
             "values": [
@@ -1219,8 +1317,8 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
                 ["Over / Short", _serialize_decimal(metrics["balance"])],
             ],
         },
-        {"a1": f"{summary_start_col}15:{summary_end_col}15", "values": [["CASH / COINS BREAKDOWN", "", "", ""]]},
-        {"a1": f"{summary_start_col}16:{summary_end_col}16", "values": [["Denomination", "Remitted", "Declared", "COD"]]},
+        {"a1": f"{summary_start_col}15:{cash_end_col}15", "values": [["CASH / COINS BREAKDOWN", "", "", ""]]},
+        {"a1": f"{summary_start_col}16:{cash_end_col}16", "values": [["Denomination", "Remitted", "Declared", "COD"]]},
         {"a1": f"{summary_start_col}27:{expenses_end_col}27", "values": [["EXPENSES", "", ""]]},
         {"a1": f"{summary_start_col}28:{expenses_end_col}28", "values": [["Type", "Description", "Amount"]]},
     ]
@@ -1234,7 +1332,7 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
 
     denom_rows = metrics["denominations"] or [["1000", "0", "0", "0"], ["500", "0", "0", "0"], ["200", "0", "0", "0"], ["100", "0", "0", "0"], ["50", "0", "0", "0"], ["20", "0", "0", "0"], ["10", "0", "0", "0"], ["5", "0", "0", "0"], ["1", "0", "0", "0"]]
     blocks.append({
-        "a1": f"{summary_start_col}17:{summary_end_col}{16 + len(denom_rows)}",
+        "a1": f"{summary_start_col}17:{cash_end_col}{16 + len(denom_rows)}",
         "values": denom_rows,
     })
 
