@@ -511,10 +511,15 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
         operation="spreadsheets.get style metadata",
     )
     sheet_id = None
+    row_count = 1000
+    col_count = 26
     for sheet in metadata.get("sheets", []):
         props = sheet.get("properties", {})
         if props.get("title") == tab_name:
             sheet_id = props.get("sheetId")
+            grid_props = props.get("gridProperties", {})
+            row_count = int(grid_props.get("rowCount") or row_count)
+            col_count = int(grid_props.get("columnCount") or col_count)
             break
 
     if sheet_id is None:
@@ -636,92 +641,19 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
         }
     })
 
-    # Unmerge cells first
-    # For main-stall sheets, old tabs may still have side-panel merges at J/M and J/L.
-    # Unmerge those legacy ranges first so shifted ranges do not partially overlap.
-    if stall_type == "main":
-        requests.extend([
-            {
-                "unmergeCells": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": 0,
-                        "endRowIndex": 1,
-                        "startColumnIndex": 9,
-                        "endColumnIndex": 13,
-                    }
-                }
-            },
-            {
-                "unmergeCells": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": 14,
-                        "endRowIndex": 15,
-                        "startColumnIndex": 9,
-                        "endColumnIndex": 13,
-                    }
-                }
-            },
-            {
-                "unmergeCells": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": 26,
-                        "endRowIndex": 27,
-                        "startColumnIndex": 9,
-                        "endColumnIndex": 12,
-                    }
-                }
-            },
-        ])
-
-    requests.extend([
-        {
-            "unmergeCells": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 0,
-                    "endRowIndex": 2,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": sales_data_cols,
-                }
+    # Unmerge all merged cells in the tab first.
+    # This avoids partial-overlap errors from historical layouts.
+    requests.append({
+        "unmergeCells": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 0,
+                "endRowIndex": row_count,
+                "startColumnIndex": 0,
+                "endColumnIndex": col_count,
             }
-        },
-        {
-            "unmergeCells": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 0,
-                    "endRowIndex": 1,
-                    "startColumnIndex": summary_start_col,
-                    "endColumnIndex": remittance_end_col,
-                }
-            }
-        },
-        {
-            "unmergeCells": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 14,
-                    "endRowIndex": 15,
-                    "startColumnIndex": summary_start_col,
-                    "endColumnIndex": cash_end_col,
-                }
-            }
-        },
-        {
-            "unmergeCells": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 26,
-                    "endRowIndex": 27,
-                    "startColumnIndex": summary_start_col,
-                    "endColumnIndex": expenses_end_col,
-                }
-            }
-        },
-    ])
+        }
+    })
 
     # Merge cells
     requests.extend([
