@@ -505,7 +505,14 @@ def _clear_day_tab(sheet_api, spreadsheet_id: str, tab_name: str):
     _execute_with_backoff(request, operation=f"values.clear {tab_name}!A1:Z200")
 
 
-def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count: int, stall_type: str = "sub"):
+def _style_day_tab(
+    service,
+    spreadsheet_id: str,
+    tab_name: str,
+    sales_rows_count: int,
+    expense_rows_count: int = 0,
+    stall_type: str = "sub",
+):
     metadata = _execute_with_backoff(
         service.spreadsheets().get(spreadsheetId=spreadsheet_id),
         operation="spreadsheets.get style metadata",
@@ -653,6 +660,44 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "userEnteredFormat(backgroundColor,textFormat,borders)",
         }
     })
+
+    # Keep visible light-gray grid borders in spacer columns between sales and side panel.
+    spacer_start_col = sales_data_cols - 1 if stall_type == "main" else sales_data_cols
+    if summary_start_col > spacer_start_col:
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 3,
+                    "endRowIndex": 200,
+                    "startColumnIndex": spacer_start_col,
+                    "endColumnIndex": summary_start_col,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "borders": {
+                            "left": {
+                                "style": "SOLID",
+                                "color": {"red": 0.82, "green": 0.82, "blue": 0.82},
+                            },
+                            "right": {
+                                "style": "SOLID",
+                                "color": {"red": 0.82, "green": 0.82, "blue": 0.82},
+                            },
+                            "top": {
+                                "style": "SOLID",
+                                "color": {"red": 0.82, "green": 0.82, "blue": 0.82},
+                            },
+                            "bottom": {
+                                "style": "SOLID",
+                                "color": {"red": 0.82, "green": 0.82, "blue": 0.82},
+                            },
+                        }
+                    }
+                },
+                "fields": "userEnteredFormat.borders",
+            }
+        })
 
     # Unmerge all merged cells in the tab first.
     # This avoids partial-overlap errors from historical layouts.
@@ -1107,30 +1152,31 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
         }
     })
 
-    # Expense data rows (from row 29 onward) - borders for all expense cells.
-    requests.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": sheet_id,
-                "startRowIndex": 28,
-                "endRowIndex": 200,
-                "startColumnIndex": summary_start_col,
-                "endColumnIndex": expenses_end_col,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "borders": {
-                        "left": {"style": "SOLID"},
-                        "right": {"style": "SOLID"},
-                        "top": {"style": "SOLID"},
-                        "bottom": {"style": "SOLID"},
-                    },
-                    "wrapStrategy": "WRAP",
-                }
-            },
-            "fields": "userEnteredFormat(borders,wrapStrategy)",
-        }
-    })
+    # Expense data rows (row 29 onward) - apply borders only to actual rows.
+    if expense_rows_count > 0:
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 28,
+                    "endRowIndex": 28 + expense_rows_count,
+                    "startColumnIndex": summary_start_col,
+                    "endColumnIndex": expenses_end_col,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "borders": {
+                            "left": {"style": "SOLID"},
+                            "right": {"style": "SOLID"},
+                            "top": {"style": "SOLID"},
+                            "bottom": {"style": "SOLID"},
+                        },
+                        "wrapStrategy": "WRAP",
+                    }
+                },
+                "fields": "userEnteredFormat(borders,wrapStrategy)",
+            }
+        })
 
     # Currency format for sales amount column C (rows below header).
     requests.append({
@@ -1319,6 +1365,7 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
         spreadsheet_id,
         tab_name,
         sales_rows_count=len(sales_rows),
+        expense_rows_count=len(expense_rows),
         stall_type=stall.stall_type,
     )
 
