@@ -6,7 +6,7 @@ Usage:
     python manage.py fix_installation_unit_revenue_split --date 2026-04-01
     python manage.py fix_installation_unit_revenue_split --date 2026-04-01 --dry-run
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from django.core.management.base import BaseCommand, CommandError
@@ -133,6 +133,69 @@ class Command(BaseCommand):
 
         return len(service_payments)
 
+    def _cleanup_duplicate_transactions_for_service(self, service, main_tx, sub_tx, dry_run):
+        """
+        Void extra unlinked service/sale transactions for the same client around
+        this service's transaction window.
+
+        This targets legacy duplicates (e.g., old combined main TX) that remain
+        active after split rebuild.
+        """
+        linked_ids = {tx.id for tx in (main_tx, sub_tx) if tx}
+        if not linked_ids:
+            return 0
+
+        serials = set(service.installation_units.values_list('serial_number', flat=True))
+        anchors = [tx.created_at for tx in (main_tx, sub_tx) if tx and tx.created_at]
+        if anchors:
+            window_start = min(anchors) - timedelta(hours=2)
+            window_end = max(anchors) + timedelta(hours=2)
+        else:
+            window_start = service.created_at - timedelta(hours=2)
+            window_end = service.created_at + timedelta(hours=2)
+
+        candidates = SalesTransaction.objects.filter(
+            client=service.client,
+            transaction_type__in=[TransactionType.SERVICE, TransactionType.SALE],
+            voided=False,
+            created_at__range=(window_start, window_end),
+        ).exclude(id__in=linked_ids)
+
+        duplicates = []
+        for tx in candidates:
+            has_install_hint = tx.items.filter(description__icontains='Aircon Unit').exists()
+            has_matching_serial = False
+            if serials:
+                for item in tx.items.all():
+                    desc = item.description or ''
+                    if any(serial and serial in desc for serial in serials):
+                        has_matching_serial = True
+                        break
+
+            looks_old_combined_main = (
+                main_tx
+                and tx.stall_id == main_tx.stall_id
+                and abs((tx.computed_total or Decimal('0')) - (service.total_revenue or Decimal('0'))) <= Decimal('0.01')
+            )
+
+            if has_install_hint or has_matching_serial or looks_old_combined_main:
+                duplicates.append(tx)
+
+        if not duplicates:
+            return 0
+
+        for tx in duplicates:
+            self.stdout.write(self.style.WARNING(
+                f"  ↳ Duplicate TX #{tx.id} detected (stall={tx.stall.name}, total=₱{tx.computed_total})"
+            ))
+            if not dry_run:
+                tx.voided = True
+                tx.voided_at = timezone.now()
+                tx.void_reason = f"Duplicate installation split transaction cleanup (service #{service.id})"
+                tx.save(update_fields=['voided', 'voided_at', 'void_reason', 'updated_at'])
+
+        return len(duplicates)
+
     def handle(self, *args, **options):
         date_str = options.get('date')
         dry_run = options.get('dry_run', False)
@@ -186,6 +249,7 @@ class Command(BaseCommand):
         error_count = 0
         tx_type_fixed = 0
         ghost_cleaned = 0
+        duplicate_voided = 0
         affected_client_ids = set(
             services_to_fix.filter(client__isnull=False).values_list('client_id', flat=True)
         )
@@ -250,6 +314,18 @@ class Command(BaseCommand):
                             f"Payments: {service.payments.count()})"
                         )
                     )
+
+                    duplicate_count = self._cleanup_duplicate_transactions_for_service(
+                        service,
+                        main_tx,
+                        sub_tx,
+                        dry_run=True,
+                    )
+                    duplicate_voided += duplicate_count
+                    if duplicate_count:
+                        self.stdout.write(self.style.WARNING(
+                            f"  ⊲ [DRY-RUN] Would void {duplicate_count} duplicate transaction(s)"
+                        ))
                 else:
                     # Rebuild the line items in place from the current service state.
                     ServicePaymentManager.sync_sales_items(service)
@@ -268,6 +344,19 @@ class Command(BaseCommand):
                         self.stdout.write(
                             self.style.SUCCESS(f"  ✓ Rebuilt {payment_rows} payment mirror(s) across main/sub")
                         )
+
+                    # Void duplicate unlinked transactions for this service window.
+                    duplicate_count = self._cleanup_duplicate_transactions_for_service(
+                        service,
+                        main_tx,
+                        sub_tx,
+                        dry_run=False,
+                    )
+                    duplicate_voided += duplicate_count
+                    if duplicate_count:
+                        self.stdout.write(self.style.SUCCESS(
+                            f"  ✓ Voided {duplicate_count} duplicate transaction(s)"
+                        ))
 
                     main_tx.update_payment_status()
                     if sub_tx:
@@ -311,6 +400,8 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Successfully processed: {fixed_count}/{count} services"))
         if tx_type_fixed > 0:
             self.stdout.write(self.style.SUCCESS(f"Updated {tx_type_fixed} linked sales transaction type(s) to 'service'."))
+        if duplicate_voided > 0:
+            self.stdout.write(self.style.SUCCESS(f"Voided {duplicate_voided} duplicate service transaction(s)."))
         if ghost_cleaned > 0:
             self.stdout.write(self.style.SUCCESS(f"Cleaned {ghost_cleaned} orphan zero-value service transaction(s)."))
         if error_count > 0:
