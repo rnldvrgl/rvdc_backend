@@ -267,7 +267,7 @@ def _build_sales_rows(transactions, stall_type: str = "sub") -> list[list[str]]:
             svc = service_map[transaction.id]
             service_type = svc.get_service_type_display() if hasattr(svc, 'get_service_type_display') else svc.service_type or ""
             tech_names = [
-                ta.technician.get_full_name() 
+                ta.technician.get_full_name()
                 for ta in svc.technician_assignments.all()
             ]
             technicians = ", ".join(tech_names) if tech_names else ""
@@ -520,9 +520,9 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
 
     sales_end_row = max(4, 4 + sales_rows_count)
     sales_data_cols = 9 if stall_type == "main" else 7
-    
+
     requests = []
-    
+
     # Set column widths
     # Column B (Description) = 240
     # Column D (Client Name) = 200
@@ -565,7 +565,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             }
         },
     ])
-    
+
     # Unmerge cells first
     requests.extend([
         {
@@ -613,7 +613,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             }
         },
     ])
-    
+
     # Merge cells
     requests.extend([
         {
@@ -677,7 +677,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             }
         },
     ])
-    
+
     # Title row (row 1) - Dark background with white bold text
     requests.append({
         "repeatCell": {
@@ -702,7 +702,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
         }
     })
-    
+
     # Subtitle row (row 2) - Light blue background with bold text
     requests.append({
         "repeatCell": {
@@ -727,7 +727,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
         }
     })
-    
+
     # Sales header row (row 4) - Bold with light blue background and borders
     requests.append({
         "repeatCell": {
@@ -754,7 +754,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)",
         }
     })
-    
+
     # Sales data rows - borders
     if sales_rows_count > 0:
         requests.append({
@@ -780,7 +780,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "fields": "userEnteredFormat(borders,wrapStrategy)",
             }
         })
-    
+
     # REMITTANCES SUMMARY header (row 1, cols J-M)
     requests.append({
         "repeatCell": {
@@ -811,7 +811,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)",
         }
     })
-    
+
     # Remittance metrics rows (rows 2-13, cols J-K) - bold labels + borders
     requests.append({
         "repeatCell": {
@@ -836,7 +836,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "userEnteredFormat(textFormat,borders)",
         }
     })
-    
+
     # Remittance values (rows 2-13, cols L-M) - right aligned + borders
     requests.append({
         "repeatCell": {
@@ -861,7 +861,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "userEnteredFormat(horizontalAlignment,borders)",
         }
     })
-    
+
     # CASH / COINS BREAKDOWN header (row 15, cols J-M)
     requests.append({
         "repeatCell": {
@@ -892,7 +892,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)",
         }
     })
-    
+
     # Denominations header row (row 16, cols J-M) - bold labels + borders
     requests.append({
         "repeatCell": {
@@ -919,7 +919,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)",
         }
     })
-    
+
     # Denominations data rows (rows 17-25, cols J-M) - RED denomination labels + borders
     requests.append({
         "repeatCell": {
@@ -944,7 +944,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "userEnteredFormat(borders,horizontalAlignment)",
         }
     })
-    
+
     # First column of denomination rows (denomination labels) - RED COLOR
     requests.append({
         "repeatCell": {
@@ -972,7 +972,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "userEnteredFormat(textFormat,borders)",
         }
     })
-    
+
     # EXPENSES header (row 27, cols J-L) - RED BACKGROUND + WHITE TEXT
     requests.append({
         "repeatCell": {
@@ -1003,7 +1003,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)",
         }
     })
-    
+
     # Expenses header row (row 28, cols J-L) - bold labels + light blue background + borders
     requests.append({
         "repeatCell": {
@@ -1030,7 +1030,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)",
         }
     })
-    
+
     # Basic filter
     requests.append({
         "setBasicFilter": {
@@ -1045,7 +1045,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             }
         }
     })
-    
+
     # Update sheet properties
     requests.append({
         "updateSheetProperties": {
@@ -1056,7 +1056,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
             "fields": "gridProperties.frozenRowCount",
         }
     })
-    
+
     _execute_with_backoff(
         service.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id,
@@ -1161,7 +1161,7 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
         sales_rows_count=len(sales_rows),
         stall_type=stall.stall_type,
     )
-    
+
     # Navigate to the latest daily tab on open
     _navigate_to_latest_daily_tab(service, spreadsheet_id)
 
@@ -1176,7 +1176,7 @@ def _navigate_to_latest_daily_tab(service, spreadsheet_id: str):
             ),
             operation="spreadsheets.get sheets for navigation",
         )
-        
+
         latest_gid = _latest_daily_tab_gid(metadata.get("sheets", []))
         if latest_gid is not None:
             # Update the active sheet to the latest daily tab
