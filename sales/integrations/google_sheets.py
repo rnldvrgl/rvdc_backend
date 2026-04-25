@@ -520,13 +520,18 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
 
     sales_end_row = max(4, 4 + sales_rows_count)
     sales_data_cols = 9 if stall_type == "main" else 7
+    summary_start_col = 11 if stall_type == "main" else 9
+    summary_end_col = summary_start_col + 4
+    summary_metrics_end_col = summary_start_col + 2
+    expenses_end_col = summary_start_col + 3
 
     requests = []
 
     # Set column widths
     # Column B (Description) = 240
     # Column D (Client Name) = 200
-    # Column J (Labels) = 160
+    # Column H (Technicians, main stall only) = 200
+    # Remittance label column = 160
     requests.extend([
         {
             "updateDimensionProperties": {
@@ -557,14 +562,48 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "range": {
                     "sheetId": sheet_id,
                     "dimension": "COLUMNS",
-                    "startIndex": 9,  # Column J
-                    "endIndex": 10,
+                    "startIndex": 7,  # Column H (Technicians)
+                    "endIndex": 8,
+                },
+                "properties": {"pixelSize": 200},
+                "fields": "pixelSize",
+            }
+        } if stall_type == "main" else None,
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": summary_start_col,
+                    "endIndex": summary_start_col + 1,
                 },
                 "properties": {"pixelSize": 160},
                 "fields": "pixelSize",
             }
         },
     ])
+    requests = [request for request in requests if request is not None]
+
+    # Global alignment baseline for both main and sub tabs.
+    # Specific style blocks can still override this when needed.
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 0,
+                "endRowIndex": 200,
+                "startColumnIndex": 0,
+                "endColumnIndex": 26,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "horizontalAlignment": "CENTER",
+                    "verticalAlignment": "MIDDLE",
+                }
+            },
+            "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)",
+        }
+    })
 
     # Unmerge cells first
     requests.extend([
@@ -585,8 +624,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "sheetId": sheet_id,
                     "startRowIndex": 0,
                     "endRowIndex": 1,
-                    "startColumnIndex": 9,
-                    "endColumnIndex": 13,
+                    "startColumnIndex": summary_start_col,
+                    "endColumnIndex": summary_end_col,
                 }
             }
         },
@@ -596,8 +635,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "sheetId": sheet_id,
                     "startRowIndex": 14,
                     "endRowIndex": 15,
-                    "startColumnIndex": 9,
-                    "endColumnIndex": 13,
+                    "startColumnIndex": summary_start_col,
+                    "endColumnIndex": summary_end_col,
                 }
             }
         },
@@ -607,8 +646,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "sheetId": sheet_id,
                     "startRowIndex": 26,
                     "endRowIndex": 27,
-                    "startColumnIndex": 9,
-                    "endColumnIndex": 12,
+                    "startColumnIndex": summary_start_col,
+                    "endColumnIndex": expenses_end_col,
                 }
             }
         },
@@ -646,8 +685,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "sheetId": sheet_id,
                     "startRowIndex": 0,
                     "endRowIndex": 1,
-                    "startColumnIndex": 9,
-                    "endColumnIndex": 13,
+                    "startColumnIndex": summary_start_col,
+                    "endColumnIndex": summary_end_col,
                 },
                 "mergeType": "MERGE_ALL",
             }
@@ -658,8 +697,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "sheetId": sheet_id,
                     "startRowIndex": 14,
                     "endRowIndex": 15,
-                    "startColumnIndex": 9,
-                    "endColumnIndex": 13,
+                    "startColumnIndex": summary_start_col,
+                    "endColumnIndex": summary_end_col,
                 },
                 "mergeType": "MERGE_ALL",
             }
@@ -670,8 +709,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "sheetId": sheet_id,
                     "startRowIndex": 26,
                     "endRowIndex": 27,
-                    "startColumnIndex": 9,
-                    "endColumnIndex": 12,
+                    "startColumnIndex": summary_start_col,
+                    "endColumnIndex": expenses_end_col,
                 },
                 "mergeType": "MERGE_ALL",
             }
@@ -788,8 +827,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "sheetId": sheet_id,
                 "startRowIndex": 0,
                 "endRowIndex": 1,
-                "startColumnIndex": 9,
-                "endColumnIndex": 13,
+                "startColumnIndex": summary_start_col,
+                "endColumnIndex": summary_end_col,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -819,8 +858,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "sheetId": sheet_id,
                 "startRowIndex": 1,
                 "endRowIndex": 13,
-                "startColumnIndex": 9,
-                "endColumnIndex": 11,
+                "startColumnIndex": summary_start_col,
+                "endColumnIndex": summary_metrics_end_col,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -837,19 +876,19 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
         }
     })
 
-    # Remittance values (rows 2-13, cols L-M) - right aligned + borders
+    # Remittance values (rows 2-13) - centered + borders
     requests.append({
         "repeatCell": {
             "range": {
                 "sheetId": sheet_id,
                 "startRowIndex": 1,
                 "endRowIndex": 13,
-                "startColumnIndex": 10,
-                "endColumnIndex": 13,
+                "startColumnIndex": summary_start_col + 1,
+                "endColumnIndex": summary_end_col,
             },
             "cell": {
                 "userEnteredFormat": {
-                    "horizontalAlignment": "RIGHT",
+                    "horizontalAlignment": "CENTER",
                     "borders": {
                         "left": {"style": "SOLID"},
                         "right": {"style": "SOLID"},
@@ -869,8 +908,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "sheetId": sheet_id,
                 "startRowIndex": 14,
                 "endRowIndex": 15,
-                "startColumnIndex": 9,
-                "endColumnIndex": 13,
+                "startColumnIndex": summary_start_col,
+                "endColumnIndex": summary_end_col,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -900,8 +939,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "sheetId": sheet_id,
                 "startRowIndex": 15,
                 "endRowIndex": 16,
-                "startColumnIndex": 9,
-                "endColumnIndex": 13,
+                "startColumnIndex": summary_start_col,
+                "endColumnIndex": summary_end_col,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -927,8 +966,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "sheetId": sheet_id,
                 "startRowIndex": 16,
                 "endRowIndex": 25,
-                "startColumnIndex": 9,
-                "endColumnIndex": 13,
+                "startColumnIndex": summary_start_col,
+                "endColumnIndex": summary_end_col,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -952,8 +991,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "sheetId": sheet_id,
                 "startRowIndex": 16,
                 "endRowIndex": 25,
-                "startColumnIndex": 9,
-                "endColumnIndex": 10,
+                "startColumnIndex": summary_start_col,
+                "endColumnIndex": summary_start_col + 1,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -980,8 +1019,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "sheetId": sheet_id,
                 "startRowIndex": 26,
                 "endRowIndex": 27,
-                "startColumnIndex": 9,
-                "endColumnIndex": 12,
+                "startColumnIndex": summary_start_col,
+                "endColumnIndex": expenses_end_col,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -1011,8 +1050,8 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 "sheetId": sheet_id,
                 "startRowIndex": 27,
                 "endRowIndex": 28,
-                "startColumnIndex": 9,
-                "endColumnIndex": 12,
+                "startColumnIndex": summary_start_col,
+                "endColumnIndex": expenses_end_col,
             },
             "cell": {
                 "userEnteredFormat": {
@@ -1097,10 +1136,24 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
         sales_header_end = "I4"
         sales_headers = ["Quantity", "Description", "Amount", "Client Name", "Book #", "Receipt #", "Service Type", "Technicians", "Payment Method"]
         sales_data_cols = 9
+        summary_start_col_idx = 12  # Column L to avoid overlap with sales panel
     else:
         sales_header_end = "G4"
         sales_headers = ["Quantity", "Description", "Amount", "Client Name", "Book #", "Receipt #", "Payment Method"]
         sales_data_cols = 7
+        summary_start_col_idx = 10  # Column J
+
+    def _col_letter(col_idx_1_based: int) -> str:
+        letter = ""
+        while col_idx_1_based > 0:
+            col_idx_1_based, rem = divmod(col_idx_1_based - 1, 26)
+            letter = chr(65 + rem) + letter
+        return letter
+
+    summary_start_col = _col_letter(summary_start_col_idx)
+    summary_end_col = _col_letter(summary_start_col_idx + 3)
+    summary_values_col = _col_letter(summary_start_col_idx + 1)
+    expenses_end_col = _col_letter(summary_start_col_idx + 2)
 
     blocks: list[dict[str, Any]] = [
         {"a1": f"A1:{chr(64 + sales_data_cols)}1", "values": [[title]]},
@@ -1109,9 +1162,9 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
             "a1": f"A4:{sales_header_end}",
             "values": [sales_headers],
         },
-        {"a1": "J1:M1", "values": [["REMITTANCES SUMMARY", "", "", ""]]},
+        {"a1": f"{summary_start_col}1:{summary_end_col}1", "values": [["REMITTANCES SUMMARY", "", "", ""]]},
         {
-            "a1": "J2:K13",
+            "a1": f"{summary_start_col}2:{summary_values_col}13",
             "values": [
                 ["Total Cash Sales", _serialize_decimal(metrics["total_cash_sales"])],
                 ["Total GCash Sales", _serialize_decimal(metrics["total_gcash_sales"])],
@@ -1127,10 +1180,10 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
                 ["Over / Short", _serialize_decimal(metrics["balance"])],
             ],
         },
-        {"a1": "J15:M15", "values": [["CASH / COINS BREAKDOWN", "", "", ""]]},
-        {"a1": "J16:M16", "values": [["Denomination", "Remitted", "Declared", "COD"]]},
-        {"a1": "J27:L27", "values": [["EXPENSES", "", ""]]},
-        {"a1": "J28:L28", "values": [["Type", "Description", "Amount"]]},
+        {"a1": f"{summary_start_col}15:{summary_end_col}15", "values": [["CASH / COINS BREAKDOWN", "", "", ""]]},
+        {"a1": f"{summary_start_col}16:{summary_end_col}16", "values": [["Denomination", "Remitted", "Declared", "COD"]]},
+        {"a1": f"{summary_start_col}27:{expenses_end_col}27", "values": [["EXPENSES", "", ""]]},
+        {"a1": f"{summary_start_col}28:{expenses_end_col}28", "values": [["Type", "Description", "Amount"]]},
     ]
 
     if sales_rows:
@@ -1142,13 +1195,13 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
 
     denom_rows = metrics["denominations"] or [["1000", "0", "0", "0"], ["500", "0", "0", "0"], ["200", "0", "0", "0"], ["100", "0", "0", "0"], ["50", "0", "0", "0"], ["20", "0", "0", "0"], ["10", "0", "0", "0"], ["5", "0", "0", "0"], ["1", "0", "0", "0"]]
     blocks.append({
-        "a1": f"J17:M{16 + len(denom_rows)}",
+        "a1": f"{summary_start_col}17:{summary_end_col}{16 + len(denom_rows)}",
         "values": denom_rows,
     })
 
     if expense_rows:
         blocks.append({
-            "a1": f"J29:L{28 + len(expense_rows)}",
+            "a1": f"{summary_start_col}29:{expenses_end_col}{28 + len(expense_rows)}",
             "values": expense_rows,
         })
 

@@ -186,7 +186,6 @@ def push_sales_transaction_delete(sender, instance, **kwargs):
 
 @receiver(post_save, sender="sales.SalesPayment")
 def push_sales_payment_update(sender, instance, created, **kwargs):
-    from sales.models import SalesTransaction
     from analytics.ws_utils import push_dashboard_event
 
     if created:
@@ -197,24 +196,18 @@ def push_sales_payment_update(sender, instance, created, **kwargs):
     # Payment edits can change per-day payment-method display.
     transaction.on_commit(lambda: _queue_google_sheets_sync(instance.transaction_id))
     payment_date = instance.payment_date.date() if instance.payment_date else None
-    stall_id = SalesTransaction.objects.filter(id=instance.transaction_id).values_list("stall_id", flat=True).first()
-    if stall_id:
-        transaction.on_commit(
-            lambda: _queue_remittance_recalculate(stall_id, payment_date)
-        )
+    transaction.on_commit(
+        lambda: _queue_remittance_recalculate(instance.transaction.stall_id, payment_date)
+    )
 
 
 @receiver(post_delete, sender="sales.SalesPayment")
 def push_sales_payment_delete(sender, instance, **kwargs):
-    from sales.models import SalesTransaction
-
     transaction.on_commit(lambda: _queue_google_sheets_sync(instance.transaction_id))
     payment_date = instance.payment_date.date() if instance.payment_date else None
-    stall_id = SalesTransaction.objects.filter(id=instance.transaction_id).values_list("stall_id", flat=True).first()
-    if stall_id:
-        transaction.on_commit(
-            lambda: _queue_remittance_recalculate(stall_id, payment_date)
-        )
+    transaction.on_commit(
+        lambda: _queue_remittance_recalculate(instance.transaction.stall_id, payment_date)
+    )
 
 
 @receiver(post_save, sender="sales.SalesItem")
