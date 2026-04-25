@@ -30,8 +30,8 @@ class Command(BaseCommand):
         parser.add_argument(
             '--date',
             type=str,
-            required=True,
-            help='Date from which to fix services (format: YYYY-MM-DD). All services on/after this date will be processed.',
+            required=False,
+            help='Optional date cutoff (format: YYYY-MM-DD). Services on/after this date will be processed.',
         )
         parser.add_argument(
             '--dry-run',
@@ -138,17 +138,24 @@ class Command(BaseCommand):
         dry_run = options.get('dry_run', False)
         service_id = options.get('service_id')
 
-        try:
-            target_date = datetime.strptime(date_str, '%Y-%m-%d')
-            target_date = timezone.make_aware(target_date)
-        except ValueError:
-            raise CommandError(f"Invalid date format: {date_str}. Use YYYY-MM-DD")
+        target_date = None
+        if date_str:
+            try:
+                target_date = datetime.strptime(date_str, '%Y-%m-%d')
+                target_date = timezone.make_aware(target_date)
+            except ValueError:
+                raise CommandError(f"Invalid date format: {date_str}. Use YYYY-MM-DD")
+
+        if not target_date and not service_id:
+            raise CommandError("Provide either --date or --service-id")
 
         query = Q(
-            created_at__gte=target_date,
             installation_units__isnull=False,
             status__in=[ServiceStatus.COMPLETED, ServiceStatus.IN_PROGRESS],
         )
+
+        if target_date:
+            query &= Q(created_at__gte=target_date)
 
         if service_id:
             query &= Q(id=service_id)
@@ -159,14 +166,19 @@ class Command(BaseCommand):
         if count == 0:
             self.stdout.write(
                 self.style.WARNING(
-                    f"No matching installation services found from {date_str} onwards"
+                    f"No matching installation services found"
                 )
             )
             return
 
-        self.stdout.write(
-            self.style.SUCCESS(f"Found {count} services to process from {date_str} onwards")
-        )
+        if target_date:
+            self.stdout.write(
+                self.style.SUCCESS(f"Found {count} services to process from {date_str} onwards")
+            )
+        else:
+            self.stdout.write(
+                self.style.SUCCESS(f"Found {count} services to process")
+            )
         if dry_run:
             self.stdout.write(self.style.WARNING("Running in DRY-RUN mode (no changes will be saved)"))
 
@@ -278,20 +290,21 @@ class Command(BaseCommand):
         )
         linked_ids = linked_main_ids | linked_sub_ids
 
-        ghost_candidates = SalesTransaction.objects.filter(
-            transaction_type__in=[TransactionType.SERVICE, TransactionType.SALE],
-            created_at__gte=target_date,
-            payment_status='unpaid',
-            voided=False,
-            client_id__in=affected_client_ids,
-        ).exclude(id__in=linked_ids)
+        if target_date:
+            ghost_candidates = SalesTransaction.objects.filter(
+                transaction_type__in=[TransactionType.SERVICE, TransactionType.SALE],
+                created_at__gte=target_date,
+                payment_status='unpaid',
+                voided=False,
+                client_id__in=affected_client_ids,
+            ).exclude(id__in=linked_ids)
 
-        for tx in ghost_candidates:
-            if tx.items.exists() or tx.payments.exists():
-                continue
-            ghost_cleaned += 1
-            if not dry_run:
-                tx.delete()
+            for tx in ghost_candidates:
+                if tx.items.exists() or tx.payments.exists():
+                    continue
+                ghost_cleaned += 1
+                if not dry_run:
+                    tx.delete()
 
         if dry_run:
             self.stdout.write(self.style.WARNING("[DRY-RUN SUMMARY]"))
@@ -304,9 +317,11 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f"Errors encountered: {error_count}/{count} services"))
 
         if dry_run:
+            shown_arg = f" --date {date_str}" if date_str else ""
             self.stdout.write(
                 self.style.WARNING(
                     f"\nTo apply these changes, run without --dry-run:\n"
-                    f"  python manage.py fix_installation_unit_revenue_split --date {date_str}"
+                    f"  python manage.py fix_installation_unit_revenue_split{shown_arg}"
+                    + (f" --service-id {service_id}" if service_id else "")
                 )
             )

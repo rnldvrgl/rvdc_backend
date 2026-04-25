@@ -1181,6 +1181,8 @@ class ServiceApplianceViewSet(viewsets.ModelViewSet):
         RevenueCalculator.calculate_service_revenue(appliance.service, save=True)
         # Sync sales items if transaction exists
         ServicePaymentManager.sync_sales_items(appliance.service)
+        if appliance.service.related_sub_transaction_id:
+            ServicePaymentManager.sync_sub_sales_items(appliance.service)
         # Notify clerks about new appliance needing items review
         self._notify_clerks_items_pending(appliance)
 
@@ -1194,6 +1196,8 @@ class ServiceApplianceViewSet(viewsets.ModelViewSet):
         RevenueCalculator.calculate_service_revenue(appliance.service, save=True)
         # Sync sales items if transaction exists
         ServicePaymentManager.sync_sales_items(appliance.service)
+        if appliance.service.related_sub_transaction_id:
+            ServicePaymentManager.sync_sub_sales_items(appliance.service)
         # Auto-reset items_checked if parts_needed_notes changed and was already confirmed
         if old_notes != new_notes and appliance.items_checked:
             appliance.items_checked = False
