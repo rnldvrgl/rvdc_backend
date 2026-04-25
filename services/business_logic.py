@@ -1398,7 +1398,7 @@ class ServicePaymentManager:
                     SalesItem.objects.create(
                         transaction=sub_tx,
                         item=item_used.item,
-                        description='',
+                        description=get_item_used_description(item_used),
                         quantity=charged_qty,
                         final_price_per_unit=item_used.discounted_price,
                     )
@@ -1411,7 +1411,7 @@ class ServicePaymentManager:
                 SalesItem.objects.create(
                     transaction=sub_tx,
                     item=item_used.item,
-                    description='',
+                    description=get_item_used_description(item_used),
                     quantity=charged_qty,
                     final_price_per_unit=item_used.discounted_price,
                 )

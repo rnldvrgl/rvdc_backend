@@ -41,7 +41,7 @@ from django.utils import timezone
 
 from inventory.models import Stall
 from sales.models import SalesItem, SalesPayment, SalesTransaction
-from services.business_logic import ServicePaymentManager
+from services.business_logic import ServicePaymentManager, get_item_used_description
 from services.models import Service
 
 
@@ -127,7 +127,7 @@ class Command(BaseCommand):
                     SalesItem.objects.create(
                         transaction=sub_tx,
                         item=item_used.item,
-                        description="",
+                        description=get_item_used_description(item_used),
                         quantity=charged_qty,
                         final_price_per_unit=item_used.discounted_price,
                     )
@@ -139,7 +139,7 @@ class Command(BaseCommand):
                 SalesItem.objects.create(
                     transaction=sub_tx,
                     item=item_used.item,
-                    description="",
+                        description=get_item_used_description(item_used),
                     quantity=charged_qty,
                     final_price_per_unit=item_used.discounted_price,
                 )

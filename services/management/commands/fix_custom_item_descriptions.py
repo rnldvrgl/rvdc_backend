@@ -56,11 +56,22 @@ class Command(BaseCommand):
         service_id = options.get("service_id")
         target_date = self._parse_date(options.get("date"))
 
-        query = Q(
-            related_transaction__items__description="Custom Item"
-        ) | Q(
-            related_sub_transaction__items__description="Custom Item"
+        # Include both legacy generic labels and blank custom-line descriptions.
+        custom_desc_query = (
+            Q(description="Custom Item") |
+            Q(description="") |
+            Q(description__isnull=True)
         )
+
+        query = Q(
+            related_transaction__items__item__isnull=True,
+            related_transaction__items__transaction__voided=False,
+        ) & custom_desc_query
+
+        query |= Q(
+            related_sub_transaction__items__item__isnull=True,
+            related_sub_transaction__items__transaction__voided=False,
+        ) & custom_desc_query
 
         if service_id:
             query &= Q(id=service_id)
@@ -108,10 +119,10 @@ class Command(BaseCommand):
                 sub_tx = service.related_sub_transaction
 
                 main_has_generic = bool(
-                    main_tx and main_tx.items.filter(description="Custom Item").exists()
+                    main_tx and main_tx.items.filter(item__isnull=True).filter(custom_desc_query).exists()
                 )
                 sub_has_generic = bool(
-                    sub_tx and sub_tx.items.filter(description="Custom Item").exists()
+                    sub_tx and sub_tx.items.filter(item__isnull=True).filter(custom_desc_query).exists()
                 )
 
                 if not main_has_generic and not sub_has_generic:
