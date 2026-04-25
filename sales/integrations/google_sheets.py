@@ -539,6 +539,7 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
     # Column D (Client Name) = 200
     # Column H (Technicians, main stall only) = 200
     # Remittance label column = 160
+    # Expenses description column = 145
     requests.extend([
         {
             "updateDimensionProperties": {
@@ -585,6 +586,18 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                     "endIndex": summary_start_col + 1,
                 },
                 "properties": {"pixelSize": 160},
+                "fields": "pixelSize",
+            }
+        },
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": summary_start_col + 1,
+                    "endIndex": summary_start_col + 2,
+                },
+                "properties": {"pixelSize": 145},
                 "fields": "pixelSize",
             }
         },
@@ -1091,6 +1104,31 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
                 }
             },
             "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)",
+        }
+    })
+
+    # Expense data rows (from row 29 onward) - borders for all expense cells.
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 28,
+                "endRowIndex": 200,
+                "startColumnIndex": summary_start_col,
+                "endColumnIndex": expenses_end_col,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "borders": {
+                        "left": {"style": "SOLID"},
+                        "right": {"style": "SOLID"},
+                        "top": {"style": "SOLID"},
+                        "bottom": {"style": "SOLID"},
+                    },
+                    "wrapStrategy": "WRAP",
+                }
+            },
+            "fields": "userEnteredFormat(borders,wrapStrategy)",
         }
     })
 
