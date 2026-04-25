@@ -1205,14 +1205,81 @@ class ServiceApplianceViewSet(viewsets.ModelViewSet):
                 self._notify_clerks_items_pending(appliance)
 
     def perform_destroy(self, instance):
-        """Delete appliance and recalculate service revenue."""
+        """Delete appliance and rollback unit/parts allocations safely."""
+        from decimal import Decimal
+
+        from django.db import transaction
+
+        from installations.models import AirconUnit
+        from inventory.models import StockRequest
+        from services.business_logic import (
+            RevenueCalculator,
+            ServicePaymentManager,
+            StockReservationManager,
+        )
+        from utils.enums import ServiceStatus
+
         service = instance.service
-        instance.delete()
+
+        with transaction.atomic():
+            # Keep references before deleting related rows.
+            item_rows = list(instance.items_used.select_related("stall_stock").all())
+
+            linked_unit = None
+            if service.service_type == "installation" and instance.serial_number:
+                linked_unit = AirconUnit.objects.filter(
+                    installation_service=service,
+                    serial_number=instance.serial_number,
+                ).first()
+
+            for item_used in item_rows:
+                # Cancel pending stock requests tied to this usage row.
+                StockRequest.objects.filter(
+                    appliance_item=item_used,
+                    status="pending",
+                ).update(status="cancelled")
+
+                if not item_used.stall_stock or not item_used.item:
+                    continue
+
+                qty = Decimal(str(item_used.quantity or 0))
+
+                if service.status == ServiceStatus.COMPLETED:
+                    # Completed service already consumed stock; return it.
+                    stall_stock = item_used.stall_stock
+                    stall_stock.quantity = (stall_stock.quantity or Decimal("0.00")) + qty
+                    stall_stock.save(update_fields=["quantity", "updated_at"])
+                else:
+                    # In-progress/pending service only reserved stock; release reservation.
+                    StockReservationManager.release_reservation(
+                        item=item_used.item,
+                        quantity=qty,
+                        stall_stock=item_used.stall_stock,
+                    )
+
+            if linked_unit:
+                linked_unit.installation_service = None
+                linked_unit.reserved_by = None
+                linked_unit.reserved_at = None
+                # If there is no sale record, ensure unit is considered unsold/available.
+                if linked_unit.sale_id is None:
+                    linked_unit.is_sold = False
+                linked_unit.save(update_fields=[
+                    "installation_service",
+                    "reserved_by",
+                    "reserved_at",
+                    "is_sold",
+                    "updated_at",
+                ])
+
+            instance.delete()
+
         # Recalculate revenue after deleting appliance
-        from services.business_logic import RevenueCalculator, ServicePaymentManager
         RevenueCalculator.calculate_service_revenue(service, save=True)
-        # Sync sales items if transaction exists
+        # Sync main and sub stall sales items if transactions exist
         ServicePaymentManager.sync_sales_items(service)
+        if service.related_sub_transaction_id:
+            ServicePaymentManager.sync_sub_sales_items(service)
 
     @action(detail=True, methods=["post"], url_path="toggle-items-checked")
     def toggle_items_checked(self, request, pk=None):

@@ -66,7 +66,12 @@ def get_installation_unit_revenue_split(service, unit):
     if matching_appliance and matching_appliance.unit_price:
         selling_price = matching_appliance.unit_price
     else:
-        selling_price = unit.model.selling_price or Decimal('0.00')
+        selling_price = (
+            unit.sale_price
+            or unit.model.selling_price
+            or unit.model.retail_price
+            or Decimal('0.00')
+        )
 
     cost_price = unit.model.cost_price or Decimal('0.00')
     margin = max(selling_price - cost_price, Decimal('0.00'))
