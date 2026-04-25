@@ -606,6 +606,45 @@ def _style_day_tab(service, spreadsheet_id: str, tab_name: str, sales_rows_count
     })
 
     # Unmerge cells first
+    # For main-stall sheets, old tabs may still have side-panel merges at J/M and J/L.
+    # Unmerge those legacy ranges first so shifted ranges do not partially overlap.
+    if stall_type == "main":
+        requests.extend([
+            {
+                "unmergeCells": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 0,
+                        "endRowIndex": 1,
+                        "startColumnIndex": 9,
+                        "endColumnIndex": 13,
+                    }
+                }
+            },
+            {
+                "unmergeCells": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 14,
+                        "endRowIndex": 15,
+                        "startColumnIndex": 9,
+                        "endColumnIndex": 13,
+                    }
+                }
+            },
+            {
+                "unmergeCells": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": 26,
+                        "endRowIndex": 27,
+                        "startColumnIndex": 9,
+                        "endColumnIndex": 12,
+                    }
+                }
+            },
+        ])
+
     requests.extend([
         {
             "unmergeCells": {
