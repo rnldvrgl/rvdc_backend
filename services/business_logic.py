@@ -83,6 +83,15 @@ def get_installation_unit_revenue_split(service, unit):
     return main_revenue, sub_revenue
 
 
+def get_item_used_description(item_used):
+    """Return display description for inventory or custom part rows."""
+    if getattr(item_used, 'item', None):
+        return item_used.item.name
+
+    custom_name = (getattr(item_used, 'custom_description', None) or '').strip()
+    return custom_name or 'Custom Item'
+
+
 class StockReservationManager:
     """Manages stock reservations for service parts."""
 
@@ -439,7 +448,7 @@ class ServiceCompletionHandler:
                             if charged_qty > 0:
                                 parts_to_sell.append({
                                     'item': None,
-                                    'description': 'Custom Item',
+                                    'description': get_item_used_description(item_used),
                                     'quantity': charged_qty,
                                     'unit_price': item_used.discounted_price,
                                 })
@@ -453,7 +462,7 @@ class ServiceCompletionHandler:
                             if charged_qty > 0:
                                 parts_to_sell.append({
                                     'item': None,
-                                    'description': 'Custom Item',
+                                    'description': get_item_used_description(item_used),
                                     'quantity': charged_qty,
                                     'unit_price': item_used.discounted_price,
                                 })
@@ -1029,7 +1038,7 @@ class ServiceCancellationHandler:
                             quantity=item_used.quantity,
                             stall_stock=item_used.stall_stock
                         )
-                        item_name = item_used.item.name if item_used.item else 'Custom Item'
+                        item_name = get_item_used_description(item_used)
                         released_items.append({
                             'item': item_name,
                             'quantity': item_used.quantity,
@@ -1047,7 +1056,7 @@ class ServiceCancellationHandler:
                         quantity=item_used.quantity,
                         stall_stock=item_used.stall_stock
                     )
-                    item_name = item_used.item.name if item_used.item else 'Custom Item'
+                    item_name = get_item_used_description(item_used)
                     released_items.append({
                         'item': item_name,
                         'quantity': item_used.quantity,
@@ -1165,7 +1174,7 @@ class ServiceReopenHandler:
                     stock.quantity += qty
                     stock.save(update_fields=['quantity', 'updated_at'])
 
-                    item_name = item_used.item.name if item_used.item else 'Custom Item'
+                    item_name = get_item_used_description(item_used)
                     restored_items.append({
                         'item': item_name,
                         'quantity': float(qty),
@@ -1183,7 +1192,7 @@ class ServiceReopenHandler:
                 stock.quantity += qty
                 stock.save(update_fields=['quantity', 'updated_at'])
 
-                item_name = item_used.item.name if item_used.item else 'Custom Item'
+                item_name = get_item_used_description(item_used)
                 restored_items.append({
                     'item': item_name,
                     'quantity': float(qty),
@@ -1265,7 +1274,7 @@ class ServiceReopenHandler:
                             quantity=item_used.quantity,
                             stall_stock=item_used.stall_stock,
                         )
-                        item_name = item_used.item.name if item_used.item else 'Custom Item'
+                        item_name = get_item_used_description(item_used)
                         re_reserved.append({
                             'item': item_name,
                             'quantity': float(item_used.quantity),
@@ -1284,7 +1293,7 @@ class ServiceReopenHandler:
                         quantity=item_used.quantity,
                         stall_stock=item_used.stall_stock,
                     )
-                    item_name = item_used.item.name if item_used.item else 'Custom Item'
+                    item_name = get_item_used_description(item_used)
                     re_reserved.append({
                         'item': item_name,
                         'quantity': float(item_used.quantity),
@@ -1639,7 +1648,7 @@ class ServicePaymentManager:
                     if charged_qty > 0:
                         parts_to_add.append({
                             'item': item_used.item,
-                            'description': item_used.item.name if item_used.item else 'Custom Item',
+                            'description': get_item_used_description(item_used),
                             'quantity': charged_qty,
                             'price': item_used.discounted_price,
                         })
@@ -1652,7 +1661,7 @@ class ServicePaymentManager:
                 if charged_qty > 0:
                     parts_to_add.append({
                         'item': item_used.item,
-                        'description': item_used.item.name if item_used.item else 'Custom Item',
+                        'description': get_item_used_description(item_used),
                         'quantity': charged_qty,
                         'price': item_used.discounted_price,
                     })
@@ -1894,7 +1903,7 @@ class ServicePaymentManager:
                         if charged_qty > 0:
                             parts_to_add.append({
                                 'item': item_used.item,
-                                'description': item_used.item.name if item_used.item else 'Custom Item',
+                                    'description': get_item_used_description(item_used),
                                 'quantity': charged_qty,
                                 'price': item_used.discounted_price,
                             })
@@ -1907,7 +1916,7 @@ class ServicePaymentManager:
                     if charged_qty > 0:
                         parts_to_add.append({
                             'item': item_used.item,
-                            'description': item_used.item.name if item_used.item else 'Custom Item',
+                            'description': get_item_used_description(item_used),
                             'quantity': charged_qty,
                             'price': item_used.discounted_price,
                         })
