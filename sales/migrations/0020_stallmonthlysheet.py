@@ -62,14 +62,14 @@ class Migration(migrations.Migration):
             options={
                 "ordering": ["-month_key", "stall_id"],
                 "indexes": [
-                    models.Index(fields=["month_key"], name="sales_monthly_sheet_month_idx"),
-                    models.Index(fields=["stall", "month_key"], name="sales_monthly_sheet_stall_month_idx"),
-                    models.Index(fields=["is_active"], name="sales_monthly_sheet_active_idx"),
+                    models.Index(fields=["month_key"], name="sales_monthly_month_idx"),
+                    models.Index(fields=["stall", "month_key"], name="sales_monthly_stall_month_idx"),
+                    models.Index(fields=["is_active"], name="sales_monthly_active_idx"),
                 ],
             },
         ),
         migrations.AddConstraint(
             model_name="stallmonthlysheet",
-            constraint=models.UniqueConstraint(fields=("stall", "month_key"), name="unique_stall_monthly_sheet"),
+            constraint=models.UniqueConstraint(fields=("stall", "month_key"), name="unique_stall_monthly"),
         ),
     ]
