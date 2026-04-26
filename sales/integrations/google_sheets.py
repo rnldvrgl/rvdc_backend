@@ -29,7 +29,7 @@ def _is_rate_limited_error(exc: Exception) -> bool:
     return "RATE_LIMIT_EXCEEDED" in text or "quota" in text.lower()
 
 
-def _execute_with_backoff(request, operation: str, max_attempts: int = 5):
+def _execute_with_backoff(request, operation: str, max_attempts: int = 7):
     for attempt in range(max_attempts):
         try:
             return request.execute()
@@ -47,6 +47,20 @@ def _execute_with_backoff(request, operation: str, max_attempts: int = 5):
                 delay_seconds,
             )
             time.sleep(delay_seconds)
+
+
+def _normalize_google_error_text(error_text: str) -> str:
+    text = (error_text or "").strip()
+    lower_text = text.lower()
+
+    if "rate_limit_exceeded" in lower_text or "quota exceeded" in lower_text or "write requests per minute" in lower_text:
+        return "Google Sheets write quota reached. Please wait about 1-2 minutes and retry."
+
+    if "does not have permission" in lower_text or "insufficient" in lower_text or "forbidden" in lower_text:
+        return "Permission denied. Ensure the service account has access to this spreadsheet."
+
+    # Keep unknown errors short for API/UI display.
+    return text.split("\n", 1)[0][:240] if text else "Google Sheets sync failed"
 
 
 def _get_google_sync_config() -> dict:
@@ -186,7 +200,7 @@ def _share_sheet_with_email(sync_config: dict, spreadsheet_id: str, email: str) 
                 f"Service account has no access to this spreadsheet. Share the sheet with {sa_email} first, then retry sync.",
             )
         logger.warning("Failed sharing spreadsheet=%s to %s: %s", spreadsheet_id, cleaned_email, exc)
-        return False, text
+        return False, _normalize_google_error_text(text)
 
 
 def _get_sheets_clients(sync_config: dict, spreadsheet_id: str):
@@ -1630,7 +1644,7 @@ def _sync_sales_day_to_google_sheet_result(stall_id: int, target_date: date) -> 
             target_date,
             exc,
         )
-        error_text = str(exc)
+        error_text = _normalize_google_error_text(str(exc))
         if monthly_sheet:
             lower_text = error_text.lower()
             if "does not have permission" in lower_text or "insufficient" in lower_text or "forbidden" in lower_text:
