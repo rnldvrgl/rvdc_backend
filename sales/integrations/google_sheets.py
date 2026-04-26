@@ -1618,23 +1618,44 @@ def _sync_sales_day_to_google_sheet_result(stall_id: int, target_date: date) -> 
         _render_day_tab(service, sheet_api, spreadsheet_id, stall, target_date)
 
         share_email = (sync_config.get("share_email") or "").strip()
-        if monthly_sheet and share_email and (
-            not monthly_sheet.shared_ok or monthly_sheet.shared_to_email != share_email
-        ):
-            shared_ok, share_error = _share_sheet_with_email(sync_config, spreadsheet_id, share_email)
-            monthly_sheet.shared_ok = shared_ok
-            monthly_sheet.shared_to_email = share_email if shared_ok else ""
-            monthly_sheet.shared_at = timezone.now() if shared_ok else None
-            monthly_sheet.share_error = "" if shared_ok else (share_error or "Unknown share error")
-            monthly_sheet.save(
-                update_fields=[
-                    "shared_ok",
-                    "shared_to_email",
-                    "shared_at",
-                    "share_error",
-                    "updated_at",
-                ]
-            )
+        if monthly_sheet:
+            if share_email and (
+                not monthly_sheet.shared_ok or monthly_sheet.shared_to_email != share_email
+            ):
+                shared_ok, share_error = _share_sheet_with_email(sync_config, spreadsheet_id, share_email)
+                monthly_sheet.shared_ok = shared_ok
+                monthly_sheet.shared_to_email = share_email if shared_ok else ""
+                monthly_sheet.shared_at = timezone.now() if shared_ok else None
+                monthly_sheet.share_error = "" if shared_ok else (share_error or "Unknown share error")
+                monthly_sheet.save(
+                    update_fields=[
+                        "shared_ok",
+                        "shared_to_email",
+                        "shared_at",
+                        "share_error",
+                        "updated_at",
+                    ]
+                )
+            elif not share_email:
+                # No share-email enforcement configured; successful sync proves sheet access is valid.
+                if (not monthly_sheet.shared_ok) or monthly_sheet.share_error:
+                    monthly_sheet.shared_ok = True
+                    monthly_sheet.shared_to_email = ""
+                    monthly_sheet.shared_at = timezone.now()
+                    monthly_sheet.share_error = ""
+                    monthly_sheet.save(
+                        update_fields=[
+                            "shared_ok",
+                            "shared_to_email",
+                            "shared_at",
+                            "share_error",
+                            "updated_at",
+                        ]
+                    )
+            elif monthly_sheet.shared_ok and monthly_sheet.share_error:
+                # Keep status tidy when sync works and share status is already valid.
+                monthly_sheet.share_error = ""
+                monthly_sheet.save(update_fields=["share_error", "updated_at"])
 
         return True, ""
     except Exception as exc:
