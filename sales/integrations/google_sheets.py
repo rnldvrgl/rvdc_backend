@@ -1630,6 +1630,7 @@ def sync_historical_sales_to_google_sheets(
     limit: int | None = None,
     start_date=None,
     end_date=None,
+    stall_ids: list[int] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     sync_config = _get_google_sync_config()
@@ -1644,7 +1645,10 @@ def sync_historical_sales_to_google_sheets(
         }
 
     stall_types = _scope_stall_types(sync_config.get("sync_scope", "sub"))
-    stalls = list(Stall.objects.filter(stall_type__in=stall_types, is_deleted=False))
+    stalls_qs = Stall.objects.filter(stall_type__in=stall_types, is_deleted=False)
+    if stall_ids:
+        stalls_qs = stalls_qs.filter(id__in=stall_ids)
+    stalls = list(stalls_qs)
 
     day_targets_by_stall: dict[int, set[date]] = {stall.id: set() for stall in stalls}
 

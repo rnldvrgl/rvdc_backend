@@ -13,6 +13,7 @@ from django.utils import timezone as dj_timezone
 from django.utils.dateparse import parse_date
 
 from sales.models import SalesItem, SalesPayment, SalesTransaction, StallMonthlySheet
+from sales.integrations.google_sheets import _get_google_sync_config, _share_sheet_with_email
 from sales.api.serializers import (
     SalesPaymentSerializer,
     SalesTransactionSerializer,
@@ -380,6 +381,19 @@ class StallMonthlySheetViewSet(viewsets.ModelViewSet):
                 instance.shared_at = None
                 instance.share_error = ""
             instance.save()
+
+        share_email = (_get_google_sync_config().get("share_email") or "").strip()
+        if share_email and instance.spreadsheet_id:
+            shared_ok, share_error = _share_sheet_with_email(
+                _get_google_sync_config(),
+                instance.spreadsheet_id,
+                share_email,
+            )
+            instance.shared_ok = bool(shared_ok)
+            instance.shared_to_email = share_email if shared_ok else ""
+            instance.shared_at = dj_timezone.now() if shared_ok else None
+            instance.share_error = "" if shared_ok else (share_error or "Unknown share error")
+            instance.save(update_fields=["shared_ok", "shared_to_email", "shared_at", "share_error", "updated_at"])
 
         output = self.get_serializer(instance)
         return Response(

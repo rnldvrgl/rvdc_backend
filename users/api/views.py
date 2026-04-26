@@ -43,6 +43,7 @@ def _run_google_sheets_sync_historical_job(
     limit: int | None,
     start_date,
     end_date,
+    stall_ids: list[int] | None,
 ) -> None:
     started_at = timezone.now().isoformat()
 
@@ -98,6 +99,7 @@ def _run_google_sheets_sync_historical_job(
             limit=limit,
             start_date=start_date,
             end_date=end_date,
+            stall_ids=stall_ids,
             progress_callback=_publish_progress,
         )
 
@@ -461,9 +463,11 @@ class GoogleSheetsSyncView(APIView):
             raw_limit = request.data.get("limit")
             raw_start_date = (request.data.get("start_date") or "").strip()
             raw_end_date = (request.data.get("end_date") or "").strip()
+            raw_stall_id = request.data.get("stall_id")
             limit = None
             start_date = None
             end_date = None
+            stall_ids = None
             if raw_limit not in (None, ""):
                 try:
                     limit = int(raw_limit)
@@ -499,6 +503,21 @@ class GoogleSheetsSyncView(APIView):
                     {"detail": "start_date cannot be later than end_date."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+
+            if raw_stall_id not in (None, ""):
+                try:
+                    stall_id = int(raw_stall_id)
+                except (TypeError, ValueError):
+                    return Response(
+                        {"detail": "stall_id must be an integer."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if stall_id <= 0:
+                    return Response(
+                        {"detail": "stall_id must be greater than 0."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                stall_ids = [stall_id]
 
             active_job_id = cache.get(GOOGLE_SHEETS_SYNC_ACTIVE_JOB_KEY)
             if active_job_id:
@@ -549,6 +568,7 @@ class GoogleSheetsSyncView(APIView):
                     "limit": limit,
                     "start_date": start_date,
                     "end_date": end_date,
+                    "stall_ids": stall_ids,
                 },
                 daemon=True,
             ).start()
