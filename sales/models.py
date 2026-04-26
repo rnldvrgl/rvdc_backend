@@ -304,13 +304,13 @@ class StallMonthlySheet(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["stall", "month_key"],
-                name="unique_stall_monthly_sheet",
+                name="unique_stall_monthly",
             )
         ]
         indexes = [
-            models.Index(fields=["month_key"], name="sales_monthly_sheet_month_idx"),
-            models.Index(fields=["stall", "month_key"], name="sales_monthly_sheet_stall_month_idx"),
-            models.Index(fields=["is_active"], name="sales_monthly_sheet_active_idx"),
+            models.Index(fields=["month_key"], name="sales_monthly_month_idx"),
+            models.Index(fields=["stall", "month_key"], name="sales_monthly_stall_month_idx"),
+            models.Index(fields=["is_active"], name="sales_monthly_active_idx"),
         ]
 
     def save(self, *args, **kwargs):
