@@ -341,6 +341,7 @@ class SystemSettingsView(generics.RetrieveUpdateAPIView):
                 'google_sheets_main_spreadsheet_id',
                 'google_sheets_worksheet_name',
                 'google_sheets_sub_stall_type',
+                'google_sheets_share_email',
                 'google_service_account_json',
             }
             if sensitive_fields & set(self.request.data.keys()):

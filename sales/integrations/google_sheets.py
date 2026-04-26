@@ -14,7 +14,7 @@ from django.utils import timezone
 from expenses.models import Expense
 from inventory.models import Stall
 from remittances.models import RemittanceRecord
-from sales.models import PaymentStatus, SalesPayment, SalesTransaction
+from sales.models import PaymentStatus, SalesPayment, SalesTransaction, StallMonthlySheet
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ def _get_google_sync_config() -> dict:
         "sub_spreadsheet_id": getattr(settings, "GOOGLE_SHEETS_SPREADSHEET_ID", "").strip(),
         "main_spreadsheet_id": getattr(settings, "GOOGLE_SHEETS_MAIN_SPREADSHEET_ID", "").strip(),
         "sync_scope": getattr(settings, "GOOGLE_SHEETS_SUB_STALL_TYPE", "sub"),
+        "share_email": getattr(settings, "GOOGLE_SHEETS_SHARE_EMAIL", "").strip(),
         "service_account_json": getattr(settings, "GOOGLE_SERVICE_ACCOUNT_JSON", ""),
         "service_account_file": getattr(settings, "GOOGLE_SERVICE_ACCOUNT_FILE", ""),
     }
@@ -69,6 +70,9 @@ def _get_google_sync_config() -> dict:
             getattr(system_settings, "google_sheets_main_spreadsheet_id", "") or ""
         ).strip()
         config["sync_scope"] = (system_settings.google_sheets_sub_stall_type or "sub").strip().lower()
+        config["share_email"] = (
+            getattr(system_settings, "google_sheets_share_email", "") or ""
+        ).strip()
         if (system_settings.google_service_account_json or "").strip():
             config["service_account_json"] = system_settings.google_service_account_json
     except Exception as exc:
@@ -88,7 +92,10 @@ def _get_service_account_credentials(sync_config: dict):
     service_account_module = importlib.import_module("google.oauth2.service_account")
     Credentials = service_account_module.Credentials
 
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
 
     raw_json = sync_config.get("service_account_json", "")
     if raw_json:
@@ -115,6 +122,64 @@ def _spreadsheet_id_for_stall(sync_config: dict, stall_type: str) -> str:
     if stall_type == "main":
         return (sync_config.get("main_spreadsheet_id") or "").strip()
     return (sync_config.get("sub_spreadsheet_id") or "").strip()
+
+
+def _month_key_for_date(target_date: date) -> str:
+    return target_date.strftime("%Y-%m")
+
+
+def _resolve_monthly_sheet(stall: Stall, target_date: date) -> StallMonthlySheet | None:
+    return (
+        StallMonthlySheet.objects.filter(
+            stall=stall,
+            month_key=_month_key_for_date(target_date),
+            is_active=True,
+        )
+        .order_by("-updated_at", "-id")
+        .first()
+    )
+
+
+def _resolve_spreadsheet_target(sync_config: dict, stall: Stall, target_date: date) -> tuple[str, StallMonthlySheet | None]:
+    monthly_sheet = _resolve_monthly_sheet(stall, target_date)
+    if monthly_sheet and monthly_sheet.spreadsheet_id:
+        return monthly_sheet.spreadsheet_id.strip(), monthly_sheet
+    return _spreadsheet_id_for_stall(sync_config, stall.stall_type), None
+
+
+def _share_sheet_with_email(sync_config: dict, spreadsheet_id: str, email: str) -> tuple[bool, str]:
+    cleaned_email = (email or "").strip()
+    if not cleaned_email:
+        return False, "Share email is empty"
+
+    credentials = _get_service_account_credentials(sync_config)
+    if credentials is None:
+        return False, "Service account credentials are not configured or invalid"
+
+    try:
+        discovery_module = importlib.import_module("googleapiclient.discovery")
+        build = discovery_module.build
+        drive_service = build("drive", "v3", credentials=credentials, cache_discovery=False)
+        _execute_with_backoff(
+            drive_service.permissions().create(
+                fileId=spreadsheet_id,
+                body={
+                    "type": "user",
+                    "role": "writer",
+                    "emailAddress": cleaned_email,
+                },
+                sendNotificationEmail=False,
+            ),
+            operation=f"drive.permissions.create {spreadsheet_id}",
+        )
+        return True, ""
+    except Exception as exc:
+        text = str(exc)
+        # 409 usually means permission already exists.
+        if "already" in text.lower() and "permission" in text.lower():
+            return True, ""
+        logger.warning("Failed sharing spreadsheet=%s to %s: %s", spreadsheet_id, cleaned_email, exc)
+        return False, text
 
 
 def _get_sheets_clients(sync_config: dict, spreadsheet_id: str):
@@ -512,6 +577,7 @@ def _style_day_tab(
     sales_rows_count: int,
     expense_rows_count: int = 0,
     stall_type: str = "sub",
+    over_short_value: Decimal | float | int | None = None,
 ):
     metadata = _execute_with_backoff(
         service.spreadsheets().get(spreadsheetId=spreadsheet_id),
@@ -1222,6 +1288,40 @@ def _style_day_tab(
         }
     })
 
+    # Over/Short value (summary row 13) is highlighted based on sign.
+    over_short_number = Decimal(str(over_short_value or 0))
+    if over_short_number > 0:
+        over_short_bg = {"red": 0.86, "green": 0.95, "blue": 0.89}
+        over_short_fg = {"red": 0.11, "green": 0.46, "blue": 0.2}
+    elif over_short_number < 0:
+        over_short_bg = {"red": 0.98, "green": 0.89, "blue": 0.89}
+        over_short_fg = {"red": 0.73, "green": 0.11, "blue": 0.11}
+    else:
+        over_short_bg = {"red": 1, "green": 1, "blue": 1}
+        over_short_fg = {"red": 0, "green": 0, "blue": 0}
+
+    requests.append({
+        "repeatCell": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 12,
+                "endRowIndex": 13,
+                "startColumnIndex": summary_start_col + 1,
+                "endColumnIndex": summary_start_col + 2,
+            },
+            "cell": {
+                "userEnteredFormat": {
+                    "backgroundColor": over_short_bg,
+                    "textFormat": {
+                        "foregroundColor": over_short_fg,
+                        "bold": True,
+                    },
+                }
+            },
+            "fields": "userEnteredFormat(backgroundColor,textFormat)",
+        }
+    })
+
     # Basic filter
     requests.append({
         "setBasicFilter": {
@@ -1367,6 +1467,7 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
         sales_rows_count=len(sales_rows),
         expense_rows_count=len(expense_rows),
         stall_type=stall.stall_type,
+        over_short_value=metrics["balance"],
     )
 
     # Navigate to the latest daily tab on open
@@ -1414,16 +1515,20 @@ def get_google_sheets_sync_status() -> dict[str, Any]:
     sync_config = _get_google_sync_config()
     raw_json = (sync_config.get("service_account_json") or "").strip()
     json_path = (sync_config.get("service_account_file") or "").strip()
+    share_email = (sync_config.get("share_email") or "").strip()
 
     status: dict[str, Any] = {
         "enabled": bool(sync_config.get("enabled")),
         "sub_spreadsheet_id": sync_config.get("sub_spreadsheet_id", ""),
         "main_spreadsheet_id": sync_config.get("main_spreadsheet_id", ""),
         "sync_scope": sync_config.get("sync_scope", "sub"),
+        "share_email": share_email,
+        "share_email_configured": bool(share_email),
         "credential_configured": bool(raw_json or json_path),
         "connection_ok": False,
         "sub_latest_gid": None,
         "main_latest_gid": None,
+        "monthly_links_count": StallMonthlySheet.objects.filter(is_active=True).count(),
         "message": "",
     }
 
@@ -1482,7 +1587,7 @@ def _sync_sales_day_to_google_sheet_result(stall_id: int, target_date: date) -> 
         logger.warning("Google Sheets day sync skipped: stall %s does not exist", stall_id)
         return False, f"Stall {stall_id} does not exist"
 
-    spreadsheet_id = _spreadsheet_id_for_stall(sync_config, stall.stall_type)
+    spreadsheet_id, monthly_sheet = _resolve_spreadsheet_target(sync_config, stall, target_date)
     service, sheet_api, init_error = _get_sheets_clients(sync_config, spreadsheet_id)
     if service is None or sheet_api is None:
         logger.warning("Google Sheets day sync skipped: %s", init_error)
@@ -1490,6 +1595,26 @@ def _sync_sales_day_to_google_sheet_result(stall_id: int, target_date: date) -> 
 
     try:
         _render_day_tab(service, sheet_api, spreadsheet_id, stall, target_date)
+
+        share_email = (sync_config.get("share_email") or "").strip()
+        if monthly_sheet and share_email and (
+            not monthly_sheet.shared_ok or monthly_sheet.shared_to_email != share_email
+        ):
+            shared_ok, share_error = _share_sheet_with_email(sync_config, spreadsheet_id, share_email)
+            monthly_sheet.shared_ok = shared_ok
+            monthly_sheet.shared_to_email = share_email if shared_ok else ""
+            monthly_sheet.shared_at = timezone.now() if shared_ok else None
+            monthly_sheet.share_error = "" if shared_ok else (share_error or "Unknown share error")
+            monthly_sheet.save(
+                update_fields=[
+                    "shared_ok",
+                    "shared_to_email",
+                    "shared_at",
+                    "share_error",
+                    "updated_at",
+                ]
+            )
+
         return True, ""
     except Exception as exc:
         logger.exception(

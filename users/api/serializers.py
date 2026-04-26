@@ -268,6 +268,7 @@ class SystemSettingsSerializer(serializers.ModelSerializer):
             'google_sheets_main_spreadsheet_id',
             'google_sheets_worksheet_name',
             'google_sheets_sub_stall_type',
+            'google_sheets_share_email',
             'google_service_account_json',
             'google_service_account_configured',
             'updated_at',
