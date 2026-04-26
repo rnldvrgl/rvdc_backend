@@ -178,6 +178,13 @@ def _share_sheet_with_email(sync_config: dict, spreadsheet_id: str, email: str) 
         # 409 usually means permission already exists.
         if "already" in text.lower() and "permission" in text.lower():
             return True, ""
+        lower_text = text.lower()
+        if "does not have permission" in lower_text or "insufficient" in lower_text or "forbidden" in lower_text:
+            sa_email = getattr(credentials, "service_account_email", "the configured service account")
+            return (
+                False,
+                f"Service account has no access to this spreadsheet. Share the sheet with {sa_email} first, then retry sync.",
+            )
         logger.warning("Failed sharing spreadsheet=%s to %s: %s", spreadsheet_id, cleaned_email, exc)
         return False, text
 
@@ -1623,7 +1630,32 @@ def _sync_sales_day_to_google_sheet_result(stall_id: int, target_date: date) -> 
             target_date,
             exc,
         )
-        return False, str(exc)
+        error_text = str(exc)
+        if monthly_sheet:
+            lower_text = error_text.lower()
+            if "does not have permission" in lower_text or "insufficient" in lower_text or "forbidden" in lower_text:
+                credentials = _get_service_account_credentials(sync_config)
+                sa_email = getattr(credentials, "service_account_email", "the configured service account")
+                error_text = (
+                    f"Service account has no access to this spreadsheet. "
+                    f"Share the sheet with {sa_email} first, then retry sync."
+                )
+
+            monthly_sheet.shared_ok = False
+            monthly_sheet.shared_to_email = ""
+            monthly_sheet.shared_at = None
+            monthly_sheet.share_error = error_text
+            monthly_sheet.save(
+                update_fields=[
+                    "shared_ok",
+                    "shared_to_email",
+                    "shared_at",
+                    "share_error",
+                    "updated_at",
+                ]
+            )
+
+        return False, error_text
 
 
 def sync_historical_sales_to_google_sheets(
