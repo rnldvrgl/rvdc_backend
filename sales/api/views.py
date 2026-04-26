@@ -12,10 +12,15 @@ from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone as dj_timezone
 from django.utils.dateparse import parse_date
 
-from sales.models import SalesItem, SalesPayment, SalesTransaction
-from sales.api.serializers import SalesPaymentSerializer, SalesTransactionSerializer
+from sales.models import SalesItem, SalesPayment, SalesTransaction, StallMonthlySheet
+from sales.api.serializers import (
+    SalesPaymentSerializer,
+    SalesTransactionSerializer,
+    StallMonthlySheetSerializer,
+)
 from utils.sales import void_sales_transaction, unvoid_sales_transaction
 from sales.api.filters import SalesTransactionFilter
+from utils.permissions import IsAdminOrManager
 
 from utils.filters.options import get_stall_options
 from utils.filters.role_filters import get_role_based_filter_response
@@ -328,3 +333,56 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
 
         transaction_serializer = self.get_serializer(transaction)
         return Response(transaction_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class StallMonthlySheetViewSet(viewsets.ModelViewSet):
+    queryset = StallMonthlySheet.objects.select_related("stall", "created_by").order_by(
+        "-month_key", "stall__name"
+    )
+    serializer_class = StallMonthlySheetSerializer
+    permission_classes = [IsAdminOrManager]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ["stall", "month_key", "is_active"]
+    ordering_fields = ["month_key", "created_at", "updated_at", "stall__name"]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        data = serializer.validated_data
+        stall = data["stall"]
+        month_key = data["month_key"]
+        spreadsheet_id = data["spreadsheet_id"]
+        spreadsheet_url = (data.get("spreadsheet_url") or "").strip()
+        is_active = data.get("is_active", True)
+
+        instance = StallMonthlySheet.objects.filter(stall=stall, month_key=month_key).first()
+        created = False
+
+        if instance is None:
+            instance = StallMonthlySheet.objects.create(
+                stall=stall,
+                month_key=month_key,
+                spreadsheet_id=spreadsheet_id,
+                spreadsheet_url=spreadsheet_url,
+                is_active=is_active,
+                created_by=request.user,
+            )
+            created = True
+        else:
+            previous_sheet_id = instance.spreadsheet_id
+            instance.spreadsheet_id = spreadsheet_id
+            instance.spreadsheet_url = spreadsheet_url
+            instance.is_active = is_active
+            if previous_sheet_id != spreadsheet_id:
+                instance.shared_ok = False
+                instance.shared_to_email = ""
+                instance.shared_at = None
+                instance.share_error = ""
+            instance.save()
+
+        output = self.get_serializer(instance)
+        return Response(
+            output.data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )

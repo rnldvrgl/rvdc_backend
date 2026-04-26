@@ -227,6 +227,11 @@ class SystemSettings(models.Model):
         blank=True,
         help_text="Manual sync scope: sub, main, or both"
     )
+    google_sheets_share_email = models.EmailField(
+        blank=True,
+        default="",
+        help_text="Single Google account email to share newly configured monthly sheets with",
+    )
     google_service_account_json = models.TextField(
         blank=True,
         default="",

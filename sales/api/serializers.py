@@ -1,10 +1,11 @@
 from datetime import datetime, time as dt_time
+import re
 from rest_framework import serializers
 from django.db import transaction
 from django.utils import timezone as dj_timezone
 from rest_framework.exceptions import ValidationError
 from inventory.models import Stock
-from sales.models import SalesTransaction, SalesItem, SalesPayment
+from sales.models import SalesTransaction, SalesItem, SalesPayment, StallMonthlySheet
 from inventory.api.serializers import ItemSerializer, StallSerializer
 from clients.api.serializers import ClientSerializer
 from inventory.models import Item
@@ -303,3 +304,57 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
 
             instance.update_payment_status()
         return instance
+
+
+class StallMonthlySheetSerializer(serializers.ModelSerializer):
+    stall_name = serializers.CharField(source="stall.name", read_only=True)
+
+    class Meta:
+        model = StallMonthlySheet
+        fields = [
+            "id",
+            "stall",
+            "stall_name",
+            "month_key",
+            "spreadsheet_id",
+            "spreadsheet_url",
+            "is_active",
+            "shared_ok",
+            "shared_to_email",
+            "shared_at",
+            "share_error",
+            "last_reminder_sent_at",
+            "created_by",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "stall_name",
+            "shared_ok",
+            "shared_to_email",
+            "shared_at",
+            "share_error",
+            "last_reminder_sent_at",
+            "created_by",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate_month_key(self, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", cleaned):
+            raise serializers.ValidationError("month_key must be in YYYY-MM format.")
+        return cleaned
+
+    def validate_spreadsheet_id(self, value: str) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise serializers.ValidationError("spreadsheet_id is required.")
+        return cleaned
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        if request and getattr(request, "user", None):
+            validated_data["created_by"] = request.user
+        return super().create(validated_data)

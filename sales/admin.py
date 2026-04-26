@@ -1,6 +1,6 @@
 # sales/admin.py
 from django.contrib import admin
-from .models import SalesTransaction, SalesPayment, SalesItem
+from .models import SalesTransaction, SalesPayment, SalesItem, StallMonthlySheet
 
 
 class SalesItemInline(admin.TabularInline):
@@ -69,3 +69,18 @@ class SalesItemAdmin(admin.ModelAdmin):
 
     def line_total(self, obj):
         return obj.line_total
+
+
+@admin.register(StallMonthlySheet)
+class StallMonthlySheetAdmin(admin.ModelAdmin):
+    list_display = (
+        "stall",
+        "month_key",
+        "is_active",
+        "shared_ok",
+        "shared_to_email",
+        "shared_at",
+        "updated_at",
+    )
+    list_filter = ("stall", "is_active", "shared_ok", "month_key")
+    search_fields = ("stall__name", "month_key", "spreadsheet_id", "shared_to_email")

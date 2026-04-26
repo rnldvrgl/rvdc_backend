@@ -257,3 +257,68 @@ class SalesItem(models.Model):
     def __str__(self):
         label = self.description or (self.item.name if self.item else "Service Line")
         return f"{self.quantity} x {label} @ {self.final_price_per_unit}"
+
+
+class StallMonthlySheet(models.Model):
+    """Google Sheets configuration per stall and month for sync/audit purposes."""
+
+    stall = models.ForeignKey(
+        Stall,
+        on_delete=models.CASCADE,
+        related_name="monthly_google_sheets",
+    )
+    month_key = models.CharField(
+        max_length=7,
+        help_text="Month key in YYYY-MM format.",
+    )
+    spreadsheet_id = models.CharField(
+        max_length=255,
+        help_text="Spreadsheet ID from the Google Sheets URL.",
+    )
+    spreadsheet_url = models.URLField(
+        blank=True,
+        default="",
+        help_text="Canonical spreadsheet URL. Auto-filled from spreadsheet_id when empty.",
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="When false, this month record is kept for history but not used for sync.",
+    )
+    shared_ok = models.BooleanField(default=False)
+    shared_to_email = models.EmailField(blank=True, default="")
+    shared_at = models.DateTimeField(null=True, blank=True)
+    share_error = models.TextField(blank=True, default="")
+    last_reminder_sent_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_monthly_sheets",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-month_key", "stall_id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["stall", "month_key"],
+                name="unique_stall_monthly_sheet",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["month_key"], name="sales_monthly_sheet_month_idx"),
+            models.Index(fields=["stall", "month_key"], name="sales_monthly_sheet_stall_month_idx"),
+            models.Index(fields=["is_active"], name="sales_monthly_sheet_active_idx"),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.month_key = (self.month_key or "").strip()
+        self.spreadsheet_id = (self.spreadsheet_id or "").strip()
+        if self.spreadsheet_id and not self.spreadsheet_url:
+            self.spreadsheet_url = f"https://docs.google.com/spreadsheets/d/{self.spreadsheet_id}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.stall.name} {self.month_key}"
