@@ -147,6 +147,47 @@ def _resolve_spreadsheet_target(sync_config: dict, stall: Stall, target_date: da
     return _spreadsheet_id_for_stall(sync_config, stall.stall_type), None
 
 
+def _verify_service_account_access(sync_config: dict, spreadsheet_id: str) -> tuple[bool, str]:
+    """Check if service account has read access to a spreadsheet."""
+    if not spreadsheet_id:
+        return False, "Spreadsheet ID is missing"
+
+    credentials = _get_service_account_credentials(sync_config)
+    if credentials is None:
+        return False, "Service account credentials are not configured or invalid"
+
+    try:
+        discovery_module = importlib.import_module("googleapiclient.discovery")
+        build = discovery_module.build
+        service = build("sheets", "v4", credentials=credentials, cache_discovery=False)
+        # Simple read-only check to verify access
+        _execute_with_backoff(
+            service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id,
+                fields="spreadsheetId",
+            ),
+            operation=f"verify service account access {spreadsheet_id}",
+        )
+        return True, ""
+    except Exception as exc:
+        text = str(exc)
+        http_status = getattr(getattr(exc, "resp", None), "status", None)
+
+        if http_status == 404:
+            return False, "Spreadsheet not found"
+        if http_status == 403:
+            sa_email = getattr(credentials, "service_account_email", "the configured service account")
+            return False, f"Service account ({sa_email}) does not have access to this spreadsheet"
+
+        lower_text = text.lower()
+        if "does not have permission" in lower_text or "forbidden" in lower_text:
+            sa_email = getattr(credentials, "service_account_email", "the configured service account")
+            return False, f"Service account ({sa_email}) does not have access to this spreadsheet"
+
+        logger.debug("Failed to verify service account access to %s: %s", spreadsheet_id, exc)
+        return False, _normalize_google_error_text(text)
+
+
 def _share_sheet_with_email(sync_config: dict, spreadsheet_id: str, email: str) -> tuple[bool, str]:
     cleaned_email = (email or "").strip()
     if not cleaned_email:
@@ -193,7 +234,7 @@ def _share_sheet_with_email(sync_config: dict, spreadsheet_id: str, email: str) 
             )
 
         logger.warning("Failed sharing spreadsheet=%s to %s: %s", spreadsheet_id, cleaned_email, exc)
-        return False, text
+        return False, _normalize_google_error_text(text)
 
 
 def _get_sheets_clients(sync_config: dict, spreadsheet_id: str):
@@ -1525,6 +1566,29 @@ def _navigate_to_latest_daily_tab(service, spreadsheet_id: str):
         logger.debug("Failed to navigate to latest daily tab: %s", exc)
 
 
+def _get_monthly_sheet_latest_gid(spreadsheet_id: str, sync_config: dict) -> int | None:
+    """Get the latest daily tab GID for a monthly sheet."""
+    if not spreadsheet_id:
+        return None
+
+    service, _, init_error = _get_sheets_clients(sync_config, spreadsheet_id)
+    if service is None:
+        return None
+
+    try:
+        sheet_meta = _execute_with_backoff(
+            service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id,
+                fields="sheets(properties(sheetId,title,index))",
+            ),
+            operation=f"get monthly sheet metadata {spreadsheet_id}",
+        )
+        return _latest_daily_tab_gid(sheet_meta.get("sheets", []))
+    except Exception as exc:
+        logger.debug("Failed to get latest GID for monthly sheet %s: %s", spreadsheet_id, exc)
+        return None
+
+
 def get_google_sheets_sync_status() -> dict[str, Any]:
     sync_config = _get_google_sync_config()
     raw_json = (sync_config.get("service_account_json") or "").strip()
@@ -1543,6 +1607,7 @@ def get_google_sheets_sync_status() -> dict[str, Any]:
         "sub_latest_gid": None,
         "main_latest_gid": None,
         "monthly_links_count": StallMonthlySheet.objects.filter(is_active=True).count(),
+        "current_month_sheets": {},
         "message": "",
     }
 
@@ -1553,12 +1618,43 @@ def get_google_sheets_sync_status() -> dict[str, Any]:
             status["message"] = f"Service account JSON is invalid: {exc}"
             return status
 
+    # Get current month's sheets
+    current_month_key = _month_key_for_date(timezone.localdate())
+    monthly_sheets = StallMonthlySheet.objects.filter(
+        month_key=current_month_key,
+        is_active=True,
+    ).select_related("stall")
+
+    for monthly_sheet in monthly_sheets:
+        latest_gid = _get_monthly_sheet_latest_gid(monthly_sheet.spreadsheet_id, sync_config)
+        status["current_month_sheets"][monthly_sheet.stall.stall_type] = {
+            "spreadsheet_id": monthly_sheet.spreadsheet_id,
+            "latest_gid": latest_gid,
+            "stall_name": monthly_sheet.stall.name,
+        }
+
     checks = []
+    details: dict[str, Any] = {}
+
     for stall_type in _scope_stall_types(sync_config.get("sync_scope", "sub")):
         spreadsheet_id = _spreadsheet_id_for_stall(sync_config, stall_type)
+
+        if not spreadsheet_id:
+            checks.append(f"{stall_type}: Not configured")
+            details[stall_type] = {"status": "not_configured", "message": "Spreadsheet ID not configured"}
+            continue
+
+        # First verify service account has access
+        has_access, access_error = _verify_service_account_access(sync_config, spreadsheet_id)
+        if not has_access:
+            checks.append(f"{stall_type}: No access - {access_error}")
+            details[stall_type] = {"status": "no_access", "message": access_error}
+            continue
+
         service, sheet_api, init_error = _get_sheets_clients(sync_config, spreadsheet_id)
         if service is None or sheet_api is None:
-            checks.append(f"{stall_type}: {init_error}")
+            checks.append(f"{stall_type}: Connection failed - {init_error}")
+            details[stall_type] = {"status": "connection_failed", "message": init_error}
             continue
 
         try:
@@ -1575,12 +1671,18 @@ def get_google_sheets_sync_status() -> dict[str, Any]:
                 status["sub_latest_gid"] = latest_gid
             elif stall_type == "main":
                 status["main_latest_gid"] = latest_gid
-            checks.append(f"{stall_type}: ok")
+
+            sheet_title = sheet_meta.get("properties", {}).get("title", "Unknown")
+            checks.append(f"{stall_type}: Connected")
+            details[stall_type] = {"status": "connected", "message": f"Connected to \"{sheet_title}\""}
         except Exception as exc:
             logger.exception("Google Sheets status check failed for %s: %s", stall_type, exc)
-            checks.append(f"{stall_type}: {exc}")
+            error_msg = _normalize_google_error_text(str(exc))
+            checks.append(f"{stall_type}: {error_msg}")
+            details[stall_type] = {"status": "error", "message": error_msg}
 
-    status["connection_ok"] = all(c.endswith("ok") for c in checks)
+    status["connection_ok"] = all(d.get("status") == "connected" for d in details.values() if d.get("status") != "not_configured")
+    status["connection_details"] = details
     status["message"] = " | ".join(checks) if checks else "No scope selected"
     return status
 
