@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any, Callable
 
 from django.conf import settings
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
 
@@ -1426,7 +1426,11 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
             is_deleted=False,
         )
         .annotate(effective_date=Coalesce("transaction_date", TruncDate("created_at")))
-        .filter(effective_date=target_date)
+        .filter(
+            Q(effective_date=target_date)
+            | Q(payments__payment_date__date=target_date)
+        )
+        .distinct()
         .order_by("manual_receipt_number", "id")
     )
 
@@ -1777,6 +1781,21 @@ def sync_historical_sales_to_google_sheets(
 
     for tx in sales_qs.order_by("id"):
         day_targets_by_stall.setdefault(tx.stall_id, set()).add(tx.effective_date)
+
+    payment_qs = SalesPayment.objects.filter(
+        transaction__stall__in=stalls,
+        transaction__voided=False,
+        transaction__is_deleted=False,
+    ).select_related("transaction")
+    if start_date:
+        payment_qs = payment_qs.filter(payment_date__date__gte=start_date)
+    if end_date:
+        payment_qs = payment_qs.filter(payment_date__date__lte=end_date)
+    for payment in payment_qs:
+        if payment.payment_date:
+            day_targets_by_stall.setdefault(payment.transaction.stall_id, set()).add(
+                payment.payment_date.date()
+            )
 
     remit_qs = RemittanceRecord.objects.filter(stall__in=stalls)
     if start_date:
