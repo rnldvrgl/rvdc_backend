@@ -2524,7 +2524,7 @@ class CreateServicePaymentSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
         default=None,
-        help_text="Override payment date for backdating. If not provided and service has transaction_date, payment is auto-backdated.",
+        help_text="Optional payment date override for backdating. If not provided, current date/time is used.",
     )
     cheque_collection = serializers.PrimaryKeyRelatedField(
         queryset=ChequeCollection.objects.all(),

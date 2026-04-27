@@ -7,7 +7,7 @@ from decimal import Decimal
 from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Sum
-from django.db.models.signals import post_delete, post_save
+from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 
 logger = logging.getLogger(__name__)
@@ -195,16 +195,46 @@ def push_sales_payment_update(sender, instance, created, **kwargs):
 
     # Payment edits can change per-day payment-method display.
     transaction.on_commit(lambda: _queue_google_sheets_sync(instance.transaction_id))
+
+    old_payment_date = getattr(instance, "_old_payment_date", None)
     payment_date = instance.payment_date.date() if instance.payment_date else None
+
+    if payment_date:
+        transaction.on_commit(
+            lambda: _queue_google_sheets_day_sync(instance.transaction.stall_id, payment_date)
+        )
+    if old_payment_date and old_payment_date != payment_date:
+        transaction.on_commit(
+            lambda: _queue_google_sheets_day_sync(instance.transaction.stall_id, old_payment_date)
+        )
+
     transaction.on_commit(
         lambda: _queue_remittance_recalculate(instance.transaction.stall_id, payment_date)
     )
+    if old_payment_date and old_payment_date != payment_date:
+        transaction.on_commit(
+            lambda: _queue_remittance_recalculate(instance.transaction.stall_id, old_payment_date)
+        )
+
+
+@receiver(pre_save, sender="sales.SalesPayment")
+def cache_old_sales_payment_date(sender, instance, **kwargs):
+    if not instance.pk:
+        return
+    from sales.models import SalesPayment
+
+    previous = SalesPayment.objects.filter(pk=instance.pk).only("payment_date").first()
+    instance._old_payment_date = previous.payment_date.date() if previous and previous.payment_date else None
 
 
 @receiver(post_delete, sender="sales.SalesPayment")
 def push_sales_payment_delete(sender, instance, **kwargs):
     transaction.on_commit(lambda: _queue_google_sheets_sync(instance.transaction_id))
     payment_date = instance.payment_date.date() if instance.payment_date else None
+    if payment_date:
+        transaction.on_commit(
+            lambda: _queue_google_sheets_day_sync(instance.transaction.stall_id, payment_date)
+        )
     transaction.on_commit(
         lambda: _queue_remittance_recalculate(instance.transaction.stall_id, payment_date)
     )

@@ -1757,9 +1757,8 @@ class ServicePaymentManager:
             received_by: User who received the payment (optional)
             notes: Additional notes (optional)
             cheque_collection: ChequeCollection instance (optional, for cheque payments)
-            payment_date: Explicit payment date override (optional). If not provided
-                          and service has transaction_date, payment is backdated to noon
-                          of that date for correct remittance attribution.
+            payment_date: Explicit payment date override (optional). If not provided,
+                          defaults to the current time (actual cash-received time).
 
         Returns:
             ServicePayment instance
@@ -1773,14 +1772,6 @@ class ServicePaymentManager:
         # Validate amount
         if amount <= 0:
             raise ValidationError("Payment amount must be greater than zero.")
-
-        # Determine effective payment_date
-        if payment_date is None and service.transaction_date:
-            from datetime import datetime, time as dt_time
-            from django.utils import timezone as dj_timezone
-            payment_date = dj_timezone.make_aware(
-                datetime.combine(service.transaction_date, dt_time(12, 0))
-            )
 
         # Create payment — lock service row to prevent concurrent overpayment
         with transaction.atomic():
