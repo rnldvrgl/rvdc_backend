@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # ----------------------------------
 @receiver(post_save, sender="notifications.Notification")
 def push_notification_via_websocket(sender, instance, created, **kwargs):
-    """Send real-time notification to the user's WebSocket channel."""
+    """Send real-time notification and web push for newly created notifications."""
     if not created:
         return
 
@@ -41,31 +41,29 @@ def push_notification_via_websocket(sender, instance, created, **kwargs):
         from channels.layers import get_channel_layer  # type: ignore[import-not-found]
 
         channel_layer = get_channel_layer()
-        if channel_layer is None:
-            return
+        if channel_layer is not None:
+            from notifications.models import Notification
 
-        from notifications.models import Notification
+            unread_count = Notification.objects.filter(
+                user=instance.user, is_read=False
+            ).count()
 
-        unread_count = Notification.objects.filter(
-            user=instance.user, is_read=False
-        ).count()
-
-        async_to_sync(channel_layer.group_send)(
-            f"notifications_{instance.user.id}",
-            {
-                "type": "send_notification",
-                "data": {
-                    "event": "new_notification",
-                    "notification": {
-                        "id": instance.id,
-                        "type": instance.type,
-                        "title": instance.title,
-                        "message": instance.message,
+            async_to_sync(channel_layer.group_send)(
+                f"notifications_{instance.user.id}",
+                {
+                    "type": "send_notification",
+                    "data": {
+                        "event": "new_notification",
+                        "notification": {
+                            "id": instance.id,
+                            "type": instance.type,
+                            "title": instance.title,
+                            "message": instance.message,
+                        },
+                        "unread_count": unread_count,
                     },
-                    "unread_count": unread_count,
                 },
-            },
-        )
+            )
 
         # Also send Web Push (for mobile/background tabs)
         try:
