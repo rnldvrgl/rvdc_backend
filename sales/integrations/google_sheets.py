@@ -175,9 +175,23 @@ def _share_sheet_with_email(sync_config: dict, spreadsheet_id: str, email: str) 
         return True, ""
     except Exception as exc:
         text = str(exc)
+
+        # Extract HTTP status code from the exception
+        http_status = getattr(getattr(exc, "resp", None), "status", None)
+
         # 409 usually means permission already exists.
         if "already" in text.lower() and "permission" in text.lower():
             return True, ""
+
+        # Check for 403 Forbidden or permission-related errors
+        lower_text = text.lower()
+        if http_status == 403 or "does not have permission" in lower_text or "insufficient" in lower_text or "forbidden" in lower_text:
+            sa_email = getattr(credentials, "service_account_email", "the configured service account")
+            return (
+                False,
+                f"Service account has no access to this spreadsheet. Share the sheet with {sa_email} first, then retry sync.",
+            )
+
         logger.warning("Failed sharing spreadsheet=%s to %s: %s", spreadsheet_id, cleaned_email, exc)
         return False, text
 
