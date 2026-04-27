@@ -3,6 +3,7 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from clients.api.serializers import ClientSerializer
+from inventory.api.serializers import StallSerializer
 from quotations.models import Quotation, QuotationItem, QuotationPayment, QuotationTermsTemplate
 
 
@@ -58,12 +59,15 @@ class QuotationListSerializer(serializers.ModelSerializer):
 
     item_count = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
+    stall_data = StallSerializer(source="stall", read_only=True)
 
     class Meta:
         model = Quotation
         fields = [
             "id",
             "client",
+            "stall",
+            "stall_data",
             "client_name",
             "client_contact",
             "quote_date",
@@ -97,6 +101,7 @@ class QuotationSerializer(serializers.ModelSerializer):
     items = QuotationItemSerializer(many=True)
     payments = QuotationPaymentSerializer(many=True, required=False)
     client_data = ClientSerializer(source="client", read_only=True)
+    stall_data = StallSerializer(source="stall", read_only=True)
     created_by_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -105,6 +110,8 @@ class QuotationSerializer(serializers.ModelSerializer):
             "id",
             "client",
             "client_data",
+            "stall",
+            "stall_data",
             "client_name",
             "client_address",
             "client_contact",

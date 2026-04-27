@@ -10,7 +10,7 @@ class QuotationItemInline(admin.TabularInline):
 
 @admin.register(Quotation)
 class QuotationAdmin(admin.ModelAdmin):
-    list_display = ["id", "client_name", "quote_date", "total", "status", "created_at"]
+    list_display = ["id", "client_name", "stall", "quote_date", "total", "status", "created_at"]
     list_filter = ["status", "is_deleted"]
     search_fields = ["client_name", "project_description"]
     inlines = [QuotationItemInline]

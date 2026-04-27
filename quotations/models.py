@@ -3,6 +3,8 @@ from decimal import Decimal
 from django.db import models
 from django.utils import timezone
 
+from inventory.models import Stall
+
 
 class QuotationTermsTemplate(models.Model):
     """Reusable templates for terms & conditions / payment terms."""
@@ -59,6 +61,14 @@ class Quotation(models.Model):
     client_name = models.CharField(max_length=255, blank=True)
     client_address = models.TextField(blank=True)
     client_contact = models.CharField(max_length=100, blank=True)
+
+    stall = models.ForeignKey(
+        Stall,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="quotations",
+    )
 
     quote_date = models.DateField(default=timezone.now)
     valid_until = models.DateField()
