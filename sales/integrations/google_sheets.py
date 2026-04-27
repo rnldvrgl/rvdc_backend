@@ -49,6 +49,19 @@ def _execute_with_backoff(request, operation: str, max_attempts: int = 5):
             time.sleep(delay_seconds)
 
 
+def _normalize_google_error_text(error_text: str) -> str:
+    text = (error_text or "").strip()
+    lower_text = text.lower()
+
+    if "rate_limit_exceeded" in lower_text or "quota exceeded" in lower_text or "write requests per minute" in lower_text:
+        return "Google Sheets write quota reached. Please wait about 1-2 minutes and retry."
+
+    if "403" in text or "does not have permission" in lower_text or "insufficient" in lower_text or "forbidden" in lower_text:
+        return "Permission denied. Ensure the service account has access to this spreadsheet."
+
+    return text.split("\n", 1)[0][:240] if text else "Google Sheets sync failed"
+
+
 def _get_google_sync_config() -> dict:
     config = {
         "enabled": bool(getattr(settings, "GOOGLE_SHEETS_SYNC_ENABLED", False)),
@@ -1434,7 +1447,23 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
         .order_by("manual_receipt_number", "id")
     )
 
-    sales_rows = _build_sales_rows(transactions, stall.stall_type)
+    day_transactions: list[SalesTransaction] = []
+    for transaction in transactions:
+        payment_dates = {
+            payment.payment_date.date()
+            for payment in transaction.payments.all()
+            if payment.payment_date
+        }
+
+        if payment_dates:
+            if target_date in payment_dates:
+                day_transactions.append(transaction)
+            continue
+
+        if _effective_date(transaction) == target_date:
+            day_transactions.append(transaction)
+
+    sales_rows = _build_sales_rows(day_transactions, stall.stall_type)
     expense_rows = _get_expense_rows(stall, target_date)
     metrics = _get_day_metrics(stall, target_date)
 
