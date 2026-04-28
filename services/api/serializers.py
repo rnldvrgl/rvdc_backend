@@ -23,6 +23,7 @@ from services.business_logic import (
     PromoManager,
     RevenueCalculator,
     StockReservationManager,
+    ServicePaymentManager,
     get_main_stall,
     get_sub_stall,
 )
@@ -2541,28 +2542,18 @@ class CreateServicePaymentSerializer(serializers.Serializer):
         return value
 
     def validate_cheque_collection(self, value):
-        """Validate cheque is not already linked to another payment."""
-        if value is not None:
-            # Check if cheque is already linked to a service payment
-            if value.service_payments.exists():
-                raise ValidationError(
-                    "This cheque is already linked to another service payment."
-                )
-            # Check if cheque is already linked to a sales payment
-            if value.sales_payments.exists():
-                raise ValidationError(
-                    "This cheque is already linked to a sales payment."
-                )
+        """Basic cheque linkage validation. Amount and remaining checks are done in validate()."""
         return value
 
     def validate(self, data):
-        """Validate payment doesn't exceed balance due."""
+        """Validate payment doesn't exceed balance due and fund is available if using fund."""
         service = self.context.get("service")
         if not service:
             raise ValidationError("Service context is required.")
 
         amount = data["amount"]
         balance_due = service.balance_due
+        payment_type = data.get("payment_type")
 
         if amount > balance_due:
             raise ValidationError(
@@ -2570,30 +2561,68 @@ class CreateServicePaymentSerializer(serializers.Serializer):
                 f"Total revenue: ₱{service.total_revenue}, Already paid: ₱{service.total_paid}"
             )
 
+        # Validate fund is available if using client fund
+        if payment_type == "fund":
+            client = service.client
+            if client.fund_balance < amount:
+                raise ValidationError(
+                    f"Insufficient client fund. Available: ₱{client.fund_balance}, Requested: ₱{amount}"
+                )
+
         # Validate cheque is provided for cheque payment type
-        if data["payment_type"] == "cheque" and not data.get("cheque_collection"):
+        cheque = data.get("cheque_collection")
+        if payment_type == "cheque":
+            if not cheque:
+                raise ValidationError(
+                    "A cheque collection must be selected for cheque payments."
+                )
+
+            if cheque.client_id != service.client_id:
+                raise ValidationError(
+                    "Selected cheque belongs to a different client."
+                )
+
+            if amount > cheque.remaining_amount:
+                raise ValidationError(
+                    f"Cheque remaining amount is only ₱{cheque.remaining_amount}."
+                )
+        elif cheque:
             raise ValidationError(
-                "A cheque collection must be selected for cheque payments."
+                "Cheque collection can only be set when payment type is cheque."
             )
 
         return data
 
     def save(self):
-        """Create the service payment."""
+        """Create the service payment and deduct from client fund if using fund."""
         from services.business_logic import ServicePaymentManager
 
         service = self.context.get("service")
         user = self.context.get("request").user if self.context.get("request") else None
 
+        payment_type = self.validated_data["payment_type"]
+        amount = self.validated_data["amount"]
+
         payment = ServicePaymentManager.create_payment(
             service=service,
-            payment_type=self.validated_data["payment_type"],
-            amount=self.validated_data["amount"],
+            payment_type=payment_type,
+            amount=amount,
             received_by=user,
             notes=self.validated_data.get("notes", ""),
             cheque_collection=self.validated_data.get("cheque_collection"),
             payment_date=self.validated_data.get("payment_date"),
         )
+
+        # Deduct from client fund balance if paying with fund
+        if payment_type == "fund":
+            from django.db.models import F
+            from clients.models import Client
+
+            client = service.client
+            client.fund_balance = F('fund_balance') - amount
+            client.save(update_fields=['fund_balance', 'updated_at'])
+            # Refresh to get updated value
+            client.refresh_from_db()
 
         return payment
 

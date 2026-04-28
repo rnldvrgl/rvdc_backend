@@ -1562,6 +1562,84 @@ class ServicePaymentManager:
         sales_transaction.update_payment_status()
 
     @staticmethod
+    def sync_service_sales_records(service):
+        """
+        Rebuild mirrored sales items and payment splits for a service.
+
+        Use this after the service revenue mix changes, such as when a
+        pre-order installation is converted to the actual unit that arrived.
+        """
+        main_tx = service.related_transaction
+        if not main_tx or main_tx.voided:
+            if service.payments.exists():
+                main_tx = ServicePaymentManager.recreate_sales_transaction(service)
+            else:
+                return None
+
+        ServicePaymentManager.sync_sales_items(service)
+        ServicePaymentManager.sync_sub_sales_items(service)
+        ServicePaymentManager.rebalance_sales_payments(service)
+        return main_tx
+
+    @staticmethod
+    def rebalance_sales_payments(service):
+        """Recreate mirrored SalesPayment rows using the current revenue split."""
+        from sales.models import SalesPayment
+
+        main_tx = service.related_transaction
+        if not main_tx or main_tx.voided:
+            return 0
+
+        sub_tx = service.related_sub_transaction
+        if sub_tx and sub_tx.voided:
+            sub_tx = None
+
+        service_payments = list(service.payments.order_by('payment_date', 'id'))
+        if not service_payments:
+            return 0
+
+        main_total = main_tx.computed_total or Decimal('0')
+        sub_total = (sub_tx.computed_total or Decimal('0')) if sub_tx else Decimal('0')
+        main_filled = Decimal('0')
+        sub_filled = Decimal('0')
+
+        with transaction.atomic():
+            main_tx.payments.all().delete()
+            if sub_tx:
+                sub_tx.payments.all().delete()
+
+            for service_payment in service_payments:
+                m_share, s_share = ServicePaymentManager._waterfall_split(
+                    service_payment.amount,
+                    main_total - main_filled,
+                    sub_total - sub_filled,
+                )
+
+                if s_share > 0 and sub_tx:
+                    SalesPayment.objects.create(
+                        transaction=sub_tx,
+                        payment_type=service_payment.payment_type,
+                        amount=s_share,
+                        payment_date=service_payment.payment_date,
+                    )
+                if m_share > 0:
+                    SalesPayment.objects.create(
+                        transaction=main_tx,
+                        payment_type=service_payment.payment_type,
+                        amount=m_share,
+                        payment_date=service_payment.payment_date,
+                    )
+
+                main_filled += m_share
+                sub_filled += s_share
+
+            main_tx.update_payment_status()
+            if sub_tx:
+                sub_tx.update_payment_status()
+
+        return len(service_payments)
+
+    @staticmethod
     def recreate_sales_transaction(service):
         """
         Recreate sales transaction from existing service payments.
@@ -1785,6 +1863,23 @@ class ServicePaymentManager:
                     f"Payment amount (₱{amount}) exceeds balance due (₱{balance_due}). "
                     f"Total revenue: ₱{service.total_revenue}, Already paid: ₱{service.total_paid}"
                 )
+
+            if payment_type == "cheque":
+                if not cheque_collection:
+                    raise ValidationError("Cheque collection is required for cheque payments.")
+
+                from receivables.models import ChequeCollection
+
+                locked_cheque = ChequeCollection.objects.select_for_update().get(
+                    pk=cheque_collection.pk
+                )
+                if locked_cheque.client_id != service.client_id:
+                    raise ValidationError("Selected cheque belongs to a different client.")
+                if amount > locked_cheque.remaining_amount:
+                    raise ValidationError(
+                        f"Cheque remaining amount is only ₱{locked_cheque.remaining_amount}."
+                    )
+                cheque_collection = locked_cheque
 
             payment_kwargs = dict(
                 service=service,

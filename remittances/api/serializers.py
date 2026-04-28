@@ -46,6 +46,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
     total_sales_credit = serializers.SerializerMethodField()
     total_sales_debit = serializers.SerializerMethodField()
     total_sales_cheque = serializers.SerializerMethodField()
+    total_client_fund_deposits = serializers.SerializerMethodField()
     total_expenses = serializers.SerializerMethodField()
     total_collected = serializers.SerializerMethodField()
     is_remitted = serializers.BooleanField(read_only=True)
@@ -102,6 +103,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             "total_sales_credit",
             "total_sales_debit",
             "total_sales_cheque",
+            "total_client_fund_deposits",
             "total_expenses",
             "manually_adjusted",
             "remitted_amount",
@@ -183,7 +185,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         target_date = obj.remittance_date or (obj.created_at.date() if obj.created_at else None)
         if not target_date:
             return Decimal("0.00")
-        
+
         # Sum all payments of this type for paid/partial transactions on this date
         total_payments = SalesPayment.objects.filter(
             transaction__stall=obj.stall,
@@ -231,15 +233,35 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         """Live-computed cheque sales total."""
         return self._get_sales_total(obj, "cheque") or Decimal("0.00")
 
+    def get_total_client_fund_deposits(self, obj):
+        """Live-computed client fund deposits for the remittance date."""
+        from clients.models import ClientFundDeposit
+
+        target_date = obj.remittance_date or (obj.created_at.date() if obj.created_at else None)
+        if not target_date:
+            return Decimal("0.00")
+
+        total = (
+            ClientFundDeposit.objects.filter(
+                deposit_date__date=target_date
+            ).aggregate(total=Sum("amount"))["total"]
+            or Decimal("0")
+        )
+        return max(Decimal("0"), total)
+
     def get_total_expenses(self, obj):
         """Live-computed total expenses for the remittance date."""
         target_date = obj.remittance_date or (obj.created_at.date() if obj.created_at else None)
         if not target_date:
             return Decimal("0.00")
-        
+
         normal_expenses = (
             Expense.objects.filter(
-                stall=obj.stall, expense_date=target_date, is_deleted=False, is_reimbursement=False
+                stall=obj.stall,
+                expense_date=target_date,
+                is_deleted=False,
+                is_reimbursement=False,
+                payment_method__iexact="cash",
             ).aggregate(
                 total=Sum("paid_amount")
             )["total"]
@@ -247,7 +269,11 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         )
         reimbursements = (
             Expense.objects.filter(
-                stall=obj.stall, expense_date=target_date, is_deleted=False, is_reimbursement=True
+                stall=obj.stall,
+                expense_date=target_date,
+                is_deleted=False,
+                is_reimbursement=True,
+                payment_method__iexact="cash",
             ).aggregate(
                 total=Sum("paid_amount")
             )["total"]
@@ -390,7 +416,11 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         # 📉 Get total expenses for the target date (normal expenses minus reimbursements)
         normal_expenses = (
             Expense.objects.filter(
-                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=False
+                stall=stall,
+                expense_date=target_date,
+                is_deleted=False,
+                is_reimbursement=False,
+                payment_method__iexact="cash",
             ).aggregate(
                 total=Sum("paid_amount")
             )["total"]
@@ -398,7 +428,11 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         )
         reimbursements = (
             Expense.objects.filter(
-                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=True
+                stall=stall,
+                expense_date=target_date,
+                is_deleted=False,
+                is_reimbursement=True,
+                payment_method__iexact="cash",
             ).aggregate(
                 total=Sum("paid_amount")
             )["total"]

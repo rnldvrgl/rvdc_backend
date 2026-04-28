@@ -1,5 +1,9 @@
 from clients.api.filters import ClientFilter
-from clients.api.serializers import ClientSerializer
+from clients.api.serializers import (
+    ClientSerializer,
+    ClientDetailSerializer,
+    ClientFundDepositSerializer,
+)
 from clients.models import Client
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, permissions, serializers, status, viewsets
@@ -29,6 +33,11 @@ class ClientViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         "address",
     ]
     ordering_fields = "__all__"
+
+    def get_serializer_class(self):
+        if self.action == "retrieve":
+            return ClientDetailSerializer
+        return super().get_serializer_class()
 
     def get_queryset(self):
         # Apply role/date-based filtering
@@ -98,6 +107,24 @@ class ClientViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
             )
 
         serializer.save(contact_number=contact_number)
+
+    @action(detail=True, methods=["get", "post"], url_path="fund-deposits")
+    def fund_deposits(self, request, pk=None):
+        """List or create client fund deposits for a specific client."""
+        client = self.get_object()
+
+        if request.method.lower() == "get":
+            queryset = client.fund_deposits.select_related("recorded_by").order_by("-deposit_date", "-id")
+            serializer = ClientFundDepositSerializer(queryset, many=True)
+            return Response(serializer.data)
+
+        serializer = ClientFundDepositSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save(client=client)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     @action(
         detail=True,

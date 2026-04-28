@@ -152,13 +152,21 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
         # Get expenses (normal expenses minus reimbursements)
         normal_expenses = (
             Expense.objects.filter(
-                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=False
+                stall=stall,
+                expense_date=target_date,
+                is_deleted=False,
+                is_reimbursement=False,
+                payment_method__iexact="cash",
             ).aggregate(total=Sum("paid_amount"))["total"]
             or Decimal("0")
         )
         reimbursements = (
             Expense.objects.filter(
-                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=True
+                stall=stall,
+                expense_date=target_date,
+                is_deleted=False,
+                is_reimbursement=True,
+                payment_method__iexact="cash",
             ).aggregate(total=Sum("paid_amount"))["total"]
             or Decimal("0")
         )
@@ -270,6 +278,17 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
         remittance.total_sales_debit = sales["debit"]
         remittance.total_sales_cheque = sales["cheque"]
         remittance.total_expenses = total_expenses
+
+        # Calculate client fund deposits for this date
+        from clients.models import ClientFundDeposit
+        client_fund_total = (
+            ClientFundDeposit.objects.filter(
+                deposit_date__date=target_date
+            ).aggregate(total=Sum("amount"))["total"]
+            or Decimal("0")
+        )
+        remittance.total_client_fund_deposits = client_fund_total
+
         remittance.save()
 
         serializer = self.get_serializer(remittance)

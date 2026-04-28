@@ -99,22 +99,23 @@ class ChequeCollectionViewSet(viewsets.ModelViewSet):
         else:
             queryset = queryset.filter(status__in=["pending", "deposited"])
 
-        # Exclude cheques already linked to any payment
-        queryset = queryset.exclude(service_payments__isnull=False)
-        queryset = queryset.exclude(sales_payments__isnull=False)
-
         # Return simplified data for dropdown
-        data = [
-            {
-                "id": cheque.id,
-                "cheque_number": cheque.cheque_number,
-                "cheque_amount": str(cheque.cheque_amount),
-                "billing_amount": str(cheque.billing_amount),
-                "client_name": cheque.client.full_name if cheque.client else "",
-                "bank_name": cheque.bank_name,
-                "cheque_date": cheque.cheque_date,
-            }
-            for cheque in queryset
-        ]
+        data = []
+        for cheque in queryset:
+            if cheque.remaining_amount <= 0:
+                continue
+            data.append(
+                {
+                    "id": cheque.id,
+                    "cheque_number": cheque.cheque_number,
+                    "cheque_amount": str(cheque.cheque_amount),
+                    "billing_amount": str(cheque.billing_amount),
+                    "allocated_amount": str(cheque.allocated_amount),
+                    "remaining_amount": str(cheque.remaining_amount),
+                    "client_name": cheque.client.full_name if cheque.client else "",
+                    "bank_name": cheque.bank_name,
+                    "cheque_date": cheque.cheque_date,
+                }
+            )
 
         return Response(data)

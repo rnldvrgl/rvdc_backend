@@ -93,12 +93,27 @@ class Command(BaseCommand):
                 for pt in ["cash", "gcash", "credit", "debit", "cheque"]
             }
 
-            new_expenses = (
+            normal_expenses = (
                 Expense.objects.filter(
-                    stall=rem.stall, expense_date=target_date, is_deleted=False
+                    stall=rem.stall,
+                    expense_date=target_date,
+                    is_deleted=False,
+                    is_reimbursement=False,
+                    payment_method__iexact="cash",
                 ).aggregate(total=Sum("paid_amount"))["total"]
                 or Decimal("0")
             )
+            reimbursements = (
+                Expense.objects.filter(
+                    stall=rem.stall,
+                    expense_date=target_date,
+                    is_deleted=False,
+                    is_reimbursement=True,
+                    payment_method__iexact="cash",
+                ).aggregate(total=Sum("paid_amount"))["total"]
+                or Decimal("0")
+            )
+            new_expenses = normal_expenses - reimbursements
 
             # Check if anything changed
             old = {
@@ -133,6 +148,18 @@ class Command(BaseCommand):
             if old_exp != new_exp:
                 self.stdout.write(f"  expenses: {old_exp} → {new_exp}")
 
+            # Calculate client fund deposits
+            from clients.models import ClientFundDeposit
+            new_client_fund = (
+                ClientFundDeposit.objects.filter(
+                    deposit_date__date=target_date
+                ).aggregate(total=Sum("amount"))["total"]
+                or Decimal("0")
+            )
+            old_client_fund = Decimal(str(rem.total_client_fund_deposits))
+            if old_client_fund != new_client_fund:
+                self.stdout.write(f"  client fund: {old_client_fund} → {new_client_fund}")
+
             if dry_run:
                 self.stdout.write(self.style.WARNING("  → Would update"))
                 continue
@@ -144,6 +171,7 @@ class Command(BaseCommand):
                 rem.total_sales_debit = new_totals["debit"]
                 rem.total_sales_cheque = new_totals["cheque"]
                 rem.total_expenses = new_expenses
+                rem.total_client_fund_deposits = new_client_fund
                 rem.save(update_fields=[
                     "total_sales_cash",
                     "total_sales_gcash",
@@ -151,6 +179,7 @@ class Command(BaseCommand):
                     "total_sales_debit",
                     "total_sales_cheque",
                     "total_expenses",
+                    "total_client_fund_deposits",
                 ])
 
             self.stdout.write(self.style.SUCCESS("  ✓ Updated"))

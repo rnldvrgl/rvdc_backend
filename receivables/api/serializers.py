@@ -7,6 +7,12 @@ class ChequeCollectionSerializer(serializers.ModelSerializer):
     collected_by_name = serializers.CharField(
         source="collected_by.get_full_name", read_only=True
     )
+    allocated_amount = serializers.DecimalField(
+        source="allocated_amount", max_digits=12, decimal_places=2, read_only=True
+    )
+    remaining_amount = serializers.DecimalField(
+        source="remaining_amount", max_digits=12, decimal_places=2, read_only=True
+    )
 
     class Meta:
         model = ChequeCollection
@@ -29,6 +35,8 @@ class ChequeCollectionSerializer(serializers.ModelSerializer):
             "collected_by_name",
             "notes",
             "status",
+            "allocated_amount",
+            "remaining_amount",
             "created_at",
             "updated_at",
         ]

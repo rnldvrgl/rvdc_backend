@@ -20,6 +20,7 @@ class PaymentType(models.TextChoices):
     CREDIT = "credit", _("Credit")
     DEBIT = "debit", _("Debit")
     CHEQUE = "cheque", _("Cheque")
+    FUND = "fund", _("Client Fund")
 
 
 class PaymentStatus(models.TextChoices):

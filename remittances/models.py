@@ -23,6 +23,9 @@ class RemittanceRecord(models.Model):
     total_sales_debit = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_sales_cheque = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
+    # Client fund deposits (recorded as remittable income but separate from cash sales)
+    total_client_fund_deposits = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
     # Expense deductions
     total_expenses = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
@@ -61,6 +64,7 @@ class RemittanceRecord(models.Model):
             + self.total_sales_credit
             + self.total_sales_debit
             + self.total_sales_cheque
+            + self.total_client_fund_deposits
         )
 
     @property
@@ -87,11 +91,11 @@ class RemittanceRecord(models.Model):
         else:
             # For pending remittances, compute live to ensure freshness for exports
             from sales.models import SalesPayment, PaymentStatus, SalesTransaction
-            
+
             target_date = self.remittance_date or (self.created_at.date() if self.created_at else None)
             if not target_date:
                 return Decimal("0")
-            
+
             # Compute live cash sales
             total_payments = SalesPayment.objects.filter(
                 transaction__stall=self.stall,
@@ -101,7 +105,7 @@ class RemittanceRecord(models.Model):
                 transaction__is_deleted=False,
                 payment_type="cash",
             ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
-            
+
             total_change = SalesTransaction.objects.filter(
                 stall=self.stall,
                 payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
@@ -111,13 +115,17 @@ class RemittanceRecord(models.Model):
             ).distinct().aggregate(
                 total=Sum("change_amount")
             )["total"] or Decimal("0")
-            
+
             collected_cash = total_payments - total_change
-            
+
             # Compute live expenses
             normal_expenses = (
                 Expense.objects.filter(
-                    stall=self.stall, expense_date=target_date, is_deleted=False, is_reimbursement=False
+                    stall=self.stall,
+                    expense_date=target_date,
+                    is_deleted=False,
+                    is_reimbursement=False,
+                    payment_method__iexact="cash",
                 ).aggregate(
                     total=Sum("paid_amount")
                 )["total"]
@@ -125,7 +133,11 @@ class RemittanceRecord(models.Model):
             )
             reimbursements = (
                 Expense.objects.filter(
-                    stall=self.stall, expense_date=target_date, is_deleted=False, is_reimbursement=True
+                    stall=self.stall,
+                    expense_date=target_date,
+                    is_deleted=False,
+                    is_reimbursement=True,
+                    payment_method__iexact="cash",
                 ).aggregate(
                     total=Sum("paid_amount")
                 )["total"]

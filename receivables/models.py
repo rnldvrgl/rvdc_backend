@@ -2,6 +2,8 @@ from django.db import models
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.utils.timezone import now
+from decimal import Decimal
+from django.db.models import Sum
 from utils.enums import CollectionType, ChequeStatus, BankChoices
 
 
@@ -82,6 +84,28 @@ class ChequeCollection(models.Model):
         return (
             f"Cheque {self.cheque_number} - {self.client.full_name} ({self.date_collected})"
         )
+
+    @property
+    def allocated_amount(self):
+        """Total amount already allocated from this cheque across service and sales payments."""
+        service_total = (
+            self.service_payments.aggregate(total=Sum("amount"))["total"]
+            or Decimal("0")
+        )
+        sales_total = (
+            self.sales_payments.aggregate(total=Sum("amount"))["total"]
+            or Decimal("0")
+        )
+        return service_total + sales_total
+
+    @property
+    def remaining_amount(self):
+        """Remaining allocatable amount from this cheque."""
+        return max(Decimal("0"), (self.billing_amount or Decimal("0")) - self.allocated_amount)
+
+    @property
+    def is_fully_allocated(self):
+        return self.remaining_amount <= Decimal("0")
 
     def save(self, *args, **kwargs):
         # Automatically determine collection type based on collected_by
