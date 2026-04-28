@@ -36,6 +36,7 @@ def push_notification_via_websocket(sender, instance, created, **kwargs):
     if not created:
         return
 
+    # 1) Best-effort WebSocket broadcast for active app sessions
     try:
         from asgiref.sync import async_to_sync
         from channels.layers import get_channel_layer  # type: ignore[import-not-found]
@@ -64,23 +65,24 @@ def push_notification_via_websocket(sender, instance, created, **kwargs):
                     },
                 },
             )
-
-        # Also send Web Push (for mobile/background tabs)
-        try:
-            from notifications.push import send_web_push
-
-            send_web_push(
-                user_id=instance.user.id,
-                title=instance.title,
-                body=instance.message,
-                url=instance.data.get("url", "/notifications"),
-                tag=f"notif-{instance.id}",
-            )
-        except Exception:
-            logger.exception("Failed to send web push for notification %s", instance.id)
-
     except Exception:
         logger.exception("Failed to push notification via WebSocket")
+
+    # 2) Independently send Web Push (for mobile/background tabs)
+    # Keep this separate so push still works even if Channels/WebSocket fails.
+    try:
+        from notifications.push import send_web_push
+
+        payload_data = instance.data if isinstance(instance.data, dict) else {}
+        send_web_push(
+            user_id=instance.user.id,
+            title=instance.title,
+            body=instance.message,
+            url=payload_data.get("url", "/notifications"),
+            tag=f"notif-{instance.id}",
+        )
+    except Exception:
+        logger.exception("Failed to send web push for notification %s", instance.id)
 
 
 # ----------------------------------
