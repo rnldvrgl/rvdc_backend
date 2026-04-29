@@ -1,6 +1,7 @@
 from django.db import models
 from django.core.validators import MinValueValidator
 from decimal import Decimal
+from django.utils import timezone
 
 
 class ActiveClientManager(models.Manager):
@@ -57,7 +58,7 @@ class ClientFundDeposit(models.Model):
         help_text="Amount deposited into client fund"
     )
     deposit_date = models.DateTimeField(
-        default=lambda: __import__('django.utils.timezone', fromlist=['now']).now(),
+        default=timezone.now,
         help_text="Date the fund was received (used for remittance recording)"
     )
     payment_method = models.CharField(
