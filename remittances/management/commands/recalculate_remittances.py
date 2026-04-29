@@ -37,6 +37,7 @@ def sum_sales(stall, date_val, payment_type):
                 payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
                 voided=False,
                 is_deleted=False,
+                payments__payment_type="cash",
                 payments__payment_date__date=date_val,
             )
             .distinct()

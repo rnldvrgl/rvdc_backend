@@ -111,6 +111,7 @@ class RemittanceRecord(models.Model):
                 payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
                 voided=False,
                 is_deleted=False,
+                payments__payment_type="cash",
                 payments__payment_date__date=target_date,
             ).distinct().aggregate(
                 total=Sum("change_amount")

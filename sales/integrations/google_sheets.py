@@ -558,6 +558,7 @@ def _get_day_metrics(stall: Stall, target_date: date) -> dict[str, Any]:
                     payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
                     voided=False,
                     is_deleted=False,
+                    payments__payment_type="cash",
                     payments__payment_date__date=target_date,
                 )
                 .distinct()
