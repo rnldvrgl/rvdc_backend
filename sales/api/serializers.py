@@ -10,6 +10,11 @@ from inventory.api.serializers import ItemSerializer, StallSerializer
 from clients.api.serializers import ClientSerializer
 from inventory.models import Item
 from users.models import SystemSettings
+from sales.integrations.google_sheets import (
+    _get_monthly_sheet_current_gid,
+    _get_monthly_sheet_latest_gid,
+    _get_google_sync_config,
+)
 
 
 class SalesItemSerializer(serializers.ModelSerializer):
@@ -308,6 +313,8 @@ class SalesTransactionSerializer(serializers.ModelSerializer):
 
 class StallMonthlySheetSerializer(serializers.ModelSerializer):
     stall_name = serializers.CharField(source="stall.name", read_only=True)
+    current_gid = serializers.SerializerMethodField()
+    latest_gid = serializers.SerializerMethodField()
 
     class Meta:
         model = StallMonthlySheet
@@ -318,6 +325,8 @@ class StallMonthlySheetSerializer(serializers.ModelSerializer):
             "month_key",
             "spreadsheet_id",
             "spreadsheet_url",
+            "current_gid",
+            "latest_gid",
             "is_active",
             "shared_ok",
             "shared_to_email",
@@ -331,6 +340,8 @@ class StallMonthlySheetSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "stall_name",
+            "current_gid",
+            "latest_gid",
             "shared_ok",
             "shared_to_email",
             "shared_at",
@@ -358,3 +369,9 @@ class StallMonthlySheetSerializer(serializers.ModelSerializer):
         if request and getattr(request, "user", None):
             validated_data["created_by"] = request.user
         return super().create(validated_data)
+
+    def get_current_gid(self, obj):
+        return _get_monthly_sheet_current_gid(obj.spreadsheet_id, _get_google_sync_config())
+
+    def get_latest_gid(self, obj):
+        return _get_monthly_sheet_latest_gid(obj.spreadsheet_id, _get_google_sync_config())

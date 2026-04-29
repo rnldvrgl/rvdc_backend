@@ -347,6 +347,42 @@ def _latest_daily_tab_gid(sheets: list[dict[str, Any]]) -> int | None:
     return latest_gid
 
 
+def _current_daily_tab_gid(
+    sheets: list[dict[str, Any]],
+    target_date: date | None = None,
+) -> int | None:
+    target_date = target_date or timezone.localdate()
+    exact_gid: int | None = None
+    fallback_gid: int | None = None
+    fallback_date: date | None = None
+
+    for sheet in sheets or []:
+        props = sheet.get("properties", {})
+        title = props.get("title", "")
+        sheet_id = props.get("sheetId")
+        if sheet_id is None:
+            continue
+
+        parsed = _parse_daily_tab_date(title, target_date)
+        if parsed is None:
+            continue
+
+        if parsed == target_date:
+            exact_gid = int(sheet_id)
+            break
+
+        if (
+            parsed.year == target_date.year
+            and parsed.month == target_date.month
+            and parsed <= target_date
+            and (fallback_date is None or parsed > fallback_date)
+        ):
+            fallback_date = parsed
+            fallback_gid = int(sheet_id)
+
+    return exact_gid if exact_gid is not None else fallback_gid
+
+
 def _effective_date(transaction: SalesTransaction) -> date:
     if transaction.transaction_date:
         return transaction.transaction_date
@@ -1572,12 +1608,13 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
     )
 
     # Navigate to the latest daily tab on open
-    _navigate_to_latest_daily_tab(service, spreadsheet_id)
+    _navigate_to_latest_daily_tab(service, spreadsheet_id, target_date)
 
 
-def _navigate_to_latest_daily_tab(service, spreadsheet_id: str):
-    """Set the latest daily tab as the active sheet."""
+def _navigate_to_latest_daily_tab(service, spreadsheet_id: str, target_date: date | None = None):
+    """Set today's daily tab as the active sheet when available."""
     try:
+        target_date = target_date or timezone.localdate()
         metadata = _execute_with_backoff(
             service.spreadsheets().get(
                 spreadsheetId=spreadsheet_id,
@@ -1586,9 +1623,9 @@ def _navigate_to_latest_daily_tab(service, spreadsheet_id: str):
             operation="spreadsheets.get sheets for navigation",
         )
 
-        latest_gid = _latest_daily_tab_gid(metadata.get("sheets", []))
-        if latest_gid is not None:
-            # Update the active sheet to the latest daily tab
+        current_gid = _current_daily_tab_gid(metadata.get("sheets", []), target_date)
+        if current_gid is not None:
+            # Update the active sheet to today's tab when it exists.
             _execute_with_backoff(
                 service.spreadsheets().batchUpdate(
                     spreadsheetId=spreadsheet_id,
@@ -1597,7 +1634,7 @@ def _navigate_to_latest_daily_tab(service, spreadsheet_id: str):
                             {
                                 "updateSheetProperties": {
                                     "properties": {
-                                        "sheetId": latest_gid,
+                                        "sheetId": current_gid,
                                         "index": len(metadata.get("sheets", [])) - 1,
                                     },
                                     "fields": "index",
@@ -1635,6 +1672,32 @@ def _get_monthly_sheet_latest_gid(spreadsheet_id: str, sync_config: dict) -> int
         return None
 
 
+def _get_monthly_sheet_current_gid(spreadsheet_id: str, sync_config: dict) -> int | None:
+    """Get today's daily tab GID for a monthly sheet."""
+    if not spreadsheet_id:
+        return None
+
+    service, _, init_error = _get_sheets_clients(sync_config, spreadsheet_id)
+    if service is None:
+        return None
+
+    try:
+        sheet_meta = _execute_with_backoff(
+            service.spreadsheets().get(
+                spreadsheetId=spreadsheet_id,
+                fields="sheets(properties(sheetId,title,index))",
+            ),
+            operation=f"get monthly sheet metadata {spreadsheet_id}",
+        )
+        current_gid = _current_daily_tab_gid(sheet_meta.get("sheets", []), timezone.localdate())
+        if current_gid is not None:
+            return current_gid
+        return _latest_daily_tab_gid(sheet_meta.get("sheets", []))
+    except Exception as exc:
+        logger.debug("Failed to get current GID for monthly sheet %s: %s", spreadsheet_id, exc)
+        return None
+
+
 def get_google_sheets_sync_status() -> dict[str, Any]:
     sync_config = _get_google_sync_config()
     raw_json = (sync_config.get("service_account_json") or "").strip()
@@ -1650,7 +1713,9 @@ def get_google_sheets_sync_status() -> dict[str, Any]:
         "share_email_configured": bool(share_email),
         "credential_configured": bool(raw_json or json_path),
         "connection_ok": False,
+        "sub_current_gid": None,
         "sub_latest_gid": None,
+        "main_current_gid": None,
         "main_latest_gid": None,
         "monthly_links_count": StallMonthlySheet.objects.filter(is_active=True).count(),
         "current_month_sheets": {},
@@ -1672,9 +1737,11 @@ def get_google_sheets_sync_status() -> dict[str, Any]:
     ).select_related("stall")
 
     for monthly_sheet in monthly_sheets:
+        current_gid = _get_monthly_sheet_current_gid(monthly_sheet.spreadsheet_id, sync_config)
         latest_gid = _get_monthly_sheet_latest_gid(monthly_sheet.spreadsheet_id, sync_config)
         status["current_month_sheets"][monthly_sheet.stall.stall_type] = {
             "spreadsheet_id": monthly_sheet.spreadsheet_id,
+            "current_gid": current_gid,
             "latest_gid": latest_gid,
             "stall_name": monthly_sheet.stall.name,
         }
@@ -1712,10 +1779,13 @@ def get_google_sheets_sync_status() -> dict[str, Any]:
                 ),
                 operation=f"status check {stall_type}",
             )
+            current_gid = _current_daily_tab_gid(sheet_meta.get("sheets", []), timezone.localdate())
             latest_gid = _latest_daily_tab_gid(sheet_meta.get("sheets", []))
             if stall_type == "sub":
+                status["sub_current_gid"] = current_gid
                 status["sub_latest_gid"] = latest_gid
             elif stall_type == "main":
+                status["main_current_gid"] = current_gid
                 status["main_latest_gid"] = latest_gid
 
             sheet_title = sheet_meta.get("properties", {}).get("title", "Unknown")
