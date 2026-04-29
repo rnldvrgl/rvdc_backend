@@ -38,7 +38,6 @@ class AttendanceConsumer(AsyncWebsocketConsumer):
         except Exception:
             logger.exception("Failed to join attendance groups")
             await self.accept()
-            await self.close(code=4002)
             return
 
         await self.accept()

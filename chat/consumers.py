@@ -85,8 +85,8 @@ class ChatConsumer(AsyncWebsocketConsumer):
             await self._redis.delete(_last_seen_key(self.user_id))
         except Exception:
             logger.exception("Chat connect failed for user %s", self.user_id)
+            self._redis = None
             await self.accept()
-            await self.close(code=4002)
             return
 
         await self.accept()
@@ -125,6 +125,9 @@ class ChatConsumer(AsyncWebsocketConsumer):
     # ── Inbound from client ──────────────────────────────────────────────
 
     async def receive(self, text_data=None, bytes_data=None):
+        if not getattr(self, "_redis", None):
+            return
+
         try:
             payload = json.loads(text_data)
         except (json.JSONDecodeError, TypeError):

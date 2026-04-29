@@ -22,7 +22,6 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         except Exception:
             logger.exception("Failed to join group %s", self.group_name)
             await self.accept()
-            await self.close(code=4002)
             return
 
         await self.accept()
