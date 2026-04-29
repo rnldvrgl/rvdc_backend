@@ -406,7 +406,15 @@ class GoogleSheetsSyncView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
 
-    def _check_admin_or_manager(self, request):
+    def _check_read_permission(self, request):
+        if request.user.role not in ['admin', 'manager', 'clerk']:
+            return Response(
+                {"detail": "You do not have permission to perform this action."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return None
+
+    def _check_write_permission(self, request):
         if request.user.role not in ['admin', 'manager']:
             return Response(
                 {"detail": "You do not have permission to perform this action."},
@@ -415,7 +423,7 @@ class GoogleSheetsSyncView(APIView):
         return None
 
     def get(self, request):
-        denied = self._check_admin_or_manager(request)
+        denied = self._check_read_permission(request)
         if denied:
             return denied
 
@@ -444,7 +452,7 @@ class GoogleSheetsSyncView(APIView):
         return Response(get_google_sheets_sync_status())
 
     def post(self, request):
-        denied = self._check_admin_or_manager(request)
+        denied = self._check_write_permission(request)
         if denied:
             return denied
 

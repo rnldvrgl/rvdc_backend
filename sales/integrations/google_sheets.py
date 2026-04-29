@@ -298,9 +298,22 @@ def _parse_daily_tab_date(title: str, today: date) -> date | None:
     if not raw:
         return None
 
-    try:
-        parsed = datetime.strptime(raw.title(), "%B %d").date().replace(year=today.year)
-    except Exception:
+    normalized = raw.title()
+    parsed = None
+
+    # Try common daily tab formats used in monthly sheets.
+    # Examples: "APRIL 29", "APR 29", "APRIL 29, 2026", "APR 29, 2026"
+    for fmt in ("%B %d", "%b %d", "%B %d, %Y", "%b %d, %Y"):
+        try:
+            candidate = datetime.strptime(normalized, fmt).date()
+            if "%Y" not in fmt:
+                candidate = candidate.replace(year=today.year)
+            parsed = candidate
+            break
+        except Exception:
+            continue
+
+    if parsed is None:
         return None
 
     # Keep parsed date aligned around today across year boundaries.
