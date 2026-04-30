@@ -139,6 +139,10 @@ class QuotationSerializer(serializers.ModelSerializer):
     payments = QuotationPaymentSerializer(many=True, required=False)
     client_data = ClientSerializer(source="client", read_only=True)
     stall_data = StallSerializer(source="stall", read_only=True)
+    price_list_template_data = QuotationPriceListTemplateSerializer(
+        source="price_list_template",
+        read_only=True,
+    )
     created_by_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -150,6 +154,7 @@ class QuotationSerializer(serializers.ModelSerializer):
             "stall",
             "stall_data",
             "price_list_template",
+            "price_list_template_data",
             "client_name",
             "client_address",
             "client_contact",
@@ -197,23 +202,15 @@ class QuotationSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         items_data = validated_data.pop("items", [])
         payments_data = validated_data.pop("payments", [])
-        quotation = Quotation(**validated_data)
-
-        # Calculate totals from items
-        subtotal = sum(
-            Decimal(str(i["quantity"])) * Decimal(str(i["unit_price"]))
-            for i in items_data
-        )
-        discount = Decimal(str(validated_data.get("discount_amount", 0)))
-        quotation.subtotal = subtotal
-        quotation.total = max(Decimal("0.00"), subtotal - discount)
-        quotation.save()
+        quotation = Quotation.objects.create(**validated_data)
 
         for item_data in items_data:
             QuotationItem.objects.create(quotation=quotation, **item_data)
 
         for payment_data in payments_data:
             QuotationPayment.objects.create(quotation=quotation, **payment_data)
+
+        quotation.save()
 
         return quotation
 
@@ -237,10 +234,6 @@ class QuotationSerializer(serializers.ModelSerializer):
             for payment_data in payments_data:
                 QuotationPayment.objects.create(quotation=instance, **payment_data)
 
-        # Recalculate totals
-        subtotal = sum(i.quantity * i.unit_price for i in instance.items.all())
-        instance.subtotal = subtotal
-        instance.total = max(Decimal("0.00"), subtotal - instance.discount_amount)
         instance.save()
 
         return instance

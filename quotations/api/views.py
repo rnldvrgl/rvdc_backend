@@ -4,10 +4,15 @@ from rest_framework import filters, status, viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from quotations.models import Quotation, QuotationTermsTemplate
+from quotations.models import (
+    Quotation,
+    QuotationPriceListTemplate,
+    QuotationTermsTemplate,
+)
 from utils.soft_delete import SoftDeleteViewSetMixin
 
 from .serializers import (
+    QuotationPriceListTemplateSerializer,
     QuotationListSerializer,
     QuotationSerializer,
     QuotationTermsTemplateSerializer,
@@ -30,8 +35,29 @@ class QuotationTermsTemplateViewSet(viewsets.ModelViewSet):
     pagination_class = None  # Return all templates without pagination
 
 
+class QuotationPriceListTemplateViewSet(viewsets.ModelViewSet):
+    queryset = QuotationPriceListTemplate.objects.prefetch_related("aircon_models").filter(is_active=True)
+    serializer_class = QuotationPriceListTemplateSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [
+        DjangoFilterBackend,
+        filters.SearchFilter,
+        filters.OrderingFilter,
+    ]
+    search_fields = ["name", "description", "aircon_models__name", "aircon_models__brand__name"]
+    filterset_fields = ["is_default"]
+    ordering_fields = ["name", "created_at"]
+    ordering = ["-is_default", "name"]
+    pagination_class = None
+
+
 class QuotationViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
-    queryset = Quotation.objects.select_related("client", "created_by", "stall").prefetch_related("items", "payments")
+    queryset = Quotation.objects.select_related(
+        "client",
+        "created_by",
+        "stall",
+        "price_list_template",
+    ).prefetch_related("items", "payments", "price_list_template__aircon_models")
     permission_classes = [IsAuthenticated]
     filter_backends = [
         DjangoFilterBackend,

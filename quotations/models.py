@@ -133,6 +133,14 @@ class Quotation(models.Model):
     def __str__(self):
         return f"Quotation #{self.pk} - {self.client_name or 'No Client'}"
 
+    @property
+    def item_discount_total(self):
+        return sum((i.discount_amount for i in self.items.all()), Decimal("0.00"))
+
+    @property
+    def total_discount_amount(self):
+        return self.discount_amount + self.item_discount_total
+
     def save(self, *args, **kwargs):
         # Recalculate totals from items
         if self.pk:
@@ -141,16 +149,12 @@ class Quotation(models.Model):
             item_total = sum(
                 i.quantity * i.unit_price for i in items
             )
-            # Total per-item discounts
-            total_item_discounts = sum(
-                i.discount_amount for i in items
-            )
             # Subtotal before any discount
             self.subtotal = item_total
-            # Total = subtotal - per-item discounts - global discount
+            # Total = subtotal - per-item discounts - overall discount
             self.total = max(
                 Decimal("0.00"),
-                item_total - total_item_discounts - self.discount_amount
+                item_total - self.total_discount_amount
             )
         super().save(*args, **kwargs)
 
