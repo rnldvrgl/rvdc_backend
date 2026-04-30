@@ -4,7 +4,13 @@ from rest_framework import serializers
 
 from clients.api.serializers import ClientSerializer
 from inventory.api.serializers import StallSerializer
-from quotations.models import Quotation, QuotationItem, QuotationPayment, QuotationTermsTemplate
+from quotations.models import (
+    Quotation,
+    QuotationItem,
+    QuotationPayment,
+    QuotationTermsTemplate,
+    QuotationPriceListTemplate,
+)
 
 
 class QuotationTermsTemplateSerializer(serializers.ModelSerializer):
@@ -23,7 +29,36 @@ class QuotationTermsTemplateSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
+class QuotationPriceListTemplateSerializer(serializers.ModelSerializer):
+    aircon_model_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = QuotationPriceListTemplate
+        fields = [
+            "id",
+            "name",
+            "description",
+            "aircon_models",
+            "aircon_model_count",
+            "is_active",
+            "is_default",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def get_aircon_model_count(self, obj):
+        return obj.aircon_models.count()
+
+
 class QuotationItemSerializer(serializers.ModelSerializer):
+    discounted_price = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
+        help_text="Price after applying per-item discount",
+    )
+
     class Meta:
         model = QuotationItem
         fields = [
@@ -35,8 +70,10 @@ class QuotationItemSerializer(serializers.ModelSerializer):
             "unit_price",
             "promo_price",
             "total_price",
+            "discount_amount",
+            "discounted_price",
         ]
-        read_only_fields = ["id", "total_price"]
+        read_only_fields = ["id", "total_price", "discounted_price"]
 
 
 class QuotationPaymentSerializer(serializers.ModelSerializer):
@@ -112,6 +149,7 @@ class QuotationSerializer(serializers.ModelSerializer):
             "client_data",
             "stall",
             "stall_data",
+            "price_list_template",
             "client_name",
             "client_address",
             "client_contact",

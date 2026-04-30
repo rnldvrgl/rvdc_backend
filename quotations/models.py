@@ -70,6 +70,15 @@ class Quotation(models.Model):
         related_name="quotations",
     )
 
+    price_list_template = models.ForeignKey(
+        "quotations.QuotationPriceListTemplate",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="quotations",
+        help_text="Optional price list template (for price_list quotation type)",
+    )
+
     quote_date = models.DateField(default=timezone.now)
     valid_until = models.DateField()
     project_description = models.TextField(blank=True)
@@ -127,11 +136,22 @@ class Quotation(models.Model):
     def save(self, *args, **kwargs):
         # Recalculate totals from items
         if self.pk:
+            items = self.items.all()
+            # Subtotal = sum of (quantity * unit_price) for all items
             item_total = sum(
-                i.quantity * i.unit_price for i in self.items.all()
+                i.quantity * i.unit_price for i in items
             )
+            # Total per-item discounts
+            total_item_discounts = sum(
+                i.discount_amount for i in items
+            )
+            # Subtotal before any discount
             self.subtotal = item_total
-            self.total = max(Decimal("0.00"), item_total - self.discount_amount)
+            # Total = subtotal - per-item discounts - global discount
+            self.total = max(
+                Decimal("0.00"),
+                item_total - total_item_discounts - self.discount_amount
+            )
         super().save(*args, **kwargs)
 
 
@@ -163,6 +183,12 @@ class QuotationItem(models.Model):
     total_price = models.DecimalField(
         max_digits=12, decimal_places=2, default=Decimal("0.00")
     )
+    discount_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text="Per-item discount amount",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -176,6 +202,11 @@ class QuotationItem(models.Model):
     def save(self, *args, **kwargs):
         self.total_price = self.quantity * self.unit_price
         super().save(*args, **kwargs)
+
+    @property
+    def discounted_price(self) -> Decimal:
+        """Calculate price after applying per-item discount"""
+        return max(Decimal("0.00"), self.total_price - self.discount_amount)
 
 
 class QuotationPayment(models.Model):
@@ -211,3 +242,42 @@ class QuotationPayment(models.Model):
 
     def __str__(self):
         return f"{self.label} — ₱{self.amount}"
+
+
+class QuotationPriceListTemplate(models.Model):
+    """Template for managing aircon models and brands in price list quotations."""
+
+    name = models.CharField(
+        max_length=255,
+        help_text="Template name (e.g., 'Standard Price List 2024')",
+    )
+    description = models.TextField(
+        blank=True,
+        help_text="Description of this price list template",
+    )
+
+    # Optionally link to specific aircon models to include
+    aircon_models = models.ManyToManyField(
+        "installations.AirconModel",
+        blank=True,
+        related_name="price_list_templates",
+        help_text="Aircon models to include in this price list. Leave empty to include all.",
+    )
+
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this template is available for use",
+    )
+    is_default = models.BooleanField(
+        default=False,
+        help_text="If true, auto-selected when creating a new price list quotation",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-is_default", "name"]
+
+    def __str__(self):
+        return f"Price List Template: {self.name}"

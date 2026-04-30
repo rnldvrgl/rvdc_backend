@@ -516,17 +516,19 @@ def _build_sales_rows(transactions, stall_type: str = "sub") -> list[list[str]]:
 def _get_expense_rows(stall: Stall, target_date: date) -> list[list[str]]:
     expenses = (
         Expense.objects.filter(stall=stall, expense_date=target_date, is_deleted=False)
+        .select_related("category")
         .order_by("id")
     )
 
     rows: list[list[str]] = []
     for expense in expenses:
-        source = "reimbursement" if expense.is_reimbursement else "expense"
-        label = (expense.description or expense.vendor or "").strip()
+        category_name = expense.category.name if expense.category else "Uncategorized"
+        vendor_name = (expense.vendor or "").strip()
+        description = (expense.description or "").strip()
         amount = expense.paid_amount or Decimal("0")
         if expense.is_reimbursement:
             amount = -amount
-        rows.append([source, label, _serialize_decimal(amount)])
+        rows.append([category_name, vendor_name, description, _serialize_decimal(amount)])
 
     return rows
 
@@ -721,7 +723,7 @@ def _style_day_tab(
     summary_start_col = 11 if stall_type == "main" else 9
     remittance_end_col = summary_start_col + 2  # 2 columns: label + amount
     cash_end_col = summary_start_col + 4  # 4 columns: denomination, remitted, declared, cod
-    expenses_end_col = summary_start_col + 3
+    expenses_end_col = summary_start_col + 4  # 4 columns: category, vendor, description, amount
 
     requests = []
 
@@ -1544,7 +1546,7 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
     remittance_end_col = _col_letter(summary_start_col_idx + 1)
     summary_values_col = _col_letter(summary_start_col_idx + 1)
     cash_end_col = _col_letter(summary_start_col_idx + 3)
-    expenses_end_col = _col_letter(summary_start_col_idx + 2)
+    expenses_end_col = _col_letter(summary_start_col_idx + 3)
 
     blocks: list[dict[str, Any]] = [
         {"a1": f"A1:{chr(64 + sales_data_cols)}1", "values": [[title]]},
@@ -1573,8 +1575,8 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
         },
         {"a1": f"{summary_start_col}15:{cash_end_col}15", "values": [["CASH / COINS BREAKDOWN", "", "", ""]]},
         {"a1": f"{summary_start_col}16:{cash_end_col}16", "values": [["Denomination", "Remitted", "Declared", "COD"]]},
-        {"a1": f"{summary_start_col}27:{expenses_end_col}27", "values": [["EXPENSES", "", ""]]},
-        {"a1": f"{summary_start_col}28:{expenses_end_col}28", "values": [["Type", "Description", "Amount"]]},
+        {"a1": f"{summary_start_col}27:{expenses_end_col}27", "values": [["EXPENSES", "", "", ""]]},
+        {"a1": f"{summary_start_col}28:{expenses_end_col}28", "values": [["Category", "Vendor", "Description", "Amount"]]},
     ]
 
     if sales_rows:
