@@ -66,7 +66,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.user = self.scope.get("user")
         if not self.user or not self.user.is_authenticated:
-            await self.accept()
+            logger.warning(
+                "Rejecting unauthenticated websocket connection for %s",
+                self.scope.get("path"),
+            )
             await self.close(code=4001)
             return
 
@@ -86,7 +89,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         except Exception:
             logger.exception("Chat connect failed for user %s", self.user_id)
             self._redis = None
-            await self.accept()
+            await self.close(code=1011)
             return
 
         await self.accept()

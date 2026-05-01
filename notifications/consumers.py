@@ -12,7 +12,10 @@ class NotificationConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         user = self.scope.get("user")
         if not user or not user.is_authenticated:
-            await self.accept()
+            logger.warning(
+                "Rejecting unauthenticated websocket connection for %s",
+                self.scope.get("path"),
+            )
             await self.close(code=4001)
             return
 
@@ -21,7 +24,7 @@ class NotificationConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_add(self.group_name, self.channel_name)
         except Exception:
             logger.exception("Failed to join group %s", self.group_name)
-            await self.accept()
+            await self.close(code=1011)
             return
 
         await self.accept()
