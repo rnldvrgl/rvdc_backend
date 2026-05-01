@@ -5,6 +5,7 @@ from channels.db import database_sync_to_async
 from channels.middleware import BaseMiddleware
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
+from django.utils import timezone
 from rest_framework_simplejwt.tokens import AccessToken
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
@@ -26,20 +27,28 @@ def get_user(token_str):
                 logger.warning("Websocket token is blacklisted: jti=%s", jti)
                 return AnonymousUser()
 
-        # Check if session is active
+        # Update last seen time for AuthSession if it exists
+        # (but don't reject if it doesn't - JWT validity is the primary check)
         from authentication.models import AuthSession
         session = AuthSession.objects.filter(
             user_id=user_id, access_jti=jti, is_active=True
         ).first()
-        if not session:
-            logger.warning(
-                "Websocket session not active or not found: user_id=%s, jti=%s",
+        if session:
+            session.last_seen_at = timezone.now()
+            session.save(update_fields=["last_seen_at"])
+        else:
+            # Session not found, but JWT is valid - log for monitoring but allow connection
+            logger.debug(
+                "No active AuthSession found for user_id=%s, jti=%s (JWT is valid, allowing connection)",
                 user_id,
                 jti,
             )
-            return AnonymousUser()
 
-        return User.objects.get(id=user_id)
+        user = User.objects.get(id=user_id)
+        if not user.is_active:
+            logger.warning("Websocket user is inactive: user_id=%s", user_id)
+            return AnonymousUser()
+        return user
     except Exception:
         logger.exception("Failed to resolve websocket user from JWT")
         return AnonymousUser()
