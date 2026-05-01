@@ -6,6 +6,7 @@ from channels.middleware import BaseMiddleware
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from rest_framework_simplejwt.tokens import AccessToken
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -15,7 +16,30 @@ logger = logging.getLogger(__name__)
 def get_user(token_str):
     try:
         token = AccessToken(token_str)
-        return User.objects.get(id=token["user_id"])
+        user_id = token.get("user_id")
+        jti = token.get("jti")
+
+        # Check if token is blacklisted
+        if jti:
+            outstanding = OutstandingToken.objects.filter(jti=jti).first()
+            if outstanding and BlacklistedToken.objects.filter(token=outstanding).exists():
+                logger.warning("Websocket token is blacklisted: jti=%s", jti)
+                return AnonymousUser()
+
+        # Check if session is active
+        from authentication.models import AuthSession
+        session = AuthSession.objects.filter(
+            user_id=user_id, access_jti=jti, is_active=True
+        ).first()
+        if not session:
+            logger.warning(
+                "Websocket session not active or not found: user_id=%s, jti=%s",
+                user_id,
+                jti,
+            )
+            return AnonymousUser()
+
+        return User.objects.get(id=user_id)
     except Exception:
         logger.exception("Failed to resolve websocket user from JWT")
         return AnonymousUser()
