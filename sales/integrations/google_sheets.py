@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any, Callable
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db.models import Q, Sum
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
@@ -290,6 +291,22 @@ def _a1_range(worksheet_name: str, a1_notation: str) -> str:
 
 def _daily_tab_name(target_date: date) -> str:
     return target_date.strftime("%B %d").upper()
+
+
+def _day_sync_lock_key(spreadsheet_id: str, tab_name: str) -> str:
+    return f"google_sheets_day_sync_lock:{spreadsheet_id}:{tab_name}"
+
+
+def _acquire_day_sync_lock(spreadsheet_id: str, tab_name: str, timeout: int = 180) -> str | None:
+    lock_key = _day_sync_lock_key(spreadsheet_id, tab_name)
+    if cache.add(lock_key, True, timeout=timeout):
+        return lock_key
+    return None
+
+
+def _release_day_sync_lock(lock_key: str | None) -> None:
+    if lock_key:
+        cache.delete(lock_key)
 
 
 def _parse_daily_tab_date(title: str, today: date) -> date | None:
@@ -1828,6 +1845,16 @@ def _sync_sales_day_to_google_sheet_result(stall_id: int, target_date: date) -> 
         logger.warning("Google Sheets day sync skipped: %s", init_error)
         return False, init_error
 
+    tab_name = _daily_tab_name(target_date)
+    lock_key = _acquire_day_sync_lock(spreadsheet_id, tab_name)
+    if lock_key is None:
+        logger.info(
+            "Google Sheets day sync skipped for spreadsheet=%s tab=%s because another sync is already in progress",
+            spreadsheet_id,
+            tab_name,
+        )
+        return True, "Google Sheets sync already in progress"
+
     try:
         _render_day_tab(service, sheet_api, spreadsheet_id, stall, target_date)
 
@@ -1859,6 +1886,8 @@ def _sync_sales_day_to_google_sheet_result(stall_id: int, target_date: date) -> 
             exc,
         )
         return False, str(exc)
+    finally:
+        _release_day_sync_lock(lock_key)
 
 
 def sync_historical_sales_to_google_sheets(
