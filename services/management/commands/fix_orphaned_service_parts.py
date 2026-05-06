@@ -152,7 +152,7 @@ class Command(BaseCommand):
 
             # Calculate total parts value from sales transactions
             sales_parts_value = Decimal('0.00')
-            
+
             # Check sub stall transaction (parts go here)
             if service.related_sub_transaction:
                 for sales_item in service.related_sub_transaction.items.all():
@@ -190,7 +190,7 @@ class Command(BaseCommand):
             sales_parts = record['sales_parts_value']
             missing = record['missing_value']
             count = record['missing_count']
-            
+
             self.stdout.write(
                 f"{service.id:<6} {service.status:<12} {str(service.client)[:25]:<25} {count:<7} "
                 f"₱{total_parts:<11.2f} ₱{sales_parts:<11.2f} ₱{missing:<11.2f}"
@@ -245,10 +245,10 @@ class Command(BaseCommand):
             raise ValueError("System stalls not properly configured")
 
         parts_to_add = record['parts_records']
-        
+
         # Get existing sub transaction or create new one
         sub_tx = service.related_sub_transaction
-        
+
         if not sub_tx:
             # Create new sub stall transaction
             sub_tx = SalesTransaction.objects.create(
@@ -293,4 +293,3 @@ class Command(BaseCommand):
                     )
 
         self.stdout.write(f"  Added {added_count} missing parts to transaction")
-
