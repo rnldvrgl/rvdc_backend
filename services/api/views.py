@@ -1567,41 +1567,70 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
             raise ValidationError("Cannot modify parts on a completed service. Reopen the service first.")
 
     def perform_create(self, serializer):
-        """Create item usage, recalculate revenue, and reset items_checked."""
+        """Create item usage, recalculate revenue, and reset items_checked.
+
+        Wrapped in transaction so if any step fails, stock reservation is rolled back.
+        """
+        from django.db import transaction
+        from services.business_logic import RevenueCalculator, ServicePaymentManager, StockReservationManager
+
         appliance = serializer.validated_data.get("appliance")
         if appliance and appliance.service:
             self._ensure_service_editable(appliance.service)
 
-        item_used = serializer.save()
-        # Recalculate revenue after adding parts
-        from services.business_logic import RevenueCalculator, ServicePaymentManager
-        service = item_used.appliance.service
-        RevenueCalculator.calculate_service_revenue(service, save=True)
-        # Sync sales items if transaction exists
-        ServicePaymentManager.sync_sales_items(service)
-        # Auto-reset items_checked on the appliance
-        self._reset_items_checked(item_used.appliance)
+        try:
+            with transaction.atomic():
+                item_used = serializer.save()
+                # Recalculate revenue after adding parts
+                service = item_used.appliance.service
+                RevenueCalculator.calculate_service_revenue(service, save=True)
+                # Sync sales items if transaction exists
+                ServicePaymentManager.sync_sales_items(service)
+                # Auto-reset items_checked on the appliance
+                self._reset_items_checked(item_used.appliance)
+        except Exception as e:
+            # If anything fails, the transaction rolls back automatically
+            # This reverts the stock reservation made during serializer.save()
+            from rest_framework.exceptions import ValidationError as DRFValidationError
+            raise DRFValidationError(
+                f"Failed to add part. All changes have been reverted. Error: {str(e)}"
+            )
 
     def perform_update(self, serializer):
-        """Update item usage, recalculate revenue, and reset items_checked."""
+        """Update item usage, recalculate revenue, and reset items_checked.
+
+        Wrapped in transaction so if any step fails, changes are rolled back.
+        """
+        from django.db import transaction
+        from services.business_logic import RevenueCalculator, ServicePaymentManager
+
         appliance = serializer.instance.appliance
         if appliance and appliance.service:
             self._ensure_service_editable(appliance.service)
 
-        item_used = serializer.save()
-        # Recalculate revenue after updating parts
-        from services.business_logic import RevenueCalculator, ServicePaymentManager
-        service = item_used.appliance.service
-        RevenueCalculator.calculate_service_revenue(service, save=True)
-        # Sync sales items if transaction exists
-        ServicePaymentManager.sync_sales_items(service)
-        # Auto-reset items_checked on the appliance
-        self._reset_items_checked(item_used.appliance)
+        try:
+            with transaction.atomic():
+                item_used = serializer.save()
+                # Recalculate revenue after updating parts
+                service = item_used.appliance.service
+                RevenueCalculator.calculate_service_revenue(service, save=True)
+                # Sync sales items if transaction exists
+                ServicePaymentManager.sync_sales_items(service)
+                # Auto-reset items_checked on the appliance
+                self._reset_items_checked(item_used.appliance)
+        except Exception as e:
+            # If anything fails, the transaction rolls back automatically
+            from rest_framework.exceptions import ValidationError as DRFValidationError
+            raise DRFValidationError(
+                f"Failed to update part. All changes have been reverted. Error: {str(e)}"
+            )
 
     def destroy(self, request, *args, **kwargs):
         """
         Delete an item usage and release reserved stock.
+        Wrapped in transaction to ensure consistency.
         """
+        from django.db import transaction
         from services.business_logic import StockReservationManager
 
         instance = self.get_object()
@@ -1616,34 +1645,44 @@ class ApplianceItemUsedViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-        # Release stock reservation
-        if instance.stall_stock:
-            StockReservationManager.release_reservation(
-                item=instance.item,
-                quantity=instance.quantity,
-                stall_stock=instance.stall_stock
+        # Store references before deletion
+        service = instance.appliance.service if hasattr(instance, 'appliance') else None
+        appliance = instance.appliance if hasattr(instance, 'appliance') else None
+
+        try:
+            with transaction.atomic():
+                # Release stock reservation
+                if instance.stall_stock:
+                    StockReservationManager.release_reservation(
+                        item=instance.item,
+                        quantity=instance.quantity,
+                        stall_stock=instance.stall_stock
+                    )
+
+                # Cancel any pending stock requests for this item
+                from inventory.models import StockRequest
+                StockRequest.objects.filter(
+                    appliance_item=instance, status='pending'
+                ).update(status='cancelled')
+
+                result = super().destroy(request, *args, **kwargs)
+
+                # Recalculate revenue and sync sales items after deletion
+                if service:
+                    from services.business_logic import RevenueCalculator, ServicePaymentManager
+                    RevenueCalculator.calculate_service_revenue(service, save=True)
+                    ServicePaymentManager.sync_sales_items(service)
+
+                # Auto-reset items_checked on the appliance
+                if appliance:
+                    self._reset_items_checked(appliance)
+
+                return result
+        except Exception as e:
+            from rest_framework.exceptions import ValidationError as DRFValidationError
+            raise DRFValidationError(
+                f"Failed to delete part. Error: {str(e)}"
             )
-
-        # Cancel any pending stock requests for this item
-        from inventory.models import StockRequest
-        StockRequest.objects.filter(
-            appliance_item=instance, status='pending'
-        ).update(status='cancelled')
-
-        # Store service and appliance reference before deletion
-        service = instance.appliance.service
-        appliance = instance.appliance
-
-        result = super().destroy(request, *args, **kwargs)
-
-        # Recalculate revenue and sync sales items after deletion
-        from services.business_logic import RevenueCalculator, ServicePaymentManager
-        RevenueCalculator.calculate_service_revenue(service, save=True)
-        ServicePaymentManager.sync_sales_items(service)
-        # Auto-reset items_checked on the appliance
-        self._reset_items_checked(appliance)
-
-        return result
 
     def _reset_items_checked(self, appliance):
         """Reset items_checked if it was confirmed, and re-notify clerks."""

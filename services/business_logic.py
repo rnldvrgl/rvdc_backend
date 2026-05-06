@@ -9,6 +9,7 @@ This module handles:
 - Service cancellation and stock release
 """
 
+import logging
 from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -18,6 +19,8 @@ from expenses.models import Expense, ExpenseItem
 from inventory.models import Stall, Stock
 from rest_framework.exceptions import ValidationError
 from sales.models import SalesItem, SalesTransaction, TransactionType, DocumentType
+
+logger = logging.getLogger(__name__)
 
 
 def get_main_stall():
