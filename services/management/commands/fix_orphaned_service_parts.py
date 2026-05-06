@@ -121,19 +121,19 @@ class Command(BaseCommand):
                     # Skip free items
                     if item_used.is_free:
                         continue
-                    
+
                     # Calculate chargeable quantity
                     charged_qty = item_used.quantity - item_used.free_quantity
                     if charged_qty <= 0:
                         continue
-                    
+
                     # Check if this item is in the sales transaction
                     if item_used.item_id and service.related_sub_transaction:
                         # Look for matching item in sales transaction
                         sales_item_exists = service.related_sub_transaction.items.filter(
                             item_id=item_used.item_id
                         ).exists()
-                        
+
                         if not sales_item_exists:
                             missing_parts.append({
                                 'item_id': item_used.item_id,
@@ -157,19 +157,19 @@ class Command(BaseCommand):
                 # Skip free items
                 if item_used.is_free:
                     continue
-                
+
                 # Calculate chargeable quantity
                 charged_qty = item_used.quantity - item_used.free_quantity
                 if charged_qty <= 0:
                     continue
-                
+
                 # Check if this item is in the sales transaction
                 if item_used.item_id and service.related_sub_transaction:
                     # Look for matching item in sales transaction
                     sales_item_exists = service.related_sub_transaction.items.filter(
                         item_id=item_used.item_id
                     ).exists()
-                    
+
                     if not sales_item_exists:
                         missing_parts.append({
                             'item_id': item_used.item_id,
@@ -191,7 +191,7 @@ class Command(BaseCommand):
             # If there are missing parts, add to orphaned list
             if missing_parts:
                 total_missing_value = sum(
-                    Decimal(str(p['quantity'])) * Decimal(str(p['price'])) 
+                    Decimal(str(p['quantity'])) * Decimal(str(p['price']))
                     for p in missing_parts
                 )
                 orphaned.append({
@@ -215,12 +215,12 @@ class Command(BaseCommand):
             service = record['service']
             count = record['missing_count']
             missing_value = record['missing_value']
-            
+
             self.stdout.write(
                 f"{service.id:<6} {service.status:<12} {str(service.client)[:25]:<25} "
                 f"{count} items{'':<7} ₱{missing_value:<13.2f}"
             )
-            
+
             # Show details of missing parts
             for part in record['missing_parts']:
                 line_total = Decimal(str(part['quantity'])) * Decimal(str(part['price']))
@@ -237,7 +237,7 @@ class Command(BaseCommand):
         for record in orphaned_services:
             service = record['service']
             missing_parts = record['missing_parts']
-            
+
             try:
                 if dry_run:
                     self.stdout.write(
@@ -278,7 +278,7 @@ def _add_missing_parts_to_transaction(self, service, missing_parts):
 
         # Get or create sub stall transaction
         sub_tx = service.related_sub_transaction
-        
+
         if not sub_tx:
             # Create new sub stall transaction
             sub_tx = SalesTransaction.objects.create(
@@ -300,10 +300,10 @@ def _add_missing_parts_to_transaction(self, service, missing_parts):
         for part in missing_parts:
             try:
                 item = Item.objects.get(id=part['item_id'])
-                
+
                 # Check if this item already exists in the transaction
                 existing = sub_tx.items.filter(item_id=part['item_id']).first()
-                
+
                 if existing:
                     self.stdout.write(
                         f"  ℹ️  Item {part['item_name']} already in transaction, skipping"
