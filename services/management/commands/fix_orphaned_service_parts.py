@@ -1,14 +1,14 @@
 """
-Management command to find and fix orphaned service parts (parts with reserved stock but no sale transaction).
+Management command to find and fix orphaned service parts (parts with reserved/consumed stock but missing from sales transactions).
 
 This command identifies services where:
-1. Parts were added (stock is reserved)
-2. Service was completed (stock was consumed)
-3. But no sale transaction was created (likely due to network error or transaction creation failure)
+1. Parts were added (ApplianceItemUsed or ServiceItemUsed records exist)
+2. But these parts are missing or incomplete in sales transactions
+3. This can happen at ANY service status due to network errors during transaction creation
 
 The command provides options to:
 - List orphaned records
-- Attempt to fix them by creating missing transactions
+- Attempt to fix them by creating/updating transactions
 - Generate a report for manual review
 """
 
@@ -16,6 +16,7 @@ import logging
 from decimal import Decimal
 from django.core.management.base import BaseCommand
 from django.db import transaction
+from django.db.models import Sum, F, Case, When, DecimalField
 from django.utils import timezone
 from services.models import Service, ApplianceItemUsed, ServiceItemUsed
 from sales.models import SalesTransaction, SalesItem, TransactionType, DocumentType
@@ -70,11 +71,10 @@ class Command(BaseCommand):
             )
             return
 
-        # Get completed services from last N days
+        # Get services from last N days (ANY status, not just completed)
         cutoff_date = timezone.now() - timedelta(days=days)
 
         query = Service.objects.filter(
-            status='completed',
             updated_at__gte=cutoff_date,
             is_deleted=False,
         ).select_related(
@@ -86,6 +86,8 @@ class Command(BaseCommand):
             'appliances__items_used__stall_stock',
             'service_items__item',
             'service_items__stall_stock',
+            'related_sub_transaction__items',
+            'related_transaction__items',
         )
 
         if service_id:
@@ -107,84 +109,97 @@ class Command(BaseCommand):
             self._fix_orphaned_services(orphaned_services, dry_run)
 
     def _find_orphaned_services(self, queryset):
-        """Find services with parts but no sale transaction."""
+        """Find services where parts exist but are missing from or incomplete in sales transactions."""
         orphaned = []
 
         for service in queryset:
-            # Check if service has parts with consumed stock
-            has_parts = False
-            missing_transaction = False
+            # Calculate total parts value from all ApplianceItemUsed and ServiceItemUsed
+            total_parts_value = Decimal('0.00')
+            parts_records = []
 
-            # Check appliance items
+            # Collect appliance items
             for appliance in service.appliances.all():
                 for item_used in appliance.items_used.all():
-                    # Check if stock was consumed (quantity was reduced)
-                    if item_used.stall_stock and item_used.quantity > 0:
-                        has_parts = True
-                        break
-                if has_parts:
-                    break
+                    if not item_used.is_free:
+                        charged_qty = item_used.quantity - item_used.free_quantity
+                        if charged_qty > 0:
+                            line_total = charged_qty * (item_used.discounted_price or Decimal('0.00'))
+                            total_parts_value += line_total
+                            parts_records.append({
+                                'item_id': item_used.item_id,
+                                'qty': charged_qty,
+                                'price': item_used.discounted_price or Decimal('0.00'),
+                                'total': line_total,
+                            })
 
-            # Check service items
-            if not has_parts:
-                for item_used in service.service_items.all():
-                    if item_used.stall_stock and item_used.quantity > 0:
-                        has_parts = True
-                        break
+            # Collect service items
+            for item_used in service.service_items.all():
+                if not item_used.is_free:
+                    charged_qty = item_used.quantity - item_used.free_quantity
+                    if charged_qty > 0:
+                        line_total = charged_qty * (item_used.discounted_price or Decimal('0.00'))
+                        total_parts_value += line_total
+                        parts_records.append({
+                            'item_id': item_used.item_id,
+                            'qty': charged_qty,
+                            'price': item_used.discounted_price or Decimal('0.00'),
+                            'total': line_total,
+                        })
 
-            # Check if sale transaction exists
-            if has_parts:
-                # For completed services, check if BOTH main and sub transactions exist (if expected)
-                if not service.related_transaction and not service.related_sub_transaction:
-                    missing_transaction = True
-                # If parts exist but sub transaction is missing, it's orphaned
-                elif not service.related_sub_transaction:
-                    # Parts exist but no sub transaction was created
-                    missing_transaction = True
+            # If no parts in service, skip
+            if not parts_records:
+                continue
 
-            if has_parts and missing_transaction:
+            # Calculate total parts value from sales transactions
+            sales_parts_value = Decimal('0.00')
+            
+            # Check sub stall transaction (parts go here)
+            if service.related_sub_transaction:
+                for sales_item in service.related_sub_transaction.items.all():
+                    # Only count items that are actual inventory items (not labor/units/extra charges)
+                    if sales_item.item_id:
+                        line_total = sales_item.quantity * (sales_item.final_price_per_unit or Decimal('0.00'))
+                        sales_parts_value += line_total
+
+            # Compare: if parts value in sales is less than total parts added, it's orphaned
+            if sales_parts_value < total_parts_value:
+                missing_value = total_parts_value - sales_parts_value
                 orphaned.append({
                     'service': service,
-                    'has_parts': has_parts,
-                    'has_main_tx': bool(service.related_transaction),
+                    'total_parts_value': total_parts_value,
+                    'sales_parts_value': sales_parts_value,
+                    'missing_value': missing_value,
+                    'missing_count': len(parts_records),
                     'has_sub_tx': bool(service.related_sub_transaction),
+                    'parts_records': parts_records,
                 })
 
         return orphaned
 
     def _list_orphaned_services(self, orphaned_services):
         """Display list of orphaned services."""
-        self.stdout.write('\n' + '=' * 100)
+        self.stdout.write('\n' + '=' * 120)
         self.stdout.write(
-            f"{'ID':<6} {'Client':<25} {'Parts':<6} {'Main TX':<8} {'Sub TX':<8} {'Completed':<20}"
+            f"{'ID':<6} {'Status':<12} {'Client':<25} {'Parts':<7} {'Expected':<12} {'In Sales':<12} {'Missing':<12}"
         )
-        self.stdout.write('=' * 100)
+        self.stdout.write('=' * 120)
 
         for record in orphaned_services:
             service = record['service']
-            parts = self._count_parts(service)
-            has_main = '✓' if record['has_main_tx'] else '✗'
-            has_sub = '✓' if record['has_sub_tx'] else '✗'
-            completed = service.completed_at or service.updated_at
-            completed_str = completed.strftime('%Y-%m-%d %H:%M')
-
+            total_parts = record['total_parts_value']
+            sales_parts = record['sales_parts_value']
+            missing = record['missing_value']
+            count = record['missing_count']
+            
             self.stdout.write(
-                f"{service.id:<6} {str(service.client)[:25]:<25} {parts:<6} {has_main:<8} "
-                f"{has_sub:<8} {completed_str:<20}"
+                f"{service.id:<6} {service.status:<12} {str(service.client)[:25]:<25} {count:<7} "
+                f"₱{total_parts:<11.2f} ₱{sales_parts:<11.2f} ₱{missing:<11.2f}"
             )
 
-        self.stdout.write('=' * 100)
-
-    def _count_parts(self, service):
-        """Count total parts in service."""
-        count = 0
-        for appliance in service.appliances.all():
-            count += appliance.items_used.count()
-        count += service.service_items.count()
-        return count
+        self.stdout.write('=' * 120)
 
     def _fix_orphaned_services(self, orphaned_services, dry_run):
-        """Attempt to fix orphaned services by creating missing transactions."""
+        """Attempt to fix orphaned services by creating/updating missing transactions."""
         fixed = 0
         failed = 0
 
@@ -193,13 +208,17 @@ class Command(BaseCommand):
             try:
                 if dry_run:
                     self.stdout.write(
-                        f"[DRY RUN] Would fix service #{service.id} ({service.client})"
+                        f"[DRY RUN] Would fix service #{service.id} ({service.client}): "
+                        f"Missing ₱{record['missing_value']:.2f} ({record['missing_count']} parts)"
                     )
                 else:
                     with transaction.atomic():
-                        self._create_missing_transactions(service)
+                        self._create_missing_transactions(service, record)
                         self.stdout.write(
-                            self.style.SUCCESS(f"✓ Fixed service #{service.id}")
+                            self.style.SUCCESS(
+                                f"✓ Fixed service #{service.id}: "
+                                f"Reconciled ₱{record['missing_value']:.2f} ({record['missing_count']} parts)"
+                            )
                         )
                 fixed += 1
             except Exception as e:
@@ -215,8 +234,8 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR(f'Failed: {failed}'))
         self.stdout.write('=' * 60)
 
-    def _create_missing_transactions(self, service):
-        """Create missing sale transactions for a service."""
+    def _create_missing_transactions(self, service, record):
+        """Create or update transactions to reconcile missing parts."""
         from services.business_logic import get_main_stall, get_sub_stall
 
         main_stall = get_main_stall()
@@ -225,64 +244,53 @@ class Command(BaseCommand):
         if not main_stall or not sub_stall:
             raise ValueError("System stalls not properly configured")
 
-        # Collect all parts
-        parts_to_sell = []
-
-        # Process appliance items
-        for appliance in service.appliances.all():
-            for item_used in appliance.items_used.all():
-                if item_used.item and item_used.quantity > 0:
-                    charged_qty = item_used.quantity - item_used.free_quantity
-                    if charged_qty > 0:
-                        parts_to_sell.append({
-                            'item': item_used.item,
-                            'description': str(item_used.item),
-                            'quantity': charged_qty,
-                            'unit_price': item_used.discounted_price or item_used.item.retail_price,
-                        })
-
-        # Process service items
-        for item_used in service.service_items.all():
-            if item_used.item and item_used.quantity > 0:
-                charged_qty = item_used.quantity - item_used.free_quantity
-                if charged_qty > 0:
-                    parts_to_sell.append({
-                        'item': item_used.item,
-                        'description': str(item_used.item),
-                        'quantity': charged_qty,
-                        'unit_price': item_used.discounted_price or item_used.item.retail_price,
-                    })
-
-        if not parts_to_sell:
-            self.stdout.write(
-                f"  Service #{service.id} has no chargeable parts to reconcile"
+        parts_to_add = record['parts_records']
+        
+        # Get existing sub transaction or create new one
+        sub_tx = service.related_sub_transaction
+        
+        if not sub_tx:
+            # Create new sub stall transaction
+            sub_tx = SalesTransaction.objects.create(
+                stall=sub_stall,
+                client=service.client,
+                sales_clerk=service.payments.first().received_by if service.payments.exists() else None,
+                transaction_type=TransactionType.SERVICE,
+                document_type=DocumentType.SALES_INVOICE,
+                with_2307=False,
             )
-            return
+            service.related_sub_transaction = sub_tx
+            service.save(update_fields=['related_sub_transaction'])
+            self.stdout.write(f"  Created new sub stall transaction #{sub_tx.id}")
+        else:
+            self.stdout.write(f"  Using existing sub stall transaction #{sub_tx.id}")
 
-        # Create sub stall transaction
-        sub_tx = SalesTransaction.objects.create(
-            stall=sub_stall,
-            client=service.client,
-            sales_clerk=service.payments.first().received_by if service.payments.exists() else None,
-            transaction_type=TransactionType.SERVICE,
-            document_type=DocumentType.SALES_INVOICE,
-            with_2307=False,
+        # Get item IDs already in the transaction
+        existing_item_ids = set(
+            sub_tx.items.filter(item_id__isnull=False).values_list('item_id', flat=True)
         )
 
-        # Add all parts to transaction
-        for part in parts_to_sell:
-            SalesItem.objects.create(
-                transaction=sub_tx,
-                item=part['item'],
-                description=part['description'],
-                quantity=part['quantity'],
-                final_price_per_unit=part['unit_price'],
-            )
+        # Add missing parts to transaction
+        added_count = 0
+        for part in parts_to_add:
+            # Only add if not already in transaction
+            if part['item_id'] and part['item_id'] not in existing_item_ids:
+                from inventory.models import Item
+                try:
+                    item = Item.objects.get(id=part['item_id'])
+                    SalesItem.objects.create(
+                        transaction=sub_tx,
+                        item=item,
+                        description=item.name,
+                        quantity=part['qty'],
+                        final_price_per_unit=part['price'],
+                    )
+                    added_count += 1
+                    existing_item_ids.add(part['item_id'])
+                except Item.DoesNotExist:
+                    self.stdout.write(
+                        self.style.WARNING(f"  Warning: Item #{part['item_id']} not found")
+                    )
 
-        # Link transaction to service
-        service.related_sub_transaction = sub_tx
-        service.save(update_fields=['related_sub_transaction'])
+        self.stdout.write(f"  Added {added_count} missing parts to transaction")
 
-        self.stdout.write(
-            f"  Created sub stall transaction #{sub_tx.id} with {len(parts_to_sell)} parts"
-        )
