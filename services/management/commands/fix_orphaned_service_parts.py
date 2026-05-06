@@ -19,6 +19,7 @@ from django.db import transaction
 from django.db.models import Sum, F, Case, When, DecimalField
 from django.utils import timezone
 from services.models import Service, ApplianceItemUsed, ServiceItemUsed
+from services.business_logic import ServicePaymentManager
 from sales.models import SalesTransaction, SalesItem, TransactionType, DocumentType
 from inventory.models import Stall
 from datetime import timedelta
@@ -41,6 +42,11 @@ class Command(BaseCommand):
             help='Attempt to fix orphaned services by creating missing transactions',
         )
         parser.add_argument(
+            '--rebalance-payments',
+            action='store_true',
+            help='Rebalance payments for services (independent of orphan detection)',
+        )
+        parser.add_argument(
             '--service-id',
             type=int,
             help='Limit to specific service ID',
@@ -61,13 +67,14 @@ class Command(BaseCommand):
         """Main command handler."""
         list_only = options['list']
         fix = options['fix']
+        rebalance_payments = options.get('rebalance_payments', False)
         service_id = options['service_id']
         days = options['days']
         dry_run = options['dry_run']
 
-        if not list_only and not fix:
+        if not list_only and not fix and not rebalance_payments:
             self.stdout.write(
-                self.style.WARNING('Please specify --list or --fix')
+                self.style.WARNING('Please specify --list, --fix, or --rebalance-payments')
             )
             return
 
@@ -88,11 +95,18 @@ class Command(BaseCommand):
             'service_items__stall_stock',
             'related_sub_transaction__items',
             'related_transaction__items',
+            'payments',
         )
 
         if service_id:
             query = query.filter(id=service_id)
 
+        # Handle --rebalance-payments mode (independent of orphan detection)
+        if rebalance_payments:
+            self._rebalance_all_payments(query, dry_run)
+            return
+
+        # Normal mode: detect orphans and optionally fix
         orphaned_services = self._find_orphaned_services(query)
 
         if not orphaned_services:
@@ -107,6 +121,64 @@ class Command(BaseCommand):
             self._list_orphaned_services(orphaned_services)
         elif fix:
             self._fix_orphaned_services(orphaned_services, dry_run)
+
+    def _rebalance_all_payments(self, queryset, dry_run):
+        """Rebalance payments for all services (independent of orphan detection)."""
+        services = queryset.filter(
+            related_transaction__isnull=False,
+            payments__isnull=False,
+        ).distinct()
+
+        if not services.exists():
+            self.stdout.write(self.style.WARNING('No services with payments found'))
+            return
+
+        self.stdout.write(
+            self.style.WARNING(f'\nRebalancing payments for {services.count()} service(s)...\n')
+        )
+
+        fixed = 0
+        failed = 0
+
+        for service in services:
+            try:
+                if dry_run:
+                    # Just show what we'd do
+                    main_tx = service.related_transaction
+                    sub_tx = service.related_sub_transaction
+                    main_total = main_tx.computed_total or Decimal('0')
+                    sub_total = (sub_tx.computed_total or Decimal('0')) if sub_tx else Decimal('0')
+                    total_paid = sum(p.amount for p in service.payments.all())
+                    current_main_paid = sum(p.amount for p in main_tx.payments.all()) if main_tx else Decimal('0')
+                    current_sub_paid = sum(p.amount for p in sub_tx.payments.all()) if sub_tx else Decimal('0')
+                    
+                    self.stdout.write(
+                        f"[DRY RUN] Service #{service.id} ({service.client}): "
+                        f"Main ₱{main_total} ({current_main_paid} paid), "
+                        f"Sub ₱{sub_total} ({current_sub_paid} paid), "
+                        f"Total paid ₱{total_paid}"
+                    )
+                else:
+                    with transaction.atomic():
+                        count = ServicePaymentManager.rebalance_sales_payments(service)
+                        self.stdout.write(
+                            self.style.SUCCESS(
+                                f"✓ Service #{service.id}: Rebalanced {count} payment(s)"
+                            )
+                        )
+                fixed += 1
+            except Exception as e:
+                self.stdout.write(
+                    self.style.ERROR(f"✗ Failed to rebalance service #{service.id}: {str(e)}")
+                )
+                logger.exception(f"Failed to rebalance service {service.id}", exc_info=e)
+                failed += 1
+
+        self.stdout.write('\n' + '=' * 60)
+        self.stdout.write(self.style.SUCCESS(f'Rebalanced: {fixed}'))
+        if failed > 0:
+            self.stdout.write(self.style.ERROR(f'Failed: {failed}'))
+        self.stdout.write('=' * 60)
 
     def _find_orphaned_services(self, queryset):
         """Find services where parts exist but are missing from sales transactions."""
@@ -247,11 +319,17 @@ class Command(BaseCommand):
                     )
                 else:
                     with transaction.atomic():
+                        # Add missing parts to transaction
                         self._add_missing_parts_to_transaction(service, missing_parts)
+                        
+                        # Rebalance payments to match new transaction totals
+                        payment_count = ServicePaymentManager.rebalance_sales_payments(service)
+                        
                         self.stdout.write(
                             self.style.SUCCESS(
                                 f"✓ Fixed service #{service.id}: "
-                                f"Added {record['missing_count']} missing parts (₱{record['missing_value']:.2f})"
+                                f"Added {record['missing_count']} missing parts (₱{record['missing_value']:.2f}), "
+                                f"rebalanced {payment_count} payment(s)"
                             )
                         )
                 fixed += 1
