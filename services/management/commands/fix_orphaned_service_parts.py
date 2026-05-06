@@ -200,6 +200,7 @@ class Command(BaseCommand):
                     'missing_count': len(missing_parts),
                     'missing_value': total_missing_value,
                     'has_sub_tx': bool(service.related_sub_transaction),
+                })
 
         return orphaned
 
@@ -267,7 +268,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR(f'Failed: {failed}'))
         self.stdout.write('=' * 60)
 
-def _add_missing_parts_to_transaction(self, service, missing_parts):
+    def _add_missing_parts_to_transaction(self, service, missing_parts):
         """Add missing parts to the service's sales transaction."""
         from services.business_logic import get_sub_stall
         from inventory.models import Item
