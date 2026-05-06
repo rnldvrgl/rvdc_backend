@@ -151,7 +151,7 @@ class Command(BaseCommand):
                     total_paid = sum(p.amount for p in service.payments.all())
                     current_main_paid = sum(p.amount for p in main_tx.payments.all()) if main_tx else Decimal('0')
                     current_sub_paid = sum(p.amount for p in sub_tx.payments.all()) if sub_tx else Decimal('0')
-                    
+
                     self.stdout.write(
                         f"[DRY RUN] Service #{service.id} ({service.client}): "
                         f"Main ₱{main_total} ({current_main_paid} paid), "
@@ -321,10 +321,10 @@ class Command(BaseCommand):
                     with transaction.atomic():
                         # Add missing parts to transaction
                         self._add_missing_parts_to_transaction(service, missing_parts)
-                        
+
                         # Rebalance payments to match new transaction totals
                         payment_count = ServicePaymentManager.rebalance_sales_payments(service)
-                        
+
                         self.stdout.write(
                             self.style.SUCCESS(
                                 f"✓ Fixed service #{service.id}: "
