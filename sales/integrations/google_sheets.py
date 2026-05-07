@@ -544,8 +544,8 @@ def _build_sales_rows(transactions, stall_type: str = "sub") -> list[list[str]]:
             if discount and discount != "0.00":
                 rows.append(["", "Discount", f"-{discount}", "", "", "", "", "", ""])
 
-            # Total row (always show)
-            rows.append(["", "TOTAL PAID", total, "", "", "", "", "", ""])
+            # Total row (always show) - this is the amount owed (computed_total)
+            rows.append(["", "TOTAL DUE", total, "", "", "", "", "", ""])
         else:
             # Subtotal row (if there's a discount to display)
             if discount and discount != "0.00":
@@ -555,8 +555,8 @@ def _build_sales_rows(transactions, stall_type: str = "sub") -> list[list[str]]:
             if discount and discount != "0.00":
                 rows.append(["", "Discount", f"-{discount}", "", "", "", ""])
 
-            # Total row (always show)
-            rows.append(["", "TOTAL PAID", total, "", "", "", ""])
+            # Total row (always show) - this is the amount owed (computed_total)
+            rows.append(["", "TOTAL DUE", total, "", "", "", ""])
 
     return rows
 
