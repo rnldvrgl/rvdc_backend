@@ -476,7 +476,7 @@ def _build_sales_rows(transactions, stall_type: str = "sub") -> list[list[str]]:
         # IMPORTANT: Materialize items queryset to ensure consistent count for _get_summary_row_ranges()
         # This prevents issues where .count() and .all() might return different values
         items_list = list(transaction.items.all())
-        
+
         line_rows = []
         for line in items_list:
             description = _normalize_line_description(line)
@@ -819,7 +819,7 @@ def _get_summary_row_ranges(transactions) -> list[tuple[int, int, str]]:
     """
     Calculate which rows are summary rows (SUBTOTAL, Discount, UNPAID, TOTAL DUE, PAID, BALANCE, TOTAL PAID).
     Returns list of (start_row, end_row, row_type) tuples (0-indexed, relative to data start at row 5).
-    
+
     IMPORTANT: This logic must exactly match _build_sales_rows() to ensure row indices align with actual data.
     """
     summary_rows = []
@@ -830,7 +830,7 @@ def _get_summary_row_ranges(transactions) -> list[tuple[int, int, str]]:
         # Materialize queryset to ensure consistent count (prevents .count() vs .all() mismatch)
         items_list = list(transaction.items.all())
         items_count = len(items_list)
-        
+
         if items_count == 0:
             items_count = 1  # One row for no items case (matches _build_sales_rows)
 
