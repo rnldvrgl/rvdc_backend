@@ -527,10 +527,12 @@ def _build_sales_rows(transactions, stall_type: str = "sub") -> list[list[str]]:
 
         rows.extend(line_rows)
 
-        # Add subtotal, discount, and total rows after each transaction
+        # Add subtotal, discount, and payment summary rows after each transaction
         subtotal = _serialize_decimal(transaction.subtotal or Decimal("0"))
         discount = _serialize_decimal(transaction.order_discount or Decimal("0"))
         total = _serialize_decimal(transaction.computed_total)
+        paid = _serialize_decimal(transaction.total_paid)
+        balance = _serialize_decimal(max(transaction.computed_total - transaction.total_paid, Decimal("0")))
 
         # Build summary row structure (empty qty, label in description, amount in amount column)
         empty_cols = ["", "", ""]  # qty, client, book (main) or empty cells for sub
@@ -544,8 +546,17 @@ def _build_sales_rows(transactions, stall_type: str = "sub") -> list[list[str]]:
             if discount and discount != "0.00":
                 rows.append(["", "Discount", f"-{discount}", "", "", "", "", "", ""])
 
-            # Total row (always show) - this is the amount owed (computed_total)
-            rows.append(["", "TOTAL DUE", total, "", "", "", "", "", ""])
+            if paid == "0.00":
+                # No payment recorded yet.
+                rows.append(["", "UNPAID", total, "", "", "", "", "", ""])
+            elif balance and balance != "0.00":
+                # Partially paid transaction.
+                rows.append(["", "TOTAL DUE", total, "", "", "", "", "", ""])
+                rows.append(["", "PAID", paid, "", "", "", "", "", ""])
+                rows.append(["", "BALANCE", balance, "", "", "", "", "", ""])
+            else:
+                # Fully paid transaction.
+                rows.append(["", "TOTAL PAID", total, "", "", "", "", "", ""])
         else:
             # Subtotal row (if there's a discount to display)
             if discount and discount != "0.00":
@@ -555,8 +566,17 @@ def _build_sales_rows(transactions, stall_type: str = "sub") -> list[list[str]]:
             if discount and discount != "0.00":
                 rows.append(["", "Discount", f"-{discount}", "", "", "", ""])
 
-            # Total row (always show) - this is the amount owed (computed_total)
-            rows.append(["", "TOTAL DUE", total, "", "", "", ""])
+            if paid == "0.00":
+                # No payment recorded yet.
+                rows.append(["", "UNPAID", total, "", "", "", ""])
+            elif balance and balance != "0.00":
+                # Partially paid transaction.
+                rows.append(["", "TOTAL DUE", total, "", "", "", ""])
+                rows.append(["", "PAID", paid, "", "", "", ""])
+                rows.append(["", "BALANCE", balance, "", "", "", ""])
+            else:
+                # Fully paid transaction.
+                rows.append(["", "TOTAL PAID", total, "", "", "", ""])
 
     return rows
 
@@ -740,7 +760,7 @@ def _clear_day_tab(sheet_api, spreadsheet_id: str, tab_name: str):
 
 def _get_summary_row_ranges(transactions) -> list[tuple[int, int, str]]:
     """
-    Calculate which rows are summary rows (SUBTOTAL, Discount, TOTAL PAID).
+    Calculate which rows are summary rows (SUBTOTAL, Discount, UNPAID, TOTAL DUE, PAID, BALANCE, TOTAL PAID).
     Returns list of (start_row, end_row, row_type) tuples (0-indexed, relative to data start at row 5).
     """
     summary_rows = []
@@ -757,6 +777,8 @@ def _get_summary_row_ranges(transactions) -> list[tuple[int, int, str]]:
         row_offset += items_count
 
         discount = Decimal(str(transaction.order_discount or 0))
+        paid = Decimal(str(transaction.total_paid or 0))
+        balance = max(transaction.computed_total - paid, Decimal("0"))
 
         # Add summary row indices
         if discount > 0:
@@ -765,8 +787,19 @@ def _get_summary_row_ranges(transactions) -> list[tuple[int, int, str]]:
             summary_rows.append((row_offset, row_offset, "discount"))
             row_offset += 1
 
-        summary_rows.append((row_offset, row_offset, "total"))
-        row_offset += 1
+        if paid == 0:
+            summary_rows.append((row_offset, row_offset, "unpaid"))
+            row_offset += 1
+        elif balance > 0:
+            summary_rows.append((row_offset, row_offset, "total"))
+            row_offset += 1
+            summary_rows.append((row_offset, row_offset, "paid"))
+            row_offset += 1
+            summary_rows.append((row_offset, row_offset, "balance"))
+            row_offset += 1
+        else:
+            summary_rows.append((row_offset, row_offset, "total_paid"))
+            row_offset += 1
 
     return summary_rows
 
@@ -1524,7 +1557,7 @@ def _style_day_tab(
         }
     })
 
-    # Style summary rows (SUBTOTAL, Discount, TOTAL) if transactions provided
+    # Style summary rows (SUBTOTAL, Discount, UNPAID, TOTAL DUE, PAID, BALANCE, TOTAL PAID) if transactions provided
     if transactions:
         summary_row_ranges = _get_summary_row_ranges(transactions)
         for row_idx, _, row_type in summary_row_ranges:
@@ -1539,10 +1572,22 @@ def _style_day_tab(
                 # Discount row - light orange background, bold
                 bg_color = {"red": 1.0, "green": 0.96, "blue": 0.88}
                 fg_color = {"red": 0.8, "green": 0.4, "blue": 0.0}
-            else:  # total
-                # TOTAL row - light green background, bold, larger font
+            elif row_type == "total":
+                # TOTAL DUE row - light green background, bold, larger font
                 bg_color = {"red": 0.9, "green": 0.98, "blue": 0.92}
                 fg_color = {"red": 0.1, "green": 0.5, "blue": 0.2}
+            elif row_type == "paid":
+                # PAID row - light blue background, bold
+                bg_color = {"red": 0.92, "green": 0.96, "blue": 1.0}
+                fg_color = {"red": 0.08, "green": 0.3, "blue": 0.6}
+            elif row_type == "total_paid":
+                # TOTAL PAID row - light green background, bold, larger font
+                bg_color = {"red": 0.9, "green": 0.98, "blue": 0.92}
+                fg_color = {"red": 0.1, "green": 0.5, "blue": 0.2}
+            else:  # unpaid or balance
+                # BALANCE row - light red/pink background, bold, red text (warning for partial payment)
+                bg_color = {"red": 1.0, "green": 0.92, "blue": 0.92}
+                fg_color = {"red": 0.8, "green": 0.0, "blue": 0.0}
 
             requests.append({
                 "repeatCell": {
