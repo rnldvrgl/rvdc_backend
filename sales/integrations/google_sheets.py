@@ -527,6 +527,37 @@ def _build_sales_rows(transactions, stall_type: str = "sub") -> list[list[str]]:
 
         rows.extend(line_rows)
 
+        # Add subtotal, discount, and total rows after each transaction
+        subtotal = _serialize_decimal(transaction.subtotal or Decimal("0"))
+        discount = _serialize_decimal(transaction.order_discount or Decimal("0"))
+        total = _serialize_decimal(transaction.computed_total)
+
+        # Build summary row structure (empty qty, label in description, amount in amount column)
+        empty_cols = ["", "", ""]  # qty, client, book (main) or empty cells for sub
+
+        if stall_type == "main":
+            # Subtotal row (if there's a discount to display)
+            if discount and discount != "0.00":
+                rows.append(["", "SUBTOTAL", subtotal, "", "", "", "", "", ""])
+
+            # Discount row (if exists and > 0)
+            if discount and discount != "0.00":
+                rows.append(["", "Discount", f"-{discount}", "", "", "", "", "", ""])
+
+            # Total row (always show)
+            rows.append(["", "TOTAL PAID", total, "", "", "", "", "", ""])
+        else:
+            # Subtotal row (if there's a discount to display)
+            if discount and discount != "0.00":
+                rows.append(["", "SUBTOTAL", subtotal, "", "", "", ""])
+
+            # Discount row (if exists and > 0)
+            if discount and discount != "0.00":
+                rows.append(["", "Discount", f"-{discount}", "", "", "", ""])
+
+            # Total row (always show)
+            rows.append(["", "TOTAL PAID", total, "", "", "", ""])
+
     return rows
 
 
@@ -707,6 +738,39 @@ def _clear_day_tab(sheet_api, spreadsheet_id: str, tab_name: str):
     _execute_with_backoff(request, operation=f"values.clear {tab_name}!A1:Z200")
 
 
+def _get_summary_row_ranges(transactions) -> list[tuple[int, int, str]]:
+    """
+    Calculate which rows are summary rows (SUBTOTAL, Discount, TOTAL PAID).
+    Returns list of (start_row, end_row, row_type) tuples (0-indexed, relative to data start at row 5).
+    """
+    summary_rows = []
+    row_offset = 0
+
+    for transaction in transactions:
+        # Count items in transaction
+        items_count = transaction.items.count()
+        if items_count == 0:
+            items_count = 1  # One row for no items case
+
+        # Calculate row indices
+        first_item_row = row_offset
+        row_offset += items_count
+
+        discount = Decimal(str(transaction.order_discount or 0))
+
+        # Add summary row indices
+        if discount > 0:
+            summary_rows.append((row_offset, row_offset, "subtotal"))
+            row_offset += 1
+            summary_rows.append((row_offset, row_offset, "discount"))
+            row_offset += 1
+
+        summary_rows.append((row_offset, row_offset, "total"))
+        row_offset += 1
+
+    return summary_rows
+
+
 def _style_day_tab(
     service,
     spreadsheet_id: str,
@@ -715,6 +779,7 @@ def _style_day_tab(
     expense_rows_count: int = 0,
     stall_type: str = "sub",
     over_short_value: Decimal | float | int | None = None,
+    transactions: list | None = None,
 ):
     metadata = _execute_with_backoff(
         service.spreadsheets().get(spreadsheetId=spreadsheet_id),
@@ -1459,6 +1524,55 @@ def _style_day_tab(
         }
     })
 
+    # Style summary rows (SUBTOTAL, Discount, TOTAL) if transactions provided
+    if transactions:
+        summary_row_ranges = _get_summary_row_ranges(transactions)
+        for row_idx, _, row_type in summary_row_ranges:
+            # Convert from data-relative index to sheet row index (data starts at row 5)
+            sheet_row_idx = 4 + row_idx
+
+            if row_type == "subtotal":
+                # SUBTOTAL row - light gray background, bold
+                bg_color = {"red": 0.96, "green": 0.96, "blue": 0.96}
+                fg_color = {"red": 0.2, "green": 0.2, "blue": 0.2}
+            elif row_type == "discount":
+                # Discount row - light orange background, bold
+                bg_color = {"red": 1.0, "green": 0.96, "blue": 0.88}
+                fg_color = {"red": 0.8, "green": 0.4, "blue": 0.0}
+            else:  # total
+                # TOTAL row - light green background, bold, larger font
+                bg_color = {"red": 0.9, "green": 0.98, "blue": 0.92}
+                fg_color = {"red": 0.1, "green": 0.5, "blue": 0.2}
+
+            requests.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": sheet_row_idx,
+                        "endRowIndex": sheet_row_idx + 1,
+                        "startColumnIndex": 0,
+                        "endColumnIndex": sales_data_cols,
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": bg_color,
+                            "textFormat": {
+                                "foregroundColor": fg_color,
+                                "bold": True,
+                                "fontSize": 11 if row_type == "total" else 10,
+                            },
+                            "borders": {
+                                "left": {"style": "SOLID"},
+                                "right": {"style": "SOLID"},
+                                "top": {"style": "SOLID"},
+                                "bottom": {"style": "SOLID"},
+                            },
+                        }
+                    },
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,borders)",
+                }
+            })
+
     # Basic filter
     requests.append({
         "setBasicFilter": {
@@ -1625,6 +1739,7 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
         expense_rows_count=len(expense_rows),
         stall_type=stall.stall_type,
         over_short_value=metrics["balance"],
+        transactions=day_transactions,
     )
 
     # Navigate to the latest daily tab on open
