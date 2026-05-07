@@ -473,8 +473,65 @@ def _build_sales_rows(transactions, stall_type: str = "sub") -> list[list[str]]:
             ]
             technicians = ", ".join(tech_names) if tech_names else ""
 
+        # IMPORTANT: Materialize items queryset to ensure consistent count for _get_summary_row_ranges()
+        # This prevents issues where .count() and .all() might return different values
+        items_list = list(transaction.items.all())
+        
         line_rows = []
-        for line in transaction.items.all():
+        for line in items_list:
+            description = _normalize_line_description(line)
+            quantity = _serialize_decimal(line.quantity)
+            amount = _serialize_decimal(line.line_total)
+            if stall_type == "main":
+                line_rows.append([
+                    quantity,
+                    description,
+                    amount,
+                    client_name,
+                    book_number,
+                    receipt_number,
+                    service_type,
+                    technicians,
+                    payment_method,
+                ])
+            else:
+                line_rows.append([
+                    quantity,
+                    description,
+                    amount,
+                    client_name,
+                    book_number,
+                    receipt_number,
+                    payment_method,
+                ])
+
+        if not line_rows:
+            if stall_type == "main":
+                line_rows.append([
+                    "",
+                    transaction.note or "",
+                    _serialize_decimal(transaction.computed_total),
+                    client_name,
+                    book_number,
+                    receipt_number,
+                    service_type,
+                    technicians,
+                    payment_method,
+                ])
+            else:
+                line_rows.append([
+                    "",
+                    transaction.note or "",
+                    _serialize_decimal(transaction.computed_total),
+                    client_name,
+                    book_number,
+                    receipt_number,
+                    payment_method,
+                ])
+
+        rows.extend(line_rows)
+
+        # Add subtotal, discount, and payment summary rows after each transaction
             description = _normalize_line_description(line)
             quantity = _serialize_decimal(line.quantity)
             amount = _serialize_decimal(line.line_total)
@@ -762,35 +819,44 @@ def _get_summary_row_ranges(transactions) -> list[tuple[int, int, str]]:
     """
     Calculate which rows are summary rows (SUBTOTAL, Discount, UNPAID, TOTAL DUE, PAID, BALANCE, TOTAL PAID).
     Returns list of (start_row, end_row, row_type) tuples (0-indexed, relative to data start at row 5).
+    
+    IMPORTANT: This logic must exactly match _build_sales_rows() to ensure row indices align with actual data.
     """
     summary_rows = []
     row_offset = 0
 
     for transaction in transactions:
-        # Count items in transaction
-        items_count = transaction.items.count()
+        # Count items in transaction - MUST use same approach as _build_sales_rows()
+        # Materialize queryset to ensure consistent count (prevents .count() vs .all() mismatch)
+        items_list = list(transaction.items.all())
+        items_count = len(items_list)
+        
         if items_count == 0:
-            items_count = 1  # One row for no items case
+            items_count = 1  # One row for no items case (matches _build_sales_rows)
 
-        # Calculate row indices
-        first_item_row = row_offset
+        # Move offset past the line items
         row_offset += items_count
 
+        # Get payment/discount info - use same logic as _build_sales_rows()
         discount = Decimal(str(transaction.order_discount or 0))
         paid = Decimal(str(transaction.total_paid or 0))
         balance = max(transaction.computed_total - paid, Decimal("0"))
 
-        # Add summary row indices
+        # Add summary row indices - MUST match order in _build_sales_rows()
+        # First: SUBTOTAL and Discount rows (if discount > 0)
         if discount > 0:
             summary_rows.append((row_offset, row_offset, "subtotal"))
             row_offset += 1
             summary_rows.append((row_offset, row_offset, "discount"))
             row_offset += 1
 
+        # Then: Payment status rows (mutually exclusive)
         if paid == 0:
+            # UNPAID row
             summary_rows.append((row_offset, row_offset, "unpaid"))
             row_offset += 1
         elif balance > 0:
+            # Partial payment: TOTAL DUE, PAID, BALANCE rows
             summary_rows.append((row_offset, row_offset, "total"))
             row_offset += 1
             summary_rows.append((row_offset, row_offset, "paid"))
@@ -798,6 +864,7 @@ def _get_summary_row_ranges(transactions) -> list[tuple[int, int, str]]:
             summary_rows.append((row_offset, row_offset, "balance"))
             row_offset += 1
         else:
+            # Full payment: TOTAL PAID row (balance == 0)
             summary_rows.append((row_offset, row_offset, "total_paid"))
             row_offset += 1
 
