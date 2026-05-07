@@ -532,59 +532,6 @@ def _build_sales_rows(transactions, stall_type: str = "sub") -> list[list[str]]:
         rows.extend(line_rows)
 
         # Add subtotal, discount, and payment summary rows after each transaction
-            description = _normalize_line_description(line)
-            quantity = _serialize_decimal(line.quantity)
-            amount = _serialize_decimal(line.line_total)
-            if stall_type == "main":
-                line_rows.append([
-                    quantity,
-                    description,
-                    amount,
-                    client_name,
-                    book_number,
-                    receipt_number,
-                    service_type,
-                    technicians,
-                    payment_method,
-                ])
-            else:
-                line_rows.append([
-                    quantity,
-                    description,
-                    amount,
-                    client_name,
-                    book_number,
-                    receipt_number,
-                    payment_method,
-                ])
-
-        if not line_rows:
-            if stall_type == "main":
-                line_rows.append([
-                    "",
-                    transaction.note or "",
-                    _serialize_decimal(transaction.computed_total),
-                    client_name,
-                    book_number,
-                    receipt_number,
-                    service_type,
-                    technicians,
-                    payment_method,
-                ])
-            else:
-                line_rows.append([
-                    "",
-                    transaction.note or "",
-                    _serialize_decimal(transaction.computed_total),
-                    client_name,
-                    book_number,
-                    receipt_number,
-                    payment_method,
-                ])
-
-        rows.extend(line_rows)
-
-        # Add subtotal, discount, and payment summary rows after each transaction
         subtotal = _serialize_decimal(transaction.subtotal or Decimal("0"))
         discount = _serialize_decimal(transaction.order_discount or Decimal("0"))
         total = _serialize_decimal(transaction.computed_total)
