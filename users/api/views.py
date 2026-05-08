@@ -43,6 +43,7 @@ def _run_google_sheets_sync_historical_job(
     limit: int | None,
     start_date,
     end_date,
+    stall_id=None,
 ) -> None:
     started_at = timezone.now().isoformat()
 
@@ -98,6 +99,7 @@ def _run_google_sheets_sync_historical_job(
             limit=limit,
             start_date=start_date,
             end_date=end_date,
+            stall_id=stall_id,
             progress_callback=_publish_progress,
         )
 
@@ -557,6 +559,7 @@ class GoogleSheetsSyncView(APIView):
                     "limit": limit,
                     "start_date": start_date,
                     "end_date": end_date,
+                    "stall_id": request.data.get("stall_id"),
                 },
                 daemon=True,
             ).start()

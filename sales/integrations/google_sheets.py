@@ -827,6 +827,7 @@ def _style_day_tab(
     stall_type: str = "sub",
     over_short_value: Decimal | float | int | None = None,
     transactions: list | None = None,
+    sales_rows_values: list | None = None,
 ):
     metadata = _execute_with_backoff(
         service.spreadsheets().get(spreadsheetId=spreadsheet_id),
@@ -1571,66 +1572,87 @@ def _style_day_tab(
         }
     })
 
-    # Style summary rows (SUBTOTAL, Discount, UNPAID, TOTAL DUE, PAID, BALANCE, TOTAL PAID) if transactions provided
-    if transactions:
+    # Style summary rows (SUBTOTAL, Discount, UNPAID, TOTAL DUE, PAID, BALANCE, TOTAL PAID)
+    summary_row_ranges = []
+
+    # Prefer deriving summary rows from the actual written values if available
+    if sales_rows_values is not None:
+        label_map = {
+            "SUBTOTAL": "subtotal",
+            "DISCOUNT": "discount",
+            "UNPAID": "unpaid",
+            "TOTAL DUE": "total",
+            "PAID": "paid",
+            "BALANCE": "balance",
+            "TOTAL PAID": "total_paid",
+        }
+        for idx, row in enumerate(sales_rows_values):
+            label = ""
+            if isinstance(row, (list, tuple)) and len(row) > 1:
+                label = str(row[1] or "").strip().upper()
+            mapped = label_map.get(label)
+            if mapped:
+                summary_row_ranges.append((idx, idx, mapped))
+    elif transactions:
         summary_row_ranges = _get_summary_row_ranges(transactions)
-        for row_idx, _, row_type in summary_row_ranges:
-            # Convert from data-relative index to sheet row index (data starts at row 5)
-            sheet_row_idx = 4 + row_idx
 
-            if row_type == "subtotal":
-                # SUBTOTAL row - light gray background, bold
-                bg_color = {"red": 0.96, "green": 0.96, "blue": 0.96}
-                fg_color = {"red": 0.2, "green": 0.2, "blue": 0.2}
-            elif row_type == "discount":
-                # Discount row - light orange background, bold
-                bg_color = {"red": 1.0, "green": 0.96, "blue": 0.88}
-                fg_color = {"red": 0.8, "green": 0.4, "blue": 0.0}
-            elif row_type == "total":
-                # TOTAL DUE row - light green background, bold, larger font
-                bg_color = {"red": 0.9, "green": 0.98, "blue": 0.92}
-                fg_color = {"red": 0.1, "green": 0.5, "blue": 0.2}
-            elif row_type == "paid":
-                # PAID row - light blue background, bold
-                bg_color = {"red": 0.92, "green": 0.96, "blue": 1.0}
-                fg_color = {"red": 0.08, "green": 0.3, "blue": 0.6}
-            elif row_type == "total_paid":
-                # TOTAL PAID row - light green background, bold, larger font
-                bg_color = {"red": 0.9, "green": 0.98, "blue": 0.92}
-                fg_color = {"red": 0.1, "green": 0.5, "blue": 0.2}
-            else:  # unpaid or balance
-                # BALANCE row - light red/pink background, bold, red text (warning for partial payment)
-                bg_color = {"red": 1.0, "green": 0.92, "blue": 0.92}
-                fg_color = {"red": 0.8, "green": 0.0, "blue": 0.0}
+    for row_idx, _, row_type in summary_row_ranges:
+        # Convert from data-relative index to sheet row index (data starts at row 5)
+        sheet_row_idx = 4 + row_idx
 
-            requests.append({
-                "repeatCell": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": sheet_row_idx,
-                        "endRowIndex": sheet_row_idx + 1,
-                        "startColumnIndex": 0,
-                        "endColumnIndex": sales_data_cols,
-                    },
-                    "cell": {
-                        "userEnteredFormat": {
-                            "backgroundColor": bg_color,
-                            "textFormat": {
-                                "foregroundColor": fg_color,
-                                "bold": True,
-                                "fontSize": 11 if row_type == "total" else 10,
-                            },
-                            "borders": {
-                                "left": {"style": "SOLID"},
-                                "right": {"style": "SOLID"},
-                                "top": {"style": "SOLID"},
-                                "bottom": {"style": "SOLID"},
-                            },
-                        }
-                    },
-                    "fields": "userEnteredFormat(backgroundColor,textFormat,borders)",
-                }
-            })
+        if row_type == "subtotal":
+            # SUBTOTAL row - light gray background, bold
+            bg_color = {"red": 0.96, "green": 0.96, "blue": 0.96}
+            fg_color = {"red": 0.2, "green": 0.2, "blue": 0.2}
+        elif row_type == "discount":
+            # Discount row - light orange background, bold
+            bg_color = {"red": 1.0, "green": 0.96, "blue": 0.88}
+            fg_color = {"red": 0.8, "green": 0.4, "blue": 0.0}
+        elif row_type == "total":
+            # TOTAL DUE row - light green background, bold, larger font
+            bg_color = {"red": 0.9, "green": 0.98, "blue": 0.92}
+            fg_color = {"red": 0.1, "green": 0.5, "blue": 0.2}
+        elif row_type == "paid":
+            # PAID row - light blue background, bold
+            bg_color = {"red": 0.92, "green": 0.96, "blue": 1.0}
+            fg_color = {"red": 0.08, "green": 0.3, "blue": 0.6}
+        elif row_type == "total_paid":
+            # TOTAL PAID row - light green background, bold, larger font
+            bg_color = {"red": 0.9, "green": 0.98, "blue": 0.92}
+            fg_color = {"red": 0.1, "green": 0.5, "blue": 0.2}
+        else:  # unpaid or balance
+            # BALANCE row - light red/pink background, bold, red text (warning for partial payment)
+            bg_color = {"red": 1.0, "green": 0.92, "blue": 0.92}
+            fg_color = {"red": 0.8, "green": 0.0, "blue": 0.0}
+
+        requests.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": sheet_row_idx,
+                    "endRowIndex": sheet_row_idx + 1,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": sales_data_cols,
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": bg_color,
+                        "textFormat": {
+                            "foregroundColor": fg_color,
+                            "bold": True,
+                            "fontSize": 11 if row_type == "total" else 10,
+                        },
+                        "borders": {
+                            "left": {"style": "SOLID"},
+                            "right": {"style": "SOLID"},
+                            "top": {"style": "SOLID"},
+                            "bottom": {"style": "SOLID"},
+                        },
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,borders)",
+            }
+        })
 
     # Basic filter
     requests.append({
@@ -1799,6 +1821,7 @@ def _render_day_tab(service, sheet_api, spreadsheet_id: str, stall: Stall, targe
         stall_type=stall.stall_type,
         over_short_value=metrics["balance"],
         transactions=day_transactions,
+        sales_rows_values=sales_rows,
     )
 
     # Navigate to the latest daily tab on open
@@ -1930,14 +1953,47 @@ def get_google_sheets_sync_status() -> dict[str, Any]:
         is_active=True,
     ).select_related("stall")
 
+    # Attempt to derive service account email for auto-updating shared status
+    creds = _get_service_account_credentials(sync_config)
+    sa_email = getattr(creds, "service_account_email", "") if creds else ""
+
     for monthly_sheet in monthly_sheets:
         current_gid = _get_monthly_sheet_current_gid(monthly_sheet.spreadsheet_id, sync_config)
         latest_gid = _get_monthly_sheet_latest_gid(monthly_sheet.spreadsheet_id, sync_config)
+
+        # Verify whether the configured service account currently has access to the monthly sheet
+        has_access, access_msg = _verify_service_account_access(sync_config, monthly_sheet.spreadsheet_id)
+
+        # If service account has access, ensure DB reflects that so UI doesn't require manual toggling.
+        try:
+            to_save = False
+            if has_access and not monthly_sheet.shared_ok:
+                monthly_sheet.shared_ok = True
+                # Prefer recorded service-account email, otherwise fallback to configured share_email
+                monthly_sheet.shared_to_email = sa_email or (sync_config.get("share_email") or "")
+                monthly_sheet.shared_at = timezone.now()
+                monthly_sheet.share_error = ""
+                to_save = True
+            elif not has_access and monthly_sheet.shared_ok:
+                # If access no longer exists, clear flags to reflect reality
+                monthly_sheet.shared_ok = False
+                monthly_sheet.shared_to_email = ""
+                monthly_sheet.share_error = access_msg or ""
+                to_save = True
+
+            if to_save:
+                monthly_sheet.save(update_fields=["shared_ok", "shared_to_email", "shared_at", "share_error", "updated_at"])
+        except Exception:
+            # Do not block status reporting if DB update fails
+            logger.exception("Failed to update monthly_sheet shared status for %s", monthly_sheet.spreadsheet_id)
+
         status["current_month_sheets"][monthly_sheet.stall.stall_type] = {
             "spreadsheet_id": monthly_sheet.spreadsheet_id,
             "current_gid": current_gid,
             "latest_gid": latest_gid,
             "stall_name": monthly_sheet.stall.name,
+            "shared_ok": bool(monthly_sheet.shared_ok),
+            "shared_to_email": (monthly_sheet.shared_to_email or ""),
         }
 
     checks = []
@@ -2069,6 +2125,7 @@ def sync_historical_sales_to_google_sheets(
     start_date=None,
     end_date=None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    stall_id: int | None = None,
 ) -> dict[str, Any]:
     sync_config = _get_google_sync_config()
     if not sync_config.get("enabled"):
@@ -2081,8 +2138,28 @@ def sync_historical_sales_to_google_sheets(
             "errors": [],
         }
 
+    # Cap end_date to today to avoid creating future tabs beyond current date
+    today = timezone.localdate()
+    if end_date and end_date > today:
+        end_date = today
+
     stall_types = _scope_stall_types(sync_config.get("sync_scope", "sub"))
     stalls = list(Stall.objects.filter(stall_type__in=stall_types, is_deleted=False))
+
+    # If caller requested a specific stall, filter to only that stall
+    if stall_id is not None:
+        try:
+            specific = Stall.objects.get(pk=stall_id)
+            stalls = [specific]
+        except Stall.DoesNotExist:
+            return {
+                "ok": False,
+                "message": f"Stall {stall_id} does not exist",
+                "synced": 0,
+                "failed": 0,
+                "considered": 0,
+                "errors": [f"Stall {stall_id} not found"],
+            }
 
     day_targets_by_stall: dict[int, set[date]] = {stall.id: set() for stall in stalls}
 
