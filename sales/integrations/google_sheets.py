@@ -1587,10 +1587,14 @@ def _style_day_tab(
             "TOTAL PAID": "total_paid",
         }
         for idx, row in enumerate(sales_rows_values):
+            # Summary rows have empty quantity (column 0) to distinguish from regular line items
+            quantity = str(row[0] or "").strip() if isinstance(row, (list, tuple)) and len(row) > 0 else ""
             label = ""
             if isinstance(row, (list, tuple)) and len(row) > 1:
                 label = str(row[1] or "").strip().upper()
-            mapped = label_map.get(label)
+
+            # Only match as summary row if quantity is empty AND label matches
+            mapped = label_map.get(label) if not quantity else None
             if mapped:
                 summary_row_ranges.append((idx, idx, mapped))
     elif transactions:
