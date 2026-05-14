@@ -1466,6 +1466,9 @@ class ServicePaymentManager:
 
         sub_tx.update_payment_status()
 
+        if service.payments.exists():
+            ServicePaymentManager.rebalance_sales_payments(service)
+
     @staticmethod
     def sync_sales_items(service):
         """
@@ -1618,15 +1621,15 @@ class ServicePaymentManager:
         from sales.models import SalesPayment
 
         main_tx = service.related_transaction
-        if not main_tx or main_tx.voided:
-            return 0
+        if main_tx and main_tx.voided:
+            main_tx = None
 
         sub_tx = service.related_sub_transaction
         if sub_tx and sub_tx.voided:
             sub_tx = None
 
         service_payments = list(service.payments.order_by('payment_date', 'id'))
-        if not service_payments:
+        if not service_payments or (not main_tx and not sub_tx):
             return 0
 
         main_total = main_tx.computed_total or Decimal('0')
@@ -1640,11 +1643,18 @@ class ServicePaymentManager:
                 sub_tx.payments.all().delete()
 
             for service_payment in service_payments:
-                m_share, s_share = ServicePaymentManager._waterfall_split(
-                    service_payment.amount,
-                    main_total - main_filled,
-                    sub_total - sub_filled,
-                )
+                if main_tx and sub_tx:
+                    m_share, s_share = ServicePaymentManager._waterfall_split(
+                        service_payment.amount,
+                        main_total - main_filled,
+                        sub_total - sub_filled,
+                    )
+                elif sub_tx:
+                    m_share = Decimal('0')
+                    s_share = service_payment.amount
+                else:
+                    m_share = service_payment.amount
+                    s_share = Decimal('0')
 
                 if s_share > 0 and sub_tx:
                     SalesPayment.objects.create(

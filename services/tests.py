@@ -705,6 +705,74 @@ class ServicePaymentManagerTest(StallSetupMixin, TransactionTestCase):
         self.assertEqual(service.total_paid, Decimal("1000.00"))
         self.assertEqual(service.balance_due, Decimal("0.00"))
 
+    def test_parts_sync_rebalances_sales_payments_after_completion(self):
+        """Test that adding parts after completion rebalances mirrored payments."""
+        from services.business_logic import ServicePaymentManager
+        from services.models import PaymentStatus, PaymentType
+
+        service = Service.objects.create(
+            client=self.client_obj,
+            stall=self.main_stall,
+            status=ServiceStatus.IN_PROGRESS,
+        )
+        appliance = ServiceAppliance.objects.create(
+            service=service,
+            appliance_type=self.appliance_type,
+            labor_fee=Decimal("1000.00"),
+        )
+
+        ApplianceItemUsed.objects.create(
+            appliance=appliance,
+            item=self.capacitor,
+            quantity=5,
+            stall_stock=self.capacitor_stock,
+        )
+
+        ServiceCompletionHandler.complete_service(service, user=self.user)
+        service.refresh_from_db()
+
+        ServicePaymentManager.create_payment(
+            service=service,
+            payment_type=PaymentType.CASH,
+            amount=Decimal("1500.00"),
+            received_by=self.user,
+        )
+
+        main_tx = service.related_transaction
+        sub_tx = service.related_sub_transaction
+
+        self.assertEqual(
+            sum(payment.amount for payment in main_tx.payments.all()),
+            Decimal("1000.00"),
+        )
+        self.assertEqual(
+            sum(payment.amount for payment in sub_tx.payments.all()),
+            Decimal("500.00"),
+        )
+
+        # Add more parts after completion; the signal path should resync the
+        # sub TX items and rebalance the mirrored SalesPayment rows.
+        ApplianceItemUsed.objects.create(
+            appliance=appliance,
+            item=self.capacitor,
+            quantity=3,
+            stall_stock=self.capacitor_stock,
+        )
+
+        main_tx.refresh_from_db()
+        sub_tx.refresh_from_db()
+
+        self.assertEqual(
+            sum(payment.amount for payment in main_tx.payments.all()),
+            Decimal("700.00"),
+        )
+        self.assertEqual(
+            sum(payment.amount for payment in sub_tx.payments.all()),
+            Decimal("800.00"),
+        )
+        self.assertEqual(main_tx.payment_status, PaymentStatus.PARTIAL)
+        self.assertEqual(sub_tx.payment_status, PaymentStatus.PAID)
+
     def test_create_payment_overpayment_blocked(self):
         """Test that overpayment is prevented."""
         from services.business_logic import ServicePaymentManager
