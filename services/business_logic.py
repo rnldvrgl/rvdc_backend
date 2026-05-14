@@ -1382,12 +1382,40 @@ class ServicePaymentManager:
         """
         from sales.models import SalesItem
 
-        if not service.related_sub_transaction_id:
-            return
+        # Determine charged parts that should appear on a sub stall transaction
+        def _has_paid_parts(svc):
+            return any(
+                item_used.line_total > 0 and not item_used.is_free
+                for appl in svc.appliances.all()
+                for item_used in appl.items_used.all()
+            ) or any(
+                item_used.line_total > 0 and not item_used.is_free
+                for item_used in svc.service_items.all()
+            )
 
-        sub_tx = service.related_sub_transaction
-        if sub_tx.voided:
-            return
+        # If there's no linked sub transaction, but the service is completed
+        # and has paid parts, create one so items can be synced.
+        sub_tx = None
+        if not service.related_sub_transaction_id:
+            if getattr(service, 'status', None) and str(getattr(service, 'status')).lower() == 'completed' and _has_paid_parts(service):
+                sub_stall = get_sub_stall()
+                if sub_stall:
+                    sub_tx = SalesTransaction.objects.create(
+                        stall=sub_stall,
+                        client=service.client,
+                        sales_clerk=None,
+                        transaction_type=TransactionType.SERVICE,
+                        document_type=DocumentType.SALES_INVOICE,
+                        with_2307=False,
+                    )
+                    service.related_sub_transaction = sub_tx
+                    service.save(update_fields=['related_sub_transaction'])
+            else:
+                return
+        else:
+            sub_tx = service.related_sub_transaction
+            if sub_tx.voided:
+                return
 
         # Rebuild all line items from scratch
         sub_tx.items.all().delete()

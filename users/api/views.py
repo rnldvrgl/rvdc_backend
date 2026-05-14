@@ -1180,7 +1180,25 @@ class ServerMaintenanceView(APIView):
                 from django.core.management import call_command
 
                 cmd_name = command_config.get("command") or command_config["id"]
+                # Allow passing specific args for certain admin-safe commands
+                # Only permit service_id and dry_run to be passed for
+                # the `fix_service_payment_sync` command to avoid injection.
                 cmd_args = command_config.get("args", [])
+                if command_config.get("id") == "fix_service_payment_sync":
+                    # Only accept numeric service_id and boolean dry_run
+                    svc_id = request.data.get("service_id")
+                    dry_run_flag = request.data.get("dry_run")
+                    custom_args = []
+                    if svc_id:
+                        try:
+                            custom_args.extend(["--service-id", str(int(svc_id))])
+                        except (TypeError, ValueError):
+                            # invalid service_id — ignore and fall back to configured args
+                            custom_args = []
+                    if str(dry_run_flag).lower() in ("1", "true", "yes", "on"):
+                        custom_args.append("--dry-run")
+                    if custom_args:
+                        cmd_args = custom_args
                 cron_job = next((job for job in self.CRON_JOBS if job["id"] == command_config["id"]), None)
                 log_file = cron_job.get("log_file") if cron_job else None
                 title = command_config.get("label") or cmd_name

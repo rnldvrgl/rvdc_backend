@@ -12,6 +12,9 @@ from .models import (
     ServicePayment,
     TechnicianAssignment,
 )
+from django.contrib import messages
+
+from .business_logic import ServicePaymentManager, RevenueCalculator
 
 
 @admin.register(ServiceExtraCharge)
@@ -62,6 +65,41 @@ class ServiceAdmin(admin.ModelAdmin):
     ordering = ("-created_at",)
     list_select_related = ("client", "stall")
     list_per_page = 25
+    actions = [
+        'admin_sync_sub_sales_items',
+        'admin_recalculate_revenue',
+    ]
+
+    def admin_sync_sub_sales_items(self, request, queryset):
+        """Admin action: ensure each selected service has up-to-date sub stall sales items."""
+        fixed = 0
+        errors = 0
+        for svc in queryset.select_related('related_sub_transaction'):
+            try:
+                ServicePaymentManager.sync_sub_sales_items(svc)
+                fixed += 1
+            except Exception as exc:  # pragma: no cover - admin safety
+                errors += 1
+                self.message_user(request, f"Service #{svc.id} error: {exc}", level=messages.ERROR)
+
+        if fixed:
+            self.message_user(request, f"Synced sub sales items for {fixed} service(s).", level=messages.SUCCESS)
+        if errors:
+            self.message_user(request, f"Encountered errors for {errors} service(s). See details above.", level=messages.WARNING)
+
+    admin_sync_sub_sales_items.short_description = "Sync sub-stall sales items (fix missing parts transactions)"
+
+    def admin_recalculate_revenue(self, request, queryset):
+        """Admin action: recalculate revenue for selected services."""
+        for svc in queryset:
+            try:
+                RevenueCalculator.calculate_service_revenue(svc, save=True)
+            except Exception as exc:  # pragma: no cover
+                self.message_user(request, f"Service #{svc.id} revenue error: {exc}", level=messages.ERROR)
+
+        self.message_user(request, f"Recalculation triggered for {queryset.count()} service(s).", level=messages.SUCCESS)
+
+    admin_recalculate_revenue.short_description = "Recalculate service revenue"
 
 
 @admin.register(ServiceAppliance)
