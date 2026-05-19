@@ -12,6 +12,7 @@ Tests:
 
 from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -1085,6 +1086,44 @@ class ExpenseAPITest(APITestCase):
             response.data,
             ['Cannot delete an expense that belongs to an already remitted record'],
         )
+
+    def test_archiving_expense_queues_sheet_refresh_and_recalc(self):
+        """Saving an expense should queue the daily sheet sync and remittance recalculation."""
+        with mock.patch("expenses.signals.transaction.on_commit", side_effect=lambda fn: fn()), \
+             mock.patch("expenses.signals._queue_expense_day_sync") as day_sync, \
+             mock.patch("expenses.signals._queue_expense_remittance_recalc") as remittance_recalc:
+            expense = Expense.objects.create(
+                stall=self.stall,
+                category=self.category,
+                expense_date=timezone.now().date(),
+                total_price=Decimal('1000.00'),
+                created_by=self.user,
+            )
+
+            expense.soft_delete()
+
+        self.assertTrue(day_sync.called)
+        self.assertTrue(remittance_recalc.called)
+        self.assertEqual(day_sync.call_args.args[0], self.stall.id)
+        self.assertEqual(day_sync.call_args.args[1], expense.expense_date)
+        self.assertEqual(remittance_recalc.call_args.args[0], self.stall.id)
+        self.assertEqual(remittance_recalc.call_args.args[1], expense.expense_date)
+
+    def test_hard_delete_archived_expense(self):
+        """Archived expenses can be permanently deleted."""
+        expense = Expense.objects.create(
+            stall=self.stall,
+            category=self.category,
+            total_price=Decimal('1000.00'),
+            created_by=self.user,
+        )
+
+        archive_response = self.client.delete(f'/api/expenses/{expense.id}/')
+        self.assertEqual(archive_response.status_code, status.HTTP_204_NO_CONTENT)
+
+        hard_delete_response = self.client.delete(f'/api/expenses/{expense.id}/hard-delete/')
+        self.assertEqual(hard_delete_response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Expense.objects.filter(id=expense.id).exists())
 
     def test_get_unpaid_expenses(self):
         """Test getting unpaid expenses"""

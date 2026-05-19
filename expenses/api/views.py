@@ -139,6 +139,7 @@ class ExpenseViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         'stall', 'category__parent', 'created_by'
     ).prefetch_related('items__item')
     permission_classes = [IsAuthenticated]
+    allow_hard_delete = True
     filter_backends = [
         DjangoFilterBackend,
         filters.SearchFilter,
