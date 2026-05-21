@@ -14,6 +14,9 @@ class ServiceFilter(filters.FilterSet):
     technician = filters.NumberFilter(
         field_name="technician_assignments__technician_id", lookup_expr="exact"
     )
+    # Filter by appliance type id and appliance brand
+    appliance_type = filters.NumberFilter(field_name="appliances__appliance_type_id", lookup_expr="exact")
+    brand = filters.CharFilter(field_name="appliances__brand", lookup_expr="icontains")
     status = CharInFilter(field_name="status", lookup_expr="in")
     payment_status = CharInFilter(field_name="payment_status", lookup_expr="in")
     service_type = CharInFilter(field_name="service_type", lookup_expr="in")

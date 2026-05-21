@@ -70,7 +70,8 @@ class ItemViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
         filters.OrderingFilter,
     ]
     filterset_class = ItemFilter
-    search_fields = ["name"]
+    # Allow searching by name, SKU, and category name
+    search_fields = ["name", "sku", "category__name"]
     ordering_fields = "__all__"
 
     def get_queryset(self):
