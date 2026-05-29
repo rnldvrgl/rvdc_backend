@@ -1147,8 +1147,9 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
     def _handle_aircon_update(self, appliance, install_data):
         """
         Handle aircon installation changes on update.
-        Releases old brand_new unit if switching to second_hand or a different unit.
+        Releases old brand_new unit if switching to second_hand, pre_order, or different unit.
         Links new brand_new unit if specified.
+        Clears reservation when removing unit.
         """
         from installations.models import AirconUnit
         from django.utils import timezone
@@ -1165,7 +1166,7 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
                 serial_number=appliance.serial_number,
             ).first()
 
-        # Release old unit if switching away from it
+        # Release old unit if switching away from it or changing unit type
         if old_unit and (
             new_unit_type in ('second_hand', 'pre_order')
             or (new_unit_type == 'brand_new' and new_unit_id and new_unit_id != old_unit.id)
@@ -1191,11 +1192,7 @@ class ServiceApplianceSerializer(serializers.ModelSerializer):
                     'aircon_installation_data': f'Aircon unit {unit_id} not found'
                 })
 
-            # Skip if same unit already linked
-            if old_unit and old_unit.id == unit.id:
-                return
-
-            # Link new unit to service
+            # Link new unit to service (idempotent - safe to re-link same unit)
             unit.installation_service = service
             unit.reserved_by = service.client
             unit.reserved_at = timezone.now()
