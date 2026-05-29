@@ -1262,19 +1262,39 @@ class ServiceApplianceViewSet(viewsets.ModelViewSet):
                     )
 
             if linked_unit:
-                linked_unit.installation_service = None
-                linked_unit.reserved_by = None
-                linked_unit.reserved_at = None
-                # If there is no sale record, ensure unit is considered unsold/available.
-                if linked_unit.sale_id is None:
-                    linked_unit.is_sold = False
-                linked_unit.save(update_fields=[
-                    "installation_service",
-                    "reserved_by",
-                    "reserved_at",
-                    "is_sold",
-                    "updated_at",
-                ])
+                # Use queryset update to avoid model save side-effects and ensure
+                # reservation cleared even if unit model save has problems.
+                try:
+                    qs = AirconUnit.objects.filter(pk=linked_unit.pk)
+                    update_kwargs = {
+                        "installation_service": None,
+                        "reserved_by": None,
+                        "reserved_at": None,
+                        "updated_at": timezone.now(),
+                    }
+                    # If there is no sale record, mark as not sold
+                    if linked_unit.sale_id is None:
+                        update_kwargs["is_sold"] = False
+
+                    qs.update(**update_kwargs)
+                except Exception:
+                    # Fallback: try saving instance to best-effort clear reservation
+                    try:
+                        linked_unit.installation_service = None
+                        linked_unit.reserved_by = None
+                        linked_unit.reserved_at = None
+                        if linked_unit.sale_id is None:
+                            linked_unit.is_sold = False
+                        linked_unit.save(update_fields=[
+                            "installation_service",
+                            "reserved_by",
+                            "reserved_at",
+                            "is_sold",
+                            "updated_at",
+                        ])
+                    except Exception:
+                        # swallow to avoid aborting appliance deletion; frontend shows generic error otherwise
+                        pass
 
             instance.delete()
 
