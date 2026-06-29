@@ -187,26 +187,16 @@ success "Database is ready"
 echo ""
 
 # =============================================================================
-# Step 6: Start API and go2rtc containers
+# Step 6: Start API container
 # =============================================================================
-step "Step 6: ${ICON_CODE} Starting API and go2rtc containers..."
+step "Step 6: ${ICON_CODE} Starting API container..."
 
-# Ensure go2rtc config dir and initial yaml exist (required for stream registration)
-mkdir -p "${PROJECT_DIR}/go2rtc"
-if [ ! -f "${PROJECT_DIR}/go2rtc/go2rtc.yaml" ]; then
-    echo "streams: {}" > "${PROJECT_DIR}/go2rtc/go2rtc.yaml"
-    log "Created initial go2rtc.yaml"
-fi
-
-# Remove any stale go2rtc container that may be holding port 1984
-docker rm -f rvdc_backend-go2rtc-1 2>/dev/null || true
-
-${COMPOSE} up -d api go2rtc
+${COMPOSE} up -d api
 
 log "Waiting for API to initialize..."
 sleep 5
 
-success "API and go2rtc containers started"
+success "API container started"
 echo ""
 
 # =============================================================================
@@ -306,12 +296,10 @@ echo -e "${CYAN}═════════════════════�
 echo ""
 header "Services are running at:"
 echo -e "  ${GREEN}•${NC} API: ${CYAN}http://localhost:8000${NC}"
-echo -e "  ${GREEN}•${NC} go2rtc: ${CYAN}http://localhost:19840${NC}"
 echo -e "  ${GREEN}•${NC} Database: ${CYAN}localhost:5432${NC}"
 echo ""
 header "Useful commands:"
 echo -e "  ${GREEN}•${NC} View logs: ${YELLOW}docker compose logs -f api${NC}"
-echo -e "  ${GREEN}•${NC} View go2rtc logs: ${YELLOW}docker compose logs -f go2rtc${NC}"
 echo -e "  ${GREEN}•${NC} Check status: ${YELLOW}docker compose ps${NC}"
 echo -e "  ${GREEN}•${NC} Restart API: ${YELLOW}docker compose restart api${NC}"
 echo -e "  ${GREEN}•${NC} Shell access: ${YELLOW}docker compose exec api bash${NC}"
