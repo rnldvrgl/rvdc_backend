@@ -105,7 +105,7 @@ ASGI_APPLICATION = "config.asgi.application"
 DATABASES = {
     "default": {
         **dj_database_url.parse(config("DATABASE_URL")),
-        "CONN_MAX_AGE": 600,  # Keep DB connections alive for 10 min
+        "CONN_MAX_AGE": 0, # Disable persistent connections (Django 4.1+)
         "CONN_HEALTH_CHECKS": True,  # Verify connection before use (Django 4.1+)
         "OPTIONS": {
             "connect_timeout": 10,  # Fail fast if DB is unreachable
@@ -239,12 +239,20 @@ CACHES = {
 # CHANNEL LAYERS (WebSocket support)
 # ------------------------------------------------------------------------------
 
+# CHANNEL_LAYERS = {
+#     "default": {
+#         "BACKEND": "channels_redis.core.RedisChannelLayer",
+#         "CONFIG": {
+#             "hosts": [config("REDIS_URL", default="redis://redis:6379/0")],
+#         },
+#     }
+# }
+
 CHANNEL_LAYERS = {
     "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [config("REDIS_URL", default="redis://redis:6379/0")],
-        },
+        "BACKEND": "channels.layers.InMemoryChannelLayer",  # ← no Redis dependency,
+                                                             #   no socket timeout bug,
+                                                             #   fine for single worker
     }
 }
 
