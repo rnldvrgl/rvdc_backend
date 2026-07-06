@@ -208,7 +208,10 @@ if [ "$INIT_USERS" = true ]; then
     log "Running create_default_users command to setup Main and Sub stalls..."
     ${COMPOSE} exec -T api python manage.py create_default_users
 
-    success "Stalls and users initialized"
+    log "Running seed_database command to generate sample rows across models..."
+    ${COMPOSE} exec -T api python manage.py seed_database --per-model 2
+
+    success "Stalls, users, and sample data initialized"
     echo ""
 else
     step "Step 7: Skipping user initialization"
@@ -307,6 +310,7 @@ echo -e "  ${GREEN}•${NC} Redeploy with user init: ${YELLOW}bash deploy.sh --i
 echo ""
 header "Database management:"
 echo -e "  ${GREEN}•${NC} Initialize users/stalls: ${YELLOW}docker compose exec api python manage.py create_default_users${NC}"
+echo -e "  ${GREEN}•${NC} Seed sample data (all models): ${YELLOW}docker compose exec api python manage.py seed_database --per-model 2${NC}"
 echo -e "  ${GREEN}•${NC} Clear transactional data: ${YELLOW}docker compose exec api python manage.py clear_database${NC}"
 echo -e "  ${GREEN}•${NC} Interactive cleanup: ${YELLOW}docker compose exec api python manage.py clear_database_interactive${NC}"
 echo -e "  ${GREEN}•${NC} Add holidays: ${YELLOW}docker compose exec api python manage.py add_philippine_holidays --year 2026${NC}"

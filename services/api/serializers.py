@@ -2794,9 +2794,6 @@ class CompanyAssetSerializer(serializers.ModelSerializer):
             "appliance_description",
             "acquisition_type",
             "acquisition_price",
-            # Complementary / warranty tracking
-            "is_complementary",
-            "complementary_reason",
             "acquired_at",
             "acquired_by",
             "declared_by_name",
