@@ -1406,7 +1406,7 @@ class NestedClientSerializer(serializers.ModelSerializer):
     """Nested client serializer for read operations."""
     class Meta:
         model = Client
-        fields = ['id', 'full_name', 'contact_number', 'address']
+        fields = ['id', 'full_name', 'contact_number', 'address', 'fund_balance']
 
 
 class NestedStallSerializer(serializers.ModelSerializer):

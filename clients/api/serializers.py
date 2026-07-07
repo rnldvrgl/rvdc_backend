@@ -37,7 +37,7 @@ class ClientFundDepositSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "recorded_by", "created_at", "updated_at"]
+        read_only_fields = ["id", "recorded_by", "created_at", "updated_at", "client_name", "client"]
 
     def validate_amount(self, value):
         """Validate deposit amount is positive."""

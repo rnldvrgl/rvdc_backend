@@ -2300,22 +2300,8 @@ class ServicePaymentManager:
     def update_payment(payment, payment_type=None, amount=None, notes=None, payment_date=None, cheque_collection=None):
         """
         Edit an existing service payment in-place.
-
-        Atomically:
-        1. Removes the old SalesPayment mirror(s) from linked transactions
-        2. Updates the ServicePayment fields
-        3. Re-creates SalesPayment mirror(s) with the new values
-
-        Args:
-            payment: ServicePayment instance to update
-            payment_type: New payment type (optional — keeps existing if None)
-            amount: New amount (optional — keeps existing if None)
-            notes: New notes (optional)
-            payment_date: New payment date override (optional)
-            cheque_collection: New ChequeCollection link (optional)
-
-        Returns:
-            Updated ServicePayment instance
+        ...
+        Adjusts client fund_balance if the old or new payment_type is "fund".
         """
         from sales.models import SalesPayment
 
@@ -2328,15 +2314,38 @@ class ServicePaymentManager:
             new_type = payment_type if payment_type is not None else old_type
             new_amount = Decimal(str(amount)) if amount is not None else old_amount
 
-            # Validate new amount won't cause overpayment
-            # balance_due includes the current payment, so the headroom is:
-            # (balance_due + old_amount) room for the new_amount
             headroom = service.balance_due + old_amount
             if new_amount > headroom:
                 raise ValidationError(
                     f"Edited amount (₱{new_amount}) exceeds allowable balance "
                     f"(₱{headroom:.2f})."
                 )
+
+            # BUG FIX: if fund balance was drawn on and is changing, adjust it.
+            # Case 1: was fund, still fund, amount changed → adjust by delta
+            # Case 2: was fund, now something else → give the old amount back
+            # Case 3: wasn't fund, now is fund → deduct the new amount
+            if service.client_id:
+                from django.db.models import F
+                from clients.models import Client
+
+                client = Client.objects.select_for_update().get(pk=service.client_id)
+                if old_type == "fund" and new_type == "fund":
+                    delta = new_amount - old_amount  # positive delta means MORE drawn from fund
+                    if delta != 0:
+                        client.fund_balance = F('fund_balance') - delta
+                        client.save(update_fields=['fund_balance', 'updated_at'])
+                elif old_type == "fund" and new_type != "fund":
+                    client.fund_balance = F('fund_balance') + old_amount
+                    client.save(update_fields=['fund_balance', 'updated_at'])
+                elif old_type != "fund" and new_type == "fund":
+                    client.refresh_from_db(fields=['fund_balance'])
+                    if client.fund_balance < new_amount:
+                        raise ValidationError(
+                            f"Insufficient client fund. Available: ₱{client.fund_balance}, Requested: ₱{new_amount}"
+                        )
+                    client.fund_balance = F('fund_balance') - new_amount
+                    client.save(update_fields=['fund_balance', 'updated_at'])
 
             # ── Remove old SalesPayment mirrors ──
             remaining = old_amount
@@ -2405,20 +2414,13 @@ class ServicePaymentManager:
             service.update_payment_status()
 
         return payment
-
     @staticmethod
     def void_payment(payment, reason=""):
         """
         Void/delete a payment and update service payment status.
         Also removes the corresponding SalesPayment records from
         related_transaction and related_sub_transaction.
-
-        Args:
-            payment: ServicePayment instance
-            reason: Reason for voiding (optional)
-
-        Returns:
-            Service instance (after update)
+        Restores client fund balance if the payment was paid via fund.
         """
         from sales.models import SalesPayment
 
@@ -2428,7 +2430,6 @@ class ServicePaymentManager:
             payment_type = payment.payment_type
 
             # Remove matching SalesPayment(s) for this service payment.
-            # Waterfall: check sub transaction first, then main — mirrors create_payment order.
             remaining = amount
             for tx in [service.related_sub_transaction, service.related_transaction]:
                 if not tx or remaining <= 0:
@@ -2445,12 +2446,20 @@ class ServicePaymentManager:
                     sp.delete()
                 tx.update_payment_status()
 
+            # BUG FIX: restore client fund balance if this was a fund payment
+            if payment_type == "fund" and service.client_id:
+                from django.db.models import F
+                from clients.models import Client
+
+                client = Client.objects.select_for_update().get(pk=service.client_id)
+                client.fund_balance = F('fund_balance') + amount
+                client.save(update_fields=['fund_balance', 'updated_at'])
+
             payment.delete()
             service.update_payment_status()
             service.refresh_from_db()
 
         return service
-
 
     @staticmethod
     def cancel_service(service, reason=""):

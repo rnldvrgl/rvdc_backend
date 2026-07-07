@@ -46,7 +46,24 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
     total_sales_credit = serializers.SerializerMethodField()
     total_sales_debit = serializers.SerializerMethodField()
     total_sales_cheque = serializers.SerializerMethodField()
-    total_client_fund_deposits = serializers.SerializerMethodField()
+    # Client fund deposits — stored model fields, snapshotted at
+    # create/recalculate time (see recalculate action for refreshing these).
+    client_fund_deposits_cash = serializers.SerializerMethodField()
+    client_fund_deposits_gcash = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
+    )
+    client_fund_deposits_credit = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
+    )
+    client_fund_deposits_debit = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
+    )
+    client_fund_deposits_cheque = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
+    )
+    total_client_fund_deposits = serializers.DecimalField(
+        max_digits=10, decimal_places=2, read_only=True
+    )
     total_expenses = serializers.SerializerMethodField()
     total_collected = serializers.SerializerMethodField()
     is_remitted = serializers.BooleanField(read_only=True)
@@ -83,6 +100,11 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
     override_expenses = serializers.DecimalField(
         max_digits=10, decimal_places=2, required=False, write_only=True, allow_null=True,
     )
+    # Only cash client fund deposits are overridable — non-cash methods don't
+    # factor into expected_remittance, so there's nothing to correct there.
+    override_client_fund_deposits_cash = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, write_only=True, allow_null=True,
+    )
 
     # Admin credentials required for non-admin users to apply overrides
     admin_username = serializers.CharField(
@@ -103,6 +125,11 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             "total_sales_credit",
             "total_sales_debit",
             "total_sales_cheque",
+            "client_fund_deposits_cash",
+            "client_fund_deposits_gcash",
+            "client_fund_deposits_credit",
+            "client_fund_deposits_debit",
+            "client_fund_deposits_cheque",
             "total_client_fund_deposits",
             "total_expenses",
             "manually_adjusted",
@@ -126,6 +153,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             "override_sales_debit",
             "override_sales_cheque",
             "override_expenses",
+            "override_client_fund_deposits_cash",
             "admin_username",
             "admin_password",
         ]
@@ -147,29 +175,13 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         return None
 
     def get_expected_remittance(self, obj):
-        """Compute expected remittance from live-computed cash and expenses."""
-        collected_cash = self._get_sales_total(obj, "cash") or Decimal("0")
-        expenses = self.get_total_expenses(obj) or Decimal("0")
-
-        # Use remittance_date (business date) to look up the previous COD
-        target = obj.remittance_date or (obj.created_at.date() if obj.created_at else None)
-        if target:
-            cod_info = RemittanceRecord.get_cod_for_date(obj.stall, target)
-        else:
-            cod_info = RemittanceRecord.get_cod_for_today(obj.stall)
-        cod_yesterday = Decimal(cod_info.get("cod_amount", 0) or 0)
-
-        expected = max(Decimal("0"), collected_cash + cod_yesterday - expenses)
-        return expected or Decimal("0.00")
+        """Delegates to the model property, which is override-aware and
+        handles both the live (pending) and snapshot (remitted) cases."""
+        return obj.expected_remittance
 
     def get_balance(self, obj):
-        """Live-computed balance = declared amount - expected remittance."""
-        expected = self.get_expected_remittance(obj)
-        try:
-            declared = Decimal(obj.cash_breakdown.total_cash_declared)
-        except:
-            declared = Decimal("0")
-        return (declared - expected) or Decimal("0.00")
+        """Delegates to the model property."""
+        return obj.balance
 
     def get_cod_for_next_day(self, obj):
         return getattr(obj.cash_breakdown, "cod_amount", 0)
@@ -234,21 +246,9 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         """Live-computed cheque sales total."""
         return self._get_sales_total(obj, "cheque") or Decimal("0.00")
 
-    def get_total_client_fund_deposits(self, obj):
-        """Live-computed client fund deposits for the remittance date."""
-        from clients.models import ClientFundDeposit
-
-        target_date = obj.remittance_date or (obj.created_at.date() if obj.created_at else None)
-        if not target_date:
-            return Decimal("0.00")
-
-        total = (
-            ClientFundDeposit.objects.filter(
-                deposit_date__date=target_date
-            ).aggregate(total=Sum("amount"))["total"]
-            or Decimal("0")
-        )
-        return max(Decimal("0"), total)
+    def get_client_fund_deposits_cash(self, obj):
+        """Stored cash client fund deposits, respecting a manual override if set."""
+        return obj.client_fund_deposits_cash_effective
 
     def get_total_expenses(self, obj):
         """Live-computed total expenses for the remittance date."""
@@ -346,6 +346,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         override_fields = [
             "override_sales_cash", "override_sales_gcash", "override_sales_credit",
             "override_sales_debit", "override_sales_cheque", "override_expenses",
+            "override_client_fund_deposits_cash",
         ]
         has_overrides = any(
             attrs.get(f) is not None for f in override_fields
@@ -377,23 +378,26 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         remittance_date = validated_data.pop("remittance_date", None)
         mark_as_acknowledged = validated_data.pop("mark_as_acknowledged", False)
 
-        # Extract manual overrides
         overrides = {
             k.replace("override_sales_", ""): validated_data.pop(k)
             for k in list(validated_data.keys())
             if k.startswith("override_sales_") and validated_data.get(k) is not None
         }
         override_expenses = validated_data.pop("override_expenses", None)
-        # Clean remaining override keys
+        override_client_fund_cash = validated_data.pop(
+            "override_client_fund_deposits_cash", None
+        )
         for k in [k for k in validated_data if k.startswith("override_")]:
             validated_data.pop(k)
 
-        manually_adjusted = bool(overrides) or override_expenses is not None
+        manually_adjusted = (
+            bool(overrides)
+            or override_expenses is not None
+            or override_client_fund_cash is not None
+        )
 
-        # Use the provided date (always sent by frontend)
         target_date = remittance_date
 
-        # 🚫 Prevent multiple remittances per stall per day
         if RemittanceRecord.objects.filter(
             stall=stall, remittance_date=target_date
         ).exists():
@@ -405,16 +409,13 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
                 }
             )
 
-        # 💰 Compute sales by payment type for the target date
         total_sales = {
             pt: self._sum_sales(stall, target_date, pt)
             for pt in ["cash", "gcash", "credit", "debit", "cheque"]
         }
-        # Apply manual overrides (replace system-computed values)
         for pt, val in overrides.items():
             total_sales[pt] = val
 
-        # 📉 Get total expenses for the target date (normal expenses minus reimbursements)
         normal_expenses = (
             Expense.objects.filter(
                 stall=stall,
@@ -443,11 +444,25 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         if override_expenses is not None:
             total_expenses = override_expenses
 
-        # 💵 Compute totals from breakdown
+        # 💳 Compute client fund deposits by payment method for the target date
+        from clients.models import ClientFundDeposit
+
+        def sum_client_fund(payment_type: str):
+            return (
+                ClientFundDeposit.objects.filter(
+                    deposit_date__date=target_date,
+                    payment_method__iexact=payment_type,
+                ).aggregate(total=Sum("amount"))["total"]
+                or 0
+            )
+
+        client_fund = {
+            pt: sum_client_fund(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]
+        }
+
         remitted_amt = self._compute_total(breakdown_data, declared=False)
         declared_amt = self._compute_total(breakdown_data, declared=True)
 
-        # 📅 Set created_at: use noon of target date for backdated, or now for today
         if remittance_date:
             from datetime import datetime, time
             created_at = timezone.make_aware(
@@ -456,7 +471,6 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
         else:
             created_at = timezone.now()
 
-        # 🧾 Create the record
         remittance = RemittanceRecord.objects.create(
             stall=stall,
             remitted_by=user,
@@ -466,6 +480,12 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             remitted_amount=remitted_amt,
             declared_amount=declared_amt,
             total_expenses=total_expenses,
+            client_fund_deposits_cash=client_fund["cash"],
+            client_fund_deposits_gcash=client_fund["gcash"],
+            client_fund_deposits_credit=client_fund["credit"],
+            client_fund_deposits_debit=client_fund["debit"],
+            client_fund_deposits_cheque=client_fund["cheque"],
+            client_fund_deposits_cash_override=override_client_fund_cash,
             is_remitted=bool(mark_as_acknowledged),
             manually_adjusted=manually_adjusted,
             **{f"total_sales_{k}": v for k, v in total_sales.items()},
@@ -492,6 +512,7 @@ class RemittanceRecordSerializer(serializers.ModelSerializer):
             "override_sales_debit": "total_sales_debit",
             "override_sales_cheque": "total_sales_cheque",
             "override_expenses": "total_expenses",
+            "override_client_fund_deposits_cash": "client_fund_deposits_cash_override",
         }
         has_override = False
         for override_key, model_field in sales_field_map.items():

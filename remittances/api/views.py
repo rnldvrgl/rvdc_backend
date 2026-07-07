@@ -177,6 +177,283 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
         cod_info = RemittanceRecord.get_cod_for_date(stall, target_date)
         cod_amount = Decimal(str(cod_info.get("cod_amount", 0) or 0))
 
+        # Client fund deposits by payment method for this date
+        from clients.models import ClientFundDeposit
+
+        def sum_client_fund(payment_type: str):
+            return (
+                ClientFundDeposit.objects.filter(
+                    deposit_date__date=target_date,
+                    payment_method__iexact=payment_type,
+                ).aggregate(total=Sum("amount"))["total"]
+                or Decimal("0")
+            )
+
+        client_fund = {
+            pt: sum_client_fund(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]
+        }
+        total_client_fund_deposits = sum(client_fund.values())
+
+        # Expected remittance — only cash physically sits in the drawer,
+        # so only cash client fund deposits factor into what's owed.
+        cash_sales = sales["cash"]
+        expected = max(
+            Decimal("0"),
+            cash_sales + cod_amount + client_fund["cash"] - total_expenses,
+        )
+
+        total_collected = sum(sales.values())
+
+        return Response({
+            "date": str(target_date),
+            "stall_id": stall.id,
+            "stall_name": stall.name,
+            "already_exists": already_exists,
+            "total_sales_cash": str(sales["cash"]),
+            "total_sales_gcash": str(sales["gcash"]),
+            "total_sales_credit": str(sales["credit"]),
+            "total_sales_debit": str(sales["debit"]),
+            "total_sales_cheque": str(sales["cheque"]),
+            "total_collected": str(total_collected),
+            "total_expenses": str(total_expenses),
+            "cod_from_previous": str(cod_amount),
+            "client_fund_deposits_cash": str(client_fund["cash"]),
+            "client_fund_deposits_gcash": str(client_fund["gcash"]),
+            "client_fund_deposits_credit": str(client_fund["credit"]),
+            "client_fund_deposits_debit": str(client_fund["debit"]),
+            "client_fund_deposits_cheque": str(client_fund["cheque"]),
+            "total_client_fund_deposits": str(total_client_fund_deposits),
+            "expected_remittance": str(expected),
+        })
+        """
+        Preview sales, expenses, and expected remittance for a stall + date.
+        GET /remittances/preview/?stall=<id>&date=<YYYY-MM-DD>
+        """
+        stall_id = request.query_params.get("stall")
+        date_str = request.query_params.get("date")
+
+        if not stall_id:
+            return Response(
+                {"detail": "stall parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            stall = Stall.objects.get(pk=stall_id)
+        except Stall.DoesNotExist:
+            return Response(
+                {"detail": "Stall not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Parse date or use today
+        if date_str:
+            try:
+                target_date = date.fromisoformat(date_str)
+            except ValueError:
+                return Response(
+                    {"detail": "Invalid date format. Use YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            target_date = timezone.localdate()
+
+        # Check if remittance already exists for this stall + date
+        already_exists = RemittanceRecord.objects.filter(
+            stall=stall, remittance_date=target_date
+        ).exists()
+
+        # Compute sales by payment type
+        def sum_sales(payment_type: str):
+            # Sum all payments of this type for paid/partial transactions on this date
+            total_payments = SalesPayment.objects.filter(
+                transaction__stall=stall,
+                payment_date__date=target_date,
+                transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                transaction__voided=False,
+                transaction__is_deleted=False,
+                payment_type=payment_type,
+            ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+
+            # Change is always given in cash, so only subtract from cash totals.
+            # Subtract once per transaction (not per payment) to avoid double-counting.
+            if payment_type == "cash":
+                from sales.models import SalesTransaction
+                total_change = SalesTransaction.objects.filter(
+                    stall=stall,
+                    payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                    voided=False,
+                    is_deleted=False,
+                    payments__payment_type="cash",
+                    payments__payment_date__date=target_date,
+                ).distinct().aggregate(
+                    total=Sum("change_amount")
+                )["total"] or Decimal("0")
+                return total_payments - total_change
+
+            return total_payments
+
+        sales = {pt: sum_sales(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]}
+
+        # Get expenses (normal expenses minus reimbursements)
+        normal_expenses = (
+            Expense.objects.filter(
+                stall=stall,
+                expense_date=target_date,
+                is_deleted=False,
+                is_reimbursement=False,
+                payment_method__iexact="cash",
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+        reimbursements = (
+            Expense.objects.filter(
+                stall=stall,
+                expense_date=target_date,
+                is_deleted=False,
+                is_reimbursement=True,
+                payment_method__iexact="cash",
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+        total_expenses = normal_expenses - reimbursements
+
+        # COD from previous day (relative to the target date, not today)
+        cod_info = RemittanceRecord.get_cod_for_date(stall, target_date)
+        cod_amount = Decimal(str(cod_info.get("cod_amount", 0) or 0))
+
+        # Client fund deposits collected in cash for this date
+        from clients.models import ClientFundDeposit
+        client_fund_cash = (
+            ClientFundDeposit.objects.filter(
+                deposit_date__date=target_date,
+                payment_method__iexact="cash",
+            ).aggregate(total=Sum("amount"))["total"]
+            or Decimal("0")
+        )
+
+        # Expected remittance
+        cash_sales = sales["cash"]
+        expected = max(
+            Decimal("0"),
+            cash_sales + cod_amount + client_fund_cash - total_expenses,
+        )
+
+        total_collected = sum(sales.values())
+
+        return Response({
+            "date": str(target_date),
+            "stall_id": stall.id,
+            "stall_name": stall.name,
+            "already_exists": already_exists,
+            "total_sales_cash": str(sales["cash"]),
+            "total_sales_gcash": str(sales["gcash"]),
+            "total_sales_credit": str(sales["credit"]),
+            "total_sales_debit": str(sales["debit"]),
+            "total_sales_cheque": str(sales["cheque"]),
+            "total_collected": str(total_collected),
+            "total_expenses": str(total_expenses),
+            "cod_from_previous": str(cod_amount),
+            "client_fund_deposits_cash": str(client_fund_cash),
+            "expected_remittance": str(expected),
+        })
+        """
+        Preview sales, expenses, and expected remittance for a stall + date.
+        GET /remittances/preview/?stall=<id>&date=<YYYY-MM-DD>
+        """
+        stall_id = request.query_params.get("stall")
+        date_str = request.query_params.get("date")
+
+        if not stall_id:
+            return Response(
+                {"detail": "stall parameter is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            stall = Stall.objects.get(pk=stall_id)
+        except Stall.DoesNotExist:
+            return Response(
+                {"detail": "Stall not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Parse date or use today
+        if date_str:
+            try:
+                target_date = date.fromisoformat(date_str)
+            except ValueError:
+                return Response(
+                    {"detail": "Invalid date format. Use YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            target_date = timezone.localdate()
+
+        # Check if remittance already exists for this stall + date
+        already_exists = RemittanceRecord.objects.filter(
+            stall=stall, remittance_date=target_date
+        ).exists()
+
+        # Compute sales by payment type
+        def sum_sales(payment_type: str):
+            # Sum all payments of this type for paid/partial transactions on this date
+            total_payments = SalesPayment.objects.filter(
+                transaction__stall=stall,
+                payment_date__date=target_date,
+                transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                transaction__voided=False,
+                transaction__is_deleted=False,
+                payment_type=payment_type,
+            ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+
+            # Change is always given in cash, so only subtract from cash totals.
+            # Subtract once per transaction (not per payment) to avoid double-counting.
+            if payment_type == "cash":
+                from sales.models import SalesTransaction
+                total_change = SalesTransaction.objects.filter(
+                    stall=stall,
+                    payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                    voided=False,
+                    is_deleted=False,
+                    payments__payment_type="cash",
+                    payments__payment_date__date=target_date,
+                ).distinct().aggregate(
+                    total=Sum("change_amount")
+                )["total"] or Decimal("0")
+                return total_payments - total_change
+
+            return total_payments
+
+        sales = {pt: sum_sales(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]}
+
+        # Get expenses (normal expenses minus reimbursements)
+        normal_expenses = (
+            Expense.objects.filter(
+                stall=stall,
+                expense_date=target_date,
+                is_deleted=False,
+                is_reimbursement=False,
+                payment_method__iexact="cash",
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+        reimbursements = (
+            Expense.objects.filter(
+                stall=stall,
+                expense_date=target_date,
+                is_deleted=False,
+                is_reimbursement=True,
+                payment_method__iexact="cash",
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+        total_expenses = normal_expenses - reimbursements
+
+        # COD from previous day (relative to the target date, not today)
+        cod_info = RemittanceRecord.get_cod_for_date(stall, target_date)
+        cod_amount = Decimal(str(cod_info.get("cod_amount", 0) or 0))
+
         # Expected remittance
         cash_sales = sales["cash"]
         expected = max(Decimal("0"), cash_sales + cod_amount - total_expenses)
@@ -216,6 +493,201 @@ class RemittanceRecordViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="recalculate")
     def recalculate(self, request, pk=None):
+        """
+        Recalculate sales totals and expenses for a not-yet-remitted remittance.
+        This picks up any new sales or expenses added after the remittance was created.
+        POST /remittances/{id}/recalculate/
+        """
+        remittance = self.get_object()
+
+        if remittance.is_remitted:
+            return Response(
+                {"detail": "Cannot recalculate a remittance that has already been marked as remitted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        stall = remittance.stall
+        target_date = remittance.remittance_date
+
+        def sum_sales(payment_type: str):
+            total_payments = SalesPayment.objects.filter(
+                transaction__stall=stall,
+                payment_date__date=target_date,
+                transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                transaction__voided=False,
+                transaction__is_deleted=False,
+                payment_type=payment_type,
+            ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+
+            if payment_type == "cash":
+                from sales.models import SalesTransaction
+                total_change = SalesTransaction.objects.filter(
+                    stall=stall,
+                    payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                    voided=False,
+                    is_deleted=False,
+                    payments__payment_date__date=target_date,
+                ).distinct().aggregate(
+                    total=Sum("change_amount")
+                )["total"] or Decimal("0")
+                return total_payments - total_change
+
+            return total_payments
+
+        sales = {pt: sum_sales(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]}
+
+        # BUG FIX: added payment_method__iexact="cash" to match preview/create,
+        # which only ever deduct cash expenses (since expected_remittance is a
+        # cash-only calculation).
+        normal_expenses = (
+            Expense.objects.filter(
+                stall=stall,
+                expense_date=target_date,
+                is_deleted=False,
+                is_reimbursement=False,
+                payment_method__iexact="cash",
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+        reimbursements = (
+            Expense.objects.filter(
+                stall=stall,
+                expense_date=target_date,
+                is_deleted=False,
+                is_reimbursement=True,
+                payment_method__iexact="cash",
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+        total_expenses = normal_expenses - reimbursements
+
+        remittance.total_sales_cash = sales["cash"]
+        remittance.total_sales_gcash = sales["gcash"]
+        remittance.total_sales_credit = sales["credit"]
+        remittance.total_sales_debit = sales["debit"]
+        remittance.total_sales_cheque = sales["cheque"]
+        remittance.total_expenses = total_expenses
+
+        # Calculate client fund deposits for this date, by payment method
+        from clients.models import ClientFundDeposit
+
+        def sum_client_fund(payment_type: str):
+            return (
+                ClientFundDeposit.objects.filter(
+                    deposit_date__date=target_date,
+                    payment_method__iexact=payment_type,
+                ).aggregate(total=Sum("amount"))["total"]
+                or Decimal("0")
+            )
+
+        client_fund = {
+            pt: sum_client_fund(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]
+        }
+
+        remittance.client_fund_deposits_cash = client_fund["cash"]
+        remittance.client_fund_deposits_gcash = client_fund["gcash"]
+        remittance.client_fund_deposits_credit = client_fund["credit"]
+        remittance.client_fund_deposits_debit = client_fund["debit"]
+        remittance.client_fund_deposits_cheque = client_fund["cheque"]
+        # total_client_fund_deposits is auto-recomputed in the model's save()
+        # from the breakdown fields above (and respects the cash override),
+        # so it doesn't need to be set manually here anymore.
+
+        remittance.save()
+
+        serializer = self.get_serializer(remittance)
+        return Response(serializer.data)
+        """
+        Recalculate sales totals and expenses for a not-yet-remitted remittance.
+        This picks up any new sales or expenses added after the remittance was created.
+        POST /remittances/{id}/recalculate/
+        """
+        remittance = self.get_object()
+
+        if remittance.is_remitted:
+            return Response(
+                {"detail": "Cannot recalculate a remittance that has already been marked as remitted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        stall = remittance.stall
+        target_date = remittance.remittance_date
+
+        def sum_sales(payment_type: str):
+            total_payments = SalesPayment.objects.filter(
+                transaction__stall=stall,
+                payment_date__date=target_date,
+                transaction__payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                transaction__voided=False,
+                transaction__is_deleted=False,
+                payment_type=payment_type,
+            ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+
+            if payment_type == "cash":
+                from sales.models import SalesTransaction
+                total_change = SalesTransaction.objects.filter(
+                    stall=stall,
+                    payment_status__in=[PaymentStatus.PAID, PaymentStatus.PARTIAL],
+                    voided=False,
+                    is_deleted=False,
+                    payments__payment_date__date=target_date,
+                ).distinct().aggregate(
+                    total=Sum("change_amount")
+                )["total"] or Decimal("0")
+                return total_payments - total_change
+
+            return total_payments
+
+        sales = {pt: sum_sales(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]}
+
+        normal_expenses = (
+            Expense.objects.filter(
+                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=False
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+        reimbursements = (
+            Expense.objects.filter(
+                stall=stall, expense_date=target_date, is_deleted=False, is_reimbursement=True
+            ).aggregate(total=Sum("paid_amount"))["total"]
+            or Decimal("0")
+        )
+        total_expenses = normal_expenses - reimbursements
+
+        remittance.total_sales_cash = sales["cash"]
+        remittance.total_sales_gcash = sales["gcash"]
+        remittance.total_sales_credit = sales["credit"]
+        remittance.total_sales_debit = sales["debit"]
+        remittance.total_sales_cheque = sales["cheque"]
+        remittance.total_expenses = total_expenses
+
+        # Calculate client fund deposits for this date, by payment method
+        from clients.models import ClientFundDeposit
+
+        def sum_client_fund(payment_type: str):
+            return (
+                ClientFundDeposit.objects.filter(
+                    deposit_date__date=target_date,
+                    payment_method__iexact=payment_type,
+                ).aggregate(total=Sum("amount"))["total"]
+                or Decimal("0")
+            )
+
+        client_fund = {
+            pt: sum_client_fund(pt) for pt in ["cash", "gcash", "credit", "debit", "cheque"]
+        }
+
+        remittance.client_fund_deposits_cash = client_fund["cash"]
+        remittance.client_fund_deposits_gcash = client_fund["gcash"]
+        remittance.client_fund_deposits_credit = client_fund["credit"]
+        remittance.client_fund_deposits_debit = client_fund["debit"]
+        remittance.client_fund_deposits_cheque = client_fund["cheque"]
+        remittance.total_client_fund_deposits = sum(client_fund.values())
+
+        remittance.save()
+
+        serializer = self.get_serializer(remittance)
+        return Response(serializer.data)
         """
         Recalculate sales totals and expenses for a not-yet-remitted remittance.
         This picks up any new sales or expenses added after the remittance was created.

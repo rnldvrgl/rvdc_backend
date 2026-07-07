@@ -23,7 +23,20 @@ class RemittanceRecord(models.Model):
     total_sales_debit = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_sales_cheque = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
-    # Client fund deposits (recorded as remittable income but separate from cash sales)
+    # Client fund deposits (recorded as remittable income but separate from cash sales),
+    # broken down by payment method — mirrors the sales breakdown above.
+    client_fund_deposits_cash = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    client_fund_deposits_gcash = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    client_fund_deposits_credit = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    client_fund_deposits_debit = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    client_fund_deposits_cheque = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    # Manual override for cash client fund deposits only (the only method that
+    # feeds into expected_remittance). Null means "use the live/stored figure".
+    client_fund_deposits_cash_override = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    # Retained for backward compatibility — kept in sync with the sum of the
+    # breakdown fields above on save (see save() override below).
     total_client_fund_deposits = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
     # Expense deductions
@@ -56,6 +69,24 @@ class RemittanceRecord(models.Model):
     def __str__(self):
         return f"{self.stall.name} - {self.created_at}"
 
+    def save(self, *args, **kwargs):
+        # Keep total_client_fund_deposits in sync with the breakdown fields,
+        # using the cash override if one is set (it represents the corrected
+        # cash figure, so the total should reflect that correction too).
+        cash_component = (
+            self.client_fund_deposits_cash_override
+            if self.client_fund_deposits_cash_override is not None
+            else self.client_fund_deposits_cash
+        )
+        self.total_client_fund_deposits = (
+            (cash_component or Decimal("0"))
+            + (self.client_fund_deposits_gcash or Decimal("0"))
+            + (self.client_fund_deposits_credit or Decimal("0"))
+            + (self.client_fund_deposits_debit or Decimal("0"))
+            + (self.client_fund_deposits_cheque or Decimal("0"))
+        )
+        super().save(*args, **kwargs)
+
     @property
     def total_collected(self):
         return (
@@ -78,19 +109,32 @@ class RemittanceRecord(models.Model):
         return declared - expected
 
     @property
+    def client_fund_deposits_cash_effective(self):
+        """Cash client fund deposits, respecting the manual override if set."""
+        if self.client_fund_deposits_cash_override is not None:
+            return self.client_fund_deposits_cash_override
+        return self.client_fund_deposits_cash or Decimal("0")
+
+    @property
     def expected_remittance(self):
         """
         Compute expected remittance.
         For non-remitted remittances: compute live from current sales/expenses.
         For remitted remittances: use stored snapshot.
+
+        BUG FIX: this previously omitted client fund deposits entirely in
+        both branches. Only cash client fund deposits are included, since
+        that's the only portion physically sitting in the drawer.
         """
         # For already-remitted records, use stored values (snapshots at remittance time)
         if self.is_remitted:
             collected_cash = self.total_sales_cash or Decimal("0")
             expenses = self.total_expenses or Decimal("0")
+            client_fund_cash = self.client_fund_deposits_cash_effective
         else:
             # For pending remittances, compute live to ensure freshness for exports
             from sales.models import SalesPayment, PaymentStatus, SalesTransaction
+            from clients.models import ClientFundDeposit
 
             target_date = self.remittance_date or (self.created_at.date() if self.created_at else None)
             if not target_date:
@@ -146,6 +190,18 @@ class RemittanceRecord(models.Model):
             )
             expenses = normal_expenses - reimbursements
 
+            # Compute live client fund deposits (cash only), respecting override
+            if self.client_fund_deposits_cash_override is not None:
+                client_fund_cash = self.client_fund_deposits_cash_override
+            else:
+                client_fund_cash = (
+                    ClientFundDeposit.objects.filter(
+                        deposit_date__date=target_date,
+                        payment_method__iexact="cash",
+                    ).aggregate(total=Sum("amount"))["total"]
+                    or Decimal("0")
+                )
+
         # Use remittance_date (business date) to look up the previous COD
         target = self.remittance_date or (self.created_at.date() if self.created_at else None)
         if target:
@@ -154,7 +210,7 @@ class RemittanceRecord(models.Model):
             cod_info = RemittanceRecord.get_cod_for_today(self.stall)
         cod_yesterday = Decimal(cod_info.get("cod_amount", 0) or 0)
 
-        return max(0, collected_cash + cod_yesterday - expenses)
+        return max(0, collected_cash + cod_yesterday + client_fund_cash - expenses)
 
     @classmethod
     def get_cod_for_date(cls, stall: Stall, target_date) -> dict:
