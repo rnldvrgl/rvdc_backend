@@ -21,7 +21,7 @@ echo -e "${GREEN}✓ Backup created${NC}"
 # Update the config
 cat > /etc/nginx/sites-available/rvdc_backend << 'EOF'
 server {
-    server_name api-rvdcrefandaircon.duckdns.org 206.189.157.123;
+    server_name api.rvdc.online 38.75.136.15;
 
     # Increase upload size limit for profile images
     client_max_body_size 10M;
@@ -54,7 +54,7 @@ server {
     }
 
     location / {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:55001;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -72,20 +72,20 @@ server {
     }
 
     listen 443 ssl; # managed by Certbot
-    ssl_certificate /etc/letsencrypt/live/api-rvdcrefandaircon.duckdns.org/fullchain.pem; # managed by Certbot
-    ssl_certificate_key /etc/letsencrypt/live/api-rvdcrefandaircon.duckdns.org/privkey.pem; # managed by Certbot
+    #ssl_certificate /etc/letsencrypt/live/api.rvdc.online/fullchain.pem; # managed by Certbot
+    #ssl_certificate_key /etc/letsencrypt/live/api.rvdc.online/privkey.pem; # managed by Certbot
     include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
 }
 
 # HTTP redirect to HTTPS
 server {
-    if ($host = api-rvdcrefandaircon.duckdns.org) {
+    if ($host = api.rvdc.online) {
         return 301 https://$host$request_uri;
     }
 
     listen 80;
-    server_name api-rvdcrefandaircon.duckdns.org 206.189.157.123;
+    server_name api.rvdc.online 38.75.136.15;
     return 404;
 }
 EOF
