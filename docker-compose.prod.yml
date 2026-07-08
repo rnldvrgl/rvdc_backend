@@ -23,7 +23,7 @@ services:
             - /var/log:/host-logs
             # - /srv/rvdc_backend/go2rtc:/go2rtc-config
         ports:
-            - "8000:8000"
+            - "127.0.0.1:8000:8000"
         depends_on:
             db:
                 condition: service_healthy
