@@ -30,7 +30,7 @@ FROM base AS development
 
 COPY . .
 
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+CMD ["python", "manage.py", "runserver", "0.0.0.0:55001"]
 
 # ---- Production image ----
 FROM base AS production
@@ -41,4 +41,4 @@ RUN sed -i 's/\r//' /usr/src/app/entrypoint.sh && chmod +x /usr/src/app/entrypoi
 
 ENTRYPOINT ["/usr/src/app/entrypoint.sh"]
 
-CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "--access-log", "-", "--verbosity", "1", "config.asgi:application"]
+CMD ["daphne", "-b", "0.0.0.0", "-p", "55001", "--access-log", "-", "--verbosity", "1", "config.asgi:application"]

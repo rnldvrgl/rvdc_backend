@@ -298,7 +298,7 @@ echo -e "${GREEN}                      ${ICON_SUCCESS} DEPLOYMENT COMPLETE ${ICO
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════════════════════${NC}"
 echo ""
 header "Services are running at:"
-echo -e "  ${GREEN}•${NC} API: ${CYAN}http://localhost:8000${NC}"
+echo -e "  ${GREEN}•${NC} API: ${CYAN}http://localhost:55001${NC}"
 echo -e "  ${GREEN}•${NC} Database: ${CYAN}localhost:5432${NC}"
 echo ""
 header "Useful commands:"

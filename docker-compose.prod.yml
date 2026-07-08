@@ -9,21 +9,21 @@ services:
                 "-b",
                 "0.0.0.0",
                 "-p",
-                "8000",
+                "55001",
                 "--access-log",
                 "-",
                 "--verbosity",
                 "1",
                 "config.asgi:application",
             ]
+        ports:
+            - "55001:55001"
         volumes:
             - /srv/rvdc_backend/staticfiles:/usr/src/app/staticfiles
             - /srv/rvdc_backend/media:/usr/src/app/media
             - /var/run/docker.sock:/var/run/docker.sock
             - /var/log:/host-logs
             # - /srv/rvdc_backend/go2rtc:/go2rtc-config
-        ports:
-            - "127.0.0.1:8000:8000"
         depends_on:
             db:
                 condition: service_healthy
