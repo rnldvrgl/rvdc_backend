@@ -17,7 +17,8 @@ from django.utils import timezone
 class Command(BaseCommand):
     help = (
         "Seed sample data across all local project models. "
-        "This command first runs create_default_users, then tops up each model with sample rows."
+        "This command first runs create_default_users, then tops up each model with sample rows. "
+        "DEV/LOCAL USE ONLY — refuses to run when DEBUG=False."
     )
 
     def add_arguments(self, parser):
@@ -44,8 +45,38 @@ class Command(BaseCommand):
             action="store_true",
             help="Build and validate sample payloads but do not save records.",
         )
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help=(
+                "DANGEROUS: override the production safety guard and run anyway, "
+                "even when DEBUG=False. Only use this if you are absolutely certain "
+                "you want to inject sample data into this database."
+            ),
+        )
 
     def handle(self, *args, **options):
+        # --- Production safety guard ---------------------------------------
+        force = bool(options.get("force"))
+        if not settings.DEBUG and not force:
+            self.stdout.write(self.style.ERROR(
+                "\n"
+                "seed_database refused to run: DEBUG=False (this looks like production).\n"
+                "This command injects fabricated sample data into every local model and\n"
+                "is intended for local/dev environments only.\n\n"
+                "If you are ABSOLUTELY sure you want to run this against the current\n"
+                "database, re-run with --force. This is not recommended.\n"
+            ))
+            return
+
+        if not settings.DEBUG and force:
+            self.stdout.write(self.style.WARNING(
+                "\n"
+                "⚠️  --force passed with DEBUG=False. Proceeding anyway.\n"
+                "⚠️  This WILL create fake sample rows in what appears to be production.\n"
+            ))
+        # ---------------------------------------------------------------------
+
         self.per_model = max(1, int(options["per_model"]))
         self.only_apps = set(options.get("only_app") or [])
         self.skip_apps = set(options.get("skip_app") or [])

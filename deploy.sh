@@ -255,22 +255,36 @@ echo ""
 # =============================================================================
 step "Step 10: ${ICON_CHECK} Running health checks..."
 
-# Update nginx config if changed
-NGINX_SRC="${PROJECT_DIR}/nginx_config.conf"
+# Render nginx config from template using variables in .env.production
+NGINX_TEMPLATE="${PROJECT_DIR}/nginx_config.conf.template"
 NGINX_DEST="/etc/nginx/sites-available/rvdc_backend"
-if [ -f "${NGINX_SRC}" ]; then
-    if ! diff -q "${NGINX_SRC}" "${NGINX_DEST}" > /dev/null 2>&1; then
+
+if [ -f "${NGINX_TEMPLATE}" ]; then
+    log "Rendering nginx config from template..."
+
+    # Export vars from .env.production so envsubst can see them
+    set -a
+    source "${ENV_FILE}"
+    set +a
+    export PROJECT_DIR
+
+    RENDERED=$(mktemp)
+    envsubst '${API_DOMAIN} ${SERVER_IP} ${API_PORT} ${PROJECT_DIR}' < "${NGINX_TEMPLATE}" > "${RENDERED}"
+
+    if ! diff -q "${RENDERED}" "${NGINX_DEST}" > /dev/null 2>&1; then
         log "Nginx config changed, updating..."
-        cp "${NGINX_SRC}" "${NGINX_DEST}"
+        cp "${RENDERED}" "${NGINX_DEST}"
         if nginx -t > /dev/null 2>&1; then
             systemctl reload nginx
             success "Nginx config updated and reloaded"
         else
-            warning "Nginx config test failed! Check syntax manually."
+            err "Nginx config test failed! Reverting."
+            nginx -t
         fi
     else
         log "Nginx config unchanged"
     fi
+    rm -f "${RENDERED}"
 fi
 
 echo ""

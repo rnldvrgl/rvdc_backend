@@ -4,7 +4,7 @@ services:
         volumes:
             - postgres_data:/var/lib/postgresql/data
         healthcheck:
-            test: ["CMD-SHELL", "pg_isready -U $DB_USER -d $DB_NAME"]
+            test: ["CMD-SHELL", "pg_isready -U $${DB_USER:-rvdc_owner} -d $${DB_NAME:-rvdc_db}"]
             interval: 10s
             timeout: 5s
             retries: 5
@@ -25,13 +25,7 @@ services:
                 condition: service_healthy
             # redis:
             #     condition: service_healthy
-        ports:
-            - "55001:55001"
-        volumes:
-            - /srv/rvdc_backend/media:/app/media  # Map media files to host
-            - /srv/rvdc_backend/staticfiles:/app/staticfiles  # Map static files to host
-            - /srv/rvdc_backend/backups:/app/backups  # Database backups
-            # - /srv/rvdc_backend/go2rtc:/go2rtc-config  # Write go2rtc.yaml for camera sync
+
 
     # go2rtc:
     #     image: alexxit/go2rtc:latest

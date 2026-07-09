@@ -30,7 +30,7 @@ FROM base AS development
 
 COPY . .
 
-CMD ["python", "manage.py", "runserver", "0.0.0.0:55001"]
+CMD ["python", "manage.py", "runserver", "0.0.0.0:56001"]
 
 # ---- Production image ----
 FROM base AS production
