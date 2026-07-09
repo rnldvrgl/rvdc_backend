@@ -171,7 +171,7 @@ sleep 5
 # Check if database is ready
 RETRIES=30
 echo -ne "${GRAY}[$(timestamp)]${NC} ${CYAN}${ICON_CLOCK}${NC} Checking database health"
-until ${COMPOSE} exec -T db pg_isready -U postgres > /dev/null 2>&1 || [ $RETRIES -eq 0 ]; do
+ until ${COMPOSE} exec -T db pg_isready -U "${POSTGRES_USER:-rvdc_owner}" -d "${POSTGRES_DB:-rvdc_db}" > /dev/null 2>&1 || [ $RETRIES -eq 0 ]; do
     echo -n "."
     sleep 1
     RETRIES=$((RETRIES - 1))
