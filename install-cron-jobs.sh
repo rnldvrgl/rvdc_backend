@@ -520,11 +520,12 @@ echo -e "${YELLOW}Installing cron jobs...${NC}"
 # Get existing crontab (if any)
 TEMP_CRON=$(mktemp)
 if crontab -l > /dev/null 2>&1; then
-    crontab -l \
-        | sed '/^# RVDC Attendance & Payroll Management Cron Jobs/,/^# END RVDC Cron Jobs/d' \
-        | grep -v '/opt/cron-scripts/' \
-        | grep -v '^CRON_TZ=Asia/Manila$' \
-        | grep -v '^TZ=Asia/Manila$' > "$TEMP_CRON"
+crontab -l \
+    | sed '/^# RVDC Attendance & Payroll Management Cron Jobs/,/^# END RVDC Cron Jobs$/d' \
+    | sed '/^# ============================================================================$/d' \
+    | sed '/^CRON_TZ=Asia\/Manila$/d' \
+    | sed '/^TZ=Asia\/Manila$/d' \
+    | grep -v '/opt/cron-scripts/' > "$TEMP_CRON"
 fi
 
 # Add RVDC cron jobs
