@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import RemittanceRecord, CashDenominationBreakdown
 
-
+# test deploy using comment
 @admin.register(RemittanceRecord)
 class RemittanceRecordAdmin(admin.ModelAdmin):
     list_display = (

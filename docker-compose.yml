@@ -26,7 +26,7 @@ services:
             # redis:
             #     condition: service_healthy
         ports:
-            - "8000:8000"
+            - "55001:55001"
         volumes:
             - /srv/rvdc_backend/media:/app/media  # Map media files to host
             - /srv/rvdc_backend/staticfiles:/app/staticfiles  # Map static files to host
