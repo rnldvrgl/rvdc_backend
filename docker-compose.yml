@@ -28,7 +28,14 @@ services:
 
   celery:
     image: rnldvrgl/rvdc_backend:latest
-    command: celery -A config worker -l info
+    command:
+      - celery
+      - -A
+      - config
+      - worker
+      - -l
+      - info
+      - --pool=solo
     env_file:
       - .env.production
     volumes:
