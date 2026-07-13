@@ -29,11 +29,15 @@ services:
   celery:
     image: rnldvrgl/rvdc_backend:latest
     command: celery -A config worker -l info
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+    env_file:
+      - .env.production
+    volumes:
+      - /srv/rvdc_backend/staticfiles:/usr/src/app/staticfiles
+      - /srv/rvdc_backend/media:/usr/src/app/media
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/log:/host-logs
+      - /srv/rvdc_backend/go2rtc:/go2rtc-config
+    restart: unless-stopped
 
   celery-beat:
     image: rnldvrgl/rvdc_backend:latest
