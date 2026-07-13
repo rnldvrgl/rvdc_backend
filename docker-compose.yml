@@ -1,41 +1,52 @@
 services:
-    db:
-        image: postgres:16
-        volumes:
-            - postgres_data:/var/lib/postgresql/data
-        healthcheck:
-            test: ["CMD-SHELL", "pg_isready -U $${DB_USER:-rvdc_owner} -d $${DB_NAME:-rvdc_db}"]
-            interval: 10s
-            timeout: 5s
-            retries: 5
+  db:
+    image: postgres:16
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${DB_USER:-rvdc_owner} -d $${DB_NAME:-rvdc_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-    # redis:
-    #     image: redis:7-alpine
-    #     restart: unless-stopped
-    #     healthcheck:
-    #         test: ["CMD", "redis-cli", "ping"]
-    #         interval: 10s
-    #         timeout: 5s
-    #         retries: 5
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-    api:
-        image: rnldvrgl/rvdc_backend:latest
-        depends_on:
-            db:
-                condition: service_healthy
-            # redis:
-            #     condition: service_healthy
+  api:
+    image: rnldvrgl/rvdc_backend:latest
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
+  celery:
+    image: rnldvrgl/rvdc_backend:latest
+    command: celery -A config worker -l info
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
-    # go2rtc:
-    #     image: alexxit/go2rtc:latest
-    #     restart: unless-stopped
-    #     volumes:
-    #         - /srv/rvdc_backend/go2rtc:/config  # Persist go2rtc config / state
+  celery-beat:
+    image: rnldvrgl/rvdc_backend:latest
+    command: celery -A config beat -l info
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
-    postgres_data:
+  postgres_data:
 
 networks:
-    default:
-        name: rvdc_net
+  default:
+    name: rvdc_net

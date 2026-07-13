@@ -31,6 +31,8 @@ CSRF_TRUSTED_ORIGINS = _csv_env("CSRF_TRUSTED_ORIGINS")
 
 INSTALLED_APPS = [
     "daphne",
+    # Celery
+    "django_celery_beat",
     # Core Django
     "django.contrib.admin",
     "django.contrib.auth",
@@ -45,6 +47,7 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt.token_blacklist",
     "channels",
     # Local apps
+    "core",
     "authentication",
     "users",
     "clients",
@@ -239,23 +242,33 @@ CACHES = {
 # CHANNEL LAYERS (WebSocket support)
 # ------------------------------------------------------------------------------
 
-# CHANNEL_LAYERS = {
-#     "default": {
-#         "BACKEND": "channels_redis.core.RedisChannelLayer",
-#         "CONFIG": {
-#             "hosts": [config("REDIS_URL", default="redis://redis:6379/0")],
-#         },
-#     }
-# }
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [config("REDIS_URL", default="redis://redis:6379/0")],
+        },
+    }
+}
 
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels.layers.InMemoryChannelLayer",  # ← no Redis dependency,
-                                                             #   no socket timeout bug,
-                                                             #   fine for single worker
     }
 }
 
+# Celery
+CELERY_BROKER_URL = config(
+    "CELERY_BROKER_URL",
+    default="redis://localhost:6379/0",
+)
+
+CELERY_RESULT_BACKEND = CELERY_BROKER_URL
+
+CELERY_TIMEZONE = "Asia/Manila"
+CELERY_ENABLE_UTC = False
+
+CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 # ------------------------------------------------------------------------------
 # WEB PUSH (VAPID)
 # ------------------------------------------------------------------------------

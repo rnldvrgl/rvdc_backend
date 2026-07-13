@@ -1,89 +1,80 @@
 services:
-    api:
-        image: rnldvrgl/rvdc_backend:latest
-        env_file:
-            - .env.production
-        command:
-            [
-                "daphne",
-                "-b",
-                "0.0.0.0",
-                "-p",
-                "55001",
-                "--access-log",
-                "-",
-                "--verbosity",
-                "1",
-                "config.asgi:application",
-            ]
-        ports:
-            - "55001:55001"
-        volumes:
-            - /srv/rvdc_backend/staticfiles:/usr/src/app/staticfiles
-            - /srv/rvdc_backend/media:/usr/src/app/media
-            - /var/run/docker.sock:/var/run/docker.sock
-            - /var/log:/host-logs
-            # - /srv/rvdc_backend/go2rtc:/go2rtc-config
-        depends_on:
-            db:
-                condition: service_healthy
-            # redis:
-            #     condition: service_healthy
-        restart: unless-stopped
-        deploy:
-            resources:
-                limits:
-                    memory: 1G
+  api:
+    env_file:
+      - .env.production
+    command:
+      [
+        "daphne",
+        "-b",
+        "0.0.0.0",
+        "-p",
+        "55001",
+        "--access-log",
+        "-",
+        "--verbosity",
+        "1",
+        "config.asgi:application",
+      ]
+    ports:
+      - "55001:55001"
+    volumes:
+      - /srv/rvdc_backend/staticfiles:/usr/src/app/staticfiles
+      - /srv/rvdc_backend/media:/usr/src/app/media
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/log:/host-logs
+      - /srv/rvdc_backend/go2rtc:/go2rtc-config
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
-    # redis:
-    #     image: redis:7-alpine
-    #     restart: unless-stopped
-    #     healthcheck:
-    #         test: ["CMD", "redis-cli", "ping"]
-    #         interval: 10s
-    #         timeout: 5s
-    #         retries: 5
-    #     deploy:
-    #         resources:
-    #             limits:
-    #                 memory: 64M
+  celery:
+    env_file:
+      - .env.production
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
-    db:
-        image: postgres:16
-        env_file:
-            - .env.production
-        volumes:
-            - postgres_data:/var/lib/postgresql/data
-        command:
-            [
-                "postgres",
-                "-c", "shared_buffers=128MB",
-                "-c", "work_mem=4MB",
-                "-c", "maintenance_work_mem=64MB",
-                "-c", "effective_cache_size=256MB",
-                "-c", "max_connections=50",
-            ]
-        healthcheck:
-            test: ["CMD-SHELL", "pg_isready -U $${DB_USER:-rvdc_owner} -d $${DB_NAME:-rvdc_db}"]
-            interval: 10s
-            timeout: 5s
-            retries: 5
-        restart: unless-stopped
-        deploy:
-            resources:
-                limits:
-                    memory: 512M
+  celery-beat:
+    env_file:
+      - .env.production
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
-    # go2rtc:
-    #     image: alexxit/go2rtc:latest
-    #     restart: unless-stopped
-    #     network_mode: host
-    #     volumes:
-    #         - /srv/rvdc_backend/go2rtc:/config
-    #     deploy:
-    #         resources:
-    #             limits:
-    #                 memory: 128M
+  db:
+    env_file:
+      - .env.production
+    command:
+      [
+        "postgres",
+        "-c", "shared_buffers=128MB",
+        "-c", "work_mem=4MB",
+        "-c", "maintenance_work_mem=64MB",
+        "-c", "effective_cache_size=256MB",
+        "-c", "max_connections=50",
+      ]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
-volumes:
-    postgres_data:
+  redis:
+    restart: unless-stopped
+
+  go2rtc:
+    image: alexxit/go2rtc:latest
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - /srv/rvdc_backend/go2rtc:/config
+    deploy:
+      resources:
+        limits:
+          memory: 128M

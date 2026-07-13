@@ -34,7 +34,6 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from payroll.models import WeeklyPayroll
 
-
 class Command(BaseCommand):
     help = 'Refresh payroll records from updated attendance data'
 
@@ -162,125 +161,115 @@ class Command(BaseCommand):
 
     def _verify_payrolls(self, payrolls, verbose):
         """Verify payroll records match attendance data."""
-        from attendance.models import DailyAttendance
+        from attendance.models import DailyAttendance, OvertimeRequest
 
         passed = 0
         warned = 0
         issues = []
 
-        self.stdout.write('\n' + '-' * 80)
+        self.stdout.write("\n" + "-" * 80)
 
         for payroll in payrolls:
             payroll_issues = []
-            tolerance = Decimal('0.01')
+            tolerance = Decimal("0.01")
 
             if verbose:
-                self.stdout.write(f'\nPayroll ID: {payroll.id}')
-                self.stdout.write(f'Employee: {payroll.employee.get_full_name()}')
-                self.stdout.write(f'Week: {payroll.week_start} to {payroll.week_end}')
-                self.stdout.write(f'Status: {payroll.status}')
+                self.stdout.write(f"\nPayroll ID: {payroll.id}")
+                self.stdout.write(f"Employee: {payroll.employee.get_full_name()}")
+                self.stdout.write(f"Week: {payroll.week_start} to {payroll.week_end}")
+                self.stdout.write(f"Status: {payroll.status}")
 
-            # Get attendance for this payroll period
             attendance_qs = DailyAttendance.objects.filter(
                 employee=payroll.employee,
                 date__gte=payroll.week_start,
                 date__lte=payroll.week_end,
+                status="APPROVED",
                 is_deleted=False,
-                status='APPROVED',
             )
 
-            # Calculate expected hours from attendance
-            expected_regular = Decimal('0.00')
-            expected_overtime = Decimal('0.00')
-            expected_late_penalties = Decimal('0.00')
+            expected_regular = Decimal("0.00")
+            expected_late_penalties = Decimal("0.00")
 
             for attendance in attendance_qs:
-                paid_hours = Decimal(attendance.paid_hours or 0)
-                if paid_hours > Decimal('8.00'):
-                    expected_regular += Decimal('8.00')
-                    expected_overtime += (paid_hours - Decimal('8.00'))
-                else:
-                    expected_regular += paid_hours
+                expected_regular += Decimal(attendance.paid_hours or 0)
 
                 if attendance.late_penalty_amount:
                     expected_late_penalties += Decimal(attendance.late_penalty_amount)
 
-            # Compare with stored values
+            expected_ot = Decimal("0.00")
+
+            for request in OvertimeRequest.objects.filter(
+                employee=payroll.employee,
+                approved=True,
+                date__gte=payroll.week_start,
+                date__lte=payroll.week_end,
+            ):
+                expected_ot += Decimal(
+                    (request.time_end - request.time_start).total_seconds()
+                ) / Decimal("3600")
+
             stored_regular = Decimal(str(payroll.regular_hours))
-            stored_overtime = Decimal(str(payroll.overtime_hours))
+            stored_ot = Decimal(str(payroll.approved_ot_hours))
 
             if abs(expected_regular - stored_regular) > tolerance:
                 payroll_issues.append(
-                    f'Regular hours mismatch: {expected_regular}h (attendance) vs '
-                    f'{stored_regular}h (payroll)'
+                    f"Regular hours mismatch: {expected_regular}h vs {stored_regular}h"
                 )
 
-            if abs(expected_overtime - stored_overtime) > tolerance:
+            if abs(expected_ot - stored_ot) > tolerance:
                 payroll_issues.append(
-                    f'Overtime hours mismatch: {expected_overtime}h (attendance) vs '
-                    f'{stored_overtime}h (payroll)'
+                    f"Approved OT mismatch: {expected_ot}h vs {stored_ot}h"
                 )
 
-            # Check if late penalties are in deductions
-            if expected_late_penalties > 0:
-                # Check if late penalties exist in deduction records
-                has_late_penalty = payroll.deduction_items.filter(
-                    category='penalty'
-                ).exists()
+            stored_late = Decimal(
+                str((payroll.deductions or {}).get("late_penalty", 0))
+            )
 
-                if not has_late_penalty and expected_late_penalties > tolerance:
-                    payroll_issues.append(
-                        f'Missing late penalties: ₱{expected_late_penalties} expected'
-                    )
+            if abs(expected_late_penalties - stored_late) > tolerance:
+                payroll_issues.append(
+                    f"Late penalty mismatch: ₱{expected_late_penalties} vs ₱{stored_late}"
+                )
 
             if verbose and not payroll_issues:
-                self.stdout.write(f'Regular Hours: {stored_regular}h (matches attendance)')
-                self.stdout.write(f'Overtime Hours: {stored_overtime}h (matches attendance)')
-                if expected_late_penalties > 0:
-                    self.stdout.write(f'Late Penalties: ₱{expected_late_penalties}')
+                self.stdout.write(f"Regular Hours: {stored_regular}h")
+                self.stdout.write(f"Approved OT: {stored_ot}h")
+                self.stdout.write(f"Late Penalty: ₱{stored_late}")
 
             if payroll_issues:
                 warned += 1
-                issues.extend([f"Payroll {payroll.id}: {issue}" for issue in payroll_issues])
+                issues.extend(
+                    [f"Payroll {payroll.id}: {issue}" for issue in payroll_issues]
+                )
+
                 if verbose:
-                    self.stdout.write(self.style.WARNING('\n⚠️  Issues found:'))
+                    self.stdout.write(self.style.WARNING("\n⚠ Issues found:"))
                     for issue in payroll_issues:
-                        self.stdout.write(self.style.WARNING(f'   - {issue}'))
+                        self.stdout.write(self.style.WARNING(f"   - {issue}"))
             else:
                 passed += 1
+
                 if verbose:
-                    self.stdout.write(self.style.SUCCESS('\n✅ OK'))
+                    self.stdout.write(self.style.SUCCESS("\n✅ OK"))
 
             if verbose:
-                self.stdout.write('-' * 80)
+                self.stdout.write("-" * 80)
 
-        # Summary
-        self.stdout.write(self.style.SUCCESS('\n' + '=' * 80))
-        self.stdout.write(self.style.SUCCESS('VERIFICATION SUMMARY'))
-        self.stdout.write(self.style.SUCCESS('=' * 80))
-        self.stdout.write(f'Total Checked: {passed + warned}')
-        self.stdout.write(self.style.SUCCESS(f'Passed: {passed} ✅'))
-        self.stdout.write(self.style.WARNING(f'Need Refresh: {warned} ⚠️'))
+        self.stdout.write(self.style.SUCCESS("\n" + "=" * 80))
+        self.stdout.write(self.style.SUCCESS("VERIFICATION SUMMARY"))
+        self.stdout.write(self.style.SUCCESS("=" * 80))
+        self.stdout.write(f"Total Checked: {passed + warned}")
+        self.stdout.write(self.style.SUCCESS(f"Passed: {passed} ✅"))
+        self.stdout.write(self.style.WARNING(f"Need Refresh: {warned} ⚠️"))
 
         if issues:
-            self.stdout.write(self.style.WARNING('\nIssues Found (need refresh):'))
-            for issue in issues[:20]:  # Show first 20
-                self.stdout.write(self.style.WARNING(f'  - {issue}'))
+            self.stdout.write(self.style.WARNING("\nIssues Found:"))
+            for issue in issues[:20]:
+                self.stdout.write(self.style.WARNING(f"  - {issue}"))
+
             if len(issues) > 20:
-                self.stdout.write(f"  ... and {len(issues) - 20} more issues")
+                self.stdout.write(f"  ... and {len(issues)-20} more")
 
-        if warned > 0:
-            self.stdout.write('\n' + '=' * 80)
-            self.stdout.write('RECOMMENDATION')
-            self.stdout.write('=' * 80)
-            self.stdout.write('Issues detected. To refresh payroll, run:')
-            self.stdout.write('  python manage.py refresh_payroll_from_attendance --dry-run')
-            self.stdout.write('\nThen apply refresh with:')
-            self.stdout.write('  python manage.py refresh_payroll_from_attendance')
-        else:
-            self.stdout.write(self.style.SUCCESS('\n🎉 All payroll records match attendance!'))
-
-        self.stdout.write(self.style.SUCCESS('=' * 80 + '\n'))
+        self.stdout.write(self.style.SUCCESS("=" * 80 + "\n"))
 
     def _refresh_payrolls(self, payrolls, verbose, dry_run):
         """Refresh payroll records from attendance."""
@@ -294,7 +283,7 @@ class Command(BaseCommand):
             try:
                 # Store old values
                 old_regular = payroll.regular_hours
-                old_overtime = payroll.overtime_hours
+                old_overtime = payroll.approved_ot_hours
                 old_gross = payroll.gross_pay
                 old_net = payroll.net_pay
 
@@ -313,15 +302,12 @@ class Command(BaseCommand):
                         # Recompute from attendance
                         payroll.compute_from_daily_attendance()
 
-                        # Recreate deduction records (includes late penalties)
-                        payroll.create_deduction_records()
-
                         # Save updated payroll
                         payroll.save()
                         payroll.refresh_from_db()
 
                         new_regular = payroll.regular_hours
-                        new_overtime = payroll.overtime_hours
+                        new_overtime = payroll.approved_ot_hours
                         new_gross = payroll.gross_pay
                         new_net = payroll.net_pay
 
@@ -392,7 +378,25 @@ class Command(BaseCommand):
         """Show detailed payroll breakdown."""
         self.stdout.write('  Breakdown:')
         self.stdout.write(f'    Regular Hours: {payroll.regular_hours}h')
-        self.stdout.write(f'    Overtime Hours: {payroll.overtime_hours}h')
+        self.stdout.write(
+            f"Approved OT Hours: {payroll.approved_ot_hours}h"
+        )
+
+        self.stdout.write(
+            f"Approved OT Pay: ₱{payroll.approved_ot_pay:,.2f}"
+        )
+
+        self.stdout.write(
+            f"Night Diff Hours: {payroll.night_diff_hours}h"
+        )
+
+        self.stdout.write(
+            f"Night Diff Pay: ₱{payroll.night_diff_pay:,.2f}"
+        )
+
+        self.stdout.write(
+            f"Holiday Pay: ₱{payroll.holiday_pay_total:,.2f}"
+        )
         self.stdout.write(f'    Base Pay: ₱{payroll.gross_pay - payroll.allowances - payroll.additional_earnings_total:,.2f}')
         self.stdout.write(f'    Allowances: ₱{payroll.allowances:,.2f}')
         self.stdout.write(f'    Additional Earnings: ₱{payroll.additional_earnings_total:,.2f}')
@@ -400,10 +404,12 @@ class Command(BaseCommand):
         self.stdout.write(f'    Total Deductions: ₱{payroll.total_deductions:,.2f}')
 
         # Show deduction breakdown
-        deductions = payroll.deduction_items.all()
-        if deductions.exists():
-            self.stdout.write('    Deductions:')
-            for deduction in deductions:
-                self.stdout.write(f'      - {deduction.name}: ₱{deduction.employee_share:,.2f}')
+        if payroll.deductions:
+            self.stdout.write("    Deductions:")
 
-        self.stdout.write(f'    Net Pay: ₱{payroll.net_pay:,.2f}')
+            for name, amount in payroll.deductions.items():
+                self.stdout.write(
+                    f"      - {name}: ₱{Decimal(str(amount)):,.2f}"
+                )
+
+        self.stdout.write(f"    Net Pay: ₱{payroll.net_pay:,.2f}")
