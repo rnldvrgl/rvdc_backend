@@ -1,5 +1,6 @@
 from datetime import datetime, time, timedelta
 
+from analytics.ai_insights import generate_business_insights
 from analytics.business_logic import (
     ClientAnalytics,
     DashboardAnalytics,
@@ -793,6 +794,22 @@ class AnalyticsViewSet(ViewSet):
         stall = get_stall_from_request(request)
 
         data = DashboardAnalytics.get_dashboard_summary(start_date, end_date, stall)
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="business-insights")
+    def business_insights(self, request):
+        """
+        Get AI-guided business recommendations.
+
+        Query params:
+        - start_date, end_date, stall
+
+        Returns practical recommendations based on current business snapshot.
+        """
+        start_date, end_date = get_date_range_from_request(request)
+        stall = get_stall_from_request(request)
+
+        data = generate_business_insights(start_date, end_date, stall)
         return Response(data, status=status.HTTP_200_OK)
 
 
