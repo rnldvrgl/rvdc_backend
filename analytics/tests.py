@@ -113,13 +113,13 @@ class AnalyticsTestSetupMixin:
         cls.item1 = Item.objects.create(
             name="Capacitor",
             category=cls.category,
-            price=Decimal("100.00"),
+            cost_price=Decimal("100.00"),
             retail_price=Decimal("150.00"),
         )
         cls.item2 = Item.objects.create(
             name="Motor",
             category=cls.category,
-            price=Decimal("500.00"),
+            cost_price=Decimal("500.00"),
             retail_price=Decimal("750.00"),
         )
 

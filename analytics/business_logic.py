@@ -1071,7 +1071,7 @@ class InventoryAnalytics:
 
         aggregates = qs.aggregate(
             total_items=Count("id"),
-            total_value=Sum(F("quantity") * F("item__price")),
+                total_value=Sum(F("quantity") * F("item__cost_price")),
             out_of_stock=Count("id", filter=Q(quantity=0)),
             low_stock=Count("id", filter=Q(quantity__gt=0, quantity__lte=F("low_stock_threshold"))),
         )
