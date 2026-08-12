@@ -67,7 +67,7 @@ class RevenueAnalytics:
 
         sales_aggregates = sales_qs.aggregate(
             total_sales=Count("id"),
-            total_revenue=Sum(
+            sales_total_revenue=Sum(
                 F("items__quantity") * F("items__final_price_per_unit")
             ),
             avg_sale=Avg(
@@ -85,15 +85,15 @@ class RevenueAnalytics:
 
         service_aggregates = service_qs.aggregate(
             total_services=Count("id"),
-            total_revenue=Sum("total_revenue"),
+            service_total_revenue=Sum("total_revenue"),
             main_stall_revenue=Sum("main_stall_revenue"),
             sub_stall_revenue=Sum("sub_stall_revenue"),
             avg_service=Avg("total_revenue"),
         )
 
         # Combined totals
-        sales_revenue = sales_aggregates["total_revenue"] or Decimal("0")
-        service_revenue = service_aggregates["total_revenue"] or Decimal("0")
+        sales_revenue = sales_aggregates["sales_total_revenue"] or Decimal("0")
+        service_revenue = service_aggregates["service_total_revenue"] or Decimal("0")
         total_revenue = sales_revenue + service_revenue
 
         return {
