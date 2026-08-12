@@ -14,6 +14,7 @@ Tests:
 
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 from clients.models import Client
 from django.test import TransactionTestCase
@@ -727,6 +728,16 @@ class AnalyticsAPITest(AnalyticsTestSetupMixin, APITestCase):
         self.assertIn("services", data)
         self.assertIn("inventory", data)
 
+    def test_business_insights_endpoint(self):
+        """Test AI business insights endpoint."""
+        response = self.client.get("/api/analytics/reports/business-insights/")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("headline", data)
+        self.assertIn("recommendations", data)
+        self.assertTrue(len(data["recommendations"]) > 0)
+
     def test_requires_authentication(self):
         """Test that endpoints require authentication."""
         # Logout
@@ -736,3 +747,45 @@ class AnalyticsAPITest(AnalyticsTestSetupMixin, APITestCase):
         response = self.client.get("/api/analytics/reports/revenue-summary/")
 
         self.assertEqual(response.status_code, 401)
+
+
+class BusinessInsightsAPITest(APITestCase):
+    """Test AI business insights endpoint in isolation."""
+
+    def setUp(self):
+        self.user = CustomUser.objects.create_user(
+            username="insights-admin",
+            password="password123",
+            role="admin",
+        )
+        self.client.force_authenticate(user=self.user)
+
+    @patch("analytics.api.views.generate_business_insights")
+    def test_business_insights_endpoint(self, mock_generate_business_insights):
+        mock_generate_business_insights.return_value = {
+            "source": "rules",
+            "headline": "Business needs follow-up on stock and cash flow",
+            "summary": "Sales at ₱10,000. Outstanding balances at ₱2,000.",
+            "confidence": "medium",
+            "generated_at": "2026-08-05T00:00:00Z",
+            "model": None,
+            "recommendations": [
+                {
+                    "title": "Restock fast-moving items",
+                    "reason": "Low stock can block sales.",
+                    "action": "Reorder top sellers.",
+                    "priority": "high",
+                }
+            ],
+            "risks": ["Inventory gaps may be blocking sales."],
+            "opportunities": ["Reorder and bundle top items."],
+            "snapshot": {},
+        }
+
+        response = self.client.get("/api/analytics/reports/business-insights/")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["source"], "rules")
+        self.assertIn("recommendations", data)
+        self.assertEqual(len(data["recommendations"]), 1)
