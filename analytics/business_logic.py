@@ -580,7 +580,7 @@ class ServiceAnalytics:
             completed=Count("id", filter=Q(status=ServiceStatus.COMPLETED)),
             cancelled=Count("id", filter=Q(status=ServiceStatus.CANCELLED)),
             in_progress=Count("id", filter=Q(status=ServiceStatus.IN_PROGRESS)),
-            total_revenue=Sum("total_revenue"),
+            services_total_revenue=Sum("total_revenue"),
             avg_revenue=Avg("total_revenue"),
         )
 
@@ -603,7 +603,7 @@ class ServiceAnalytics:
             "cancelled": aggregates["cancelled"] or 0,
             "in_progress": aggregates["in_progress"] or 0,
             "completion_rate": float(completion_rate),
-            "total_revenue": float(aggregates["total_revenue"] or 0),
+            "total_revenue": float(aggregates["services_total_revenue"] or 0),
             "average_revenue": float(aggregates["avg_revenue"] or 0),
             "by_type": [
                 {
