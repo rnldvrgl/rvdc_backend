@@ -31,9 +31,12 @@ def _call_ai_provider(snapshot, start_date, end_date, stall):
     if provider == "openai" and not api_key:
         return None
 
-    if provider == "ollama":
+    if provider in {"ollama"}:
         base_url = os.getenv("AI_INSIGHTS_BASE_URL", "http://host.docker.internal:11434/v1").rstrip("/")
         model = os.getenv("AI_INSIGHTS_MODEL", "llama3.1:8b")
+    elif provider in {"openclaw", "crestodian"}:
+        base_url = os.getenv("AI_INSIGHTS_BASE_URL", "http://127.0.0.1:18789/v1").rstrip("/")
+        model = os.getenv("AI_INSIGHTS_MODEL", "openai/gpt-5.6")
     else:
         base_url = os.getenv("AI_INSIGHTS_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         model = os.getenv("AI_INSIGHTS_MODEL", "gpt-4o-mini")
