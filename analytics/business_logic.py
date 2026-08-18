@@ -1221,6 +1221,43 @@ class DashboardAnalytics:
         revenue["unit_cost_deduction"] = float(total_unit_cost)
         revenue["net_income"] = float(net_income)
 
+        # Payment collection rate: prefer period-based but compute here for revenue snapshot
+        from services.models import PaymentStatus as ServicePaymentStatus
+        from services.models import Service
+        total_services_in_period = Service.objects.filter(
+            created_at__date__gte=start_date,
+            created_at__date__lte=end_date,
+        ).count()
+        paid_services = Service.objects.filter(
+            created_at__date__gte=start_date,
+            created_at__date__lte=end_date,
+            payment_status=ServicePaymentStatus.PAID,
+        ).count()
+        if total_services_in_period > 0:
+            collection_rate = (paid_services / total_services_in_period * 100)
+        else:
+            all_total = Service.objects.count()
+            all_paid = Service.objects.filter(payment_status=ServicePaymentStatus.PAID).count()
+            collection_rate = (all_paid / all_total * 100) if all_total > 0 else 0
+
+        revenue["payment_collection_rate"] = float(round(collection_rate, 1))
+
+        # Clients: include new_clients in revenue snapshot (AI previously looked here)
+        from clients.models import Client
+        clients_count = Client.objects.filter(is_deleted=False).count()
+        new_clients = Client.objects.filter(
+            created_at__range=(timezone.make_aware(datetime.combine(start_date, time.min)), timezone.make_aware(datetime.combine(end_date, time.max))),
+            is_deleted=False,
+        ).count()
+        revenue["new_clients"] = int(new_clients)
+        revenue["total_clients"] = int(clients_count)
+
+        # Ensure services includes current active jobs for messaging
+        try:
+            services["active_services"] = int(Service.objects.filter(status__in=["pending", "in_progress", "confirmed"]).count())
+        except Exception:
+            services["active_services"] = int(services.get("in_progress", 0) or 0)
+
         return {
             "revenue": revenue,
             "collections": collections,
