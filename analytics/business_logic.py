@@ -1160,12 +1160,73 @@ class DashboardAnalytics:
         if not end_date:
             end_date = timezone.now().date()
 
+        # Base snapshot
+        revenue = RevenueAnalytics.get_revenue_summary(start_date, end_date, stall)
+        collections = PaymentAnalytics.get_collection_summary(start_date, end_date, stall)
+        outstanding = OutstandingAnalytics.get_outstanding_summary(stall)
+        services = ServiceAnalytics.get_service_summary(start_date, end_date, stall)
+        inventory = InventoryAnalytics.get_inventory_summary(stall)
+
+        # Expenses and unit cost (mirror logic from SummaryStatsView)
+        from expenses.models import Expense
+        from installations.models import AirconUnit
+
+        # Expense total
+        expense_total = (
+            Expense.objects.filter(
+                created_at__range=(timezone.make_aware(datetime.combine(start_date, time.min)), timezone.make_aware(datetime.combine(end_date, time.max))),
+                is_deleted=False,
+            )
+            .filter(**({"stall": stall} if stall else {}))
+            .aggregate(total=Sum("total_price"))["total"]
+            or 0
+        )
+
+        # Unit cost from installations and direct sales (if models available)
+        try:
+            installation_unit_cost = (
+                AirconUnit.objects.filter(
+                    installation_service__isnull=False,
+                    installation_service__created_at__date__gte=start_date,
+                    installation_service__created_at__date__lte=end_date,
+                    model__isnull=False,
+                )
+                .aggregate(total=Sum("model__cost_price"))["total"]
+                or 0
+            )
+
+            sold_unit_cost = (
+                AirconUnit.objects.filter(
+                    sale__isnull=False,
+                    sale__created_at__date__gte=start_date,
+                    sale__created_at__date__lte=end_date,
+                    sale__is_deleted=False,
+                    model__isnull=False,
+                )
+                .aggregate(total=Sum("model__cost_price"))["total"]
+                or 0
+            )
+        except Exception:
+            installation_unit_cost = 0
+            sold_unit_cost = 0
+
+        total_unit_cost = float(installation_unit_cost or 0) + float(sold_unit_cost or 0)
+
+        # Compute net income: total revenue - expenses - unit costs
+        total_revenue = revenue.get("total_revenue") or 0
+        net_income = float(total_revenue) - float(expense_total) - float(total_unit_cost)
+
+        # Attach computed values into the revenue snapshot for downstream consumers
+        revenue["total_expense"] = float(expense_total)
+        revenue["unit_cost_deduction"] = float(total_unit_cost)
+        revenue["net_income"] = float(net_income)
+
         return {
-            "revenue": RevenueAnalytics.get_revenue_summary(start_date, end_date, stall),
-            "collections": PaymentAnalytics.get_collection_summary(start_date, end_date, stall),
-            "outstanding": OutstandingAnalytics.get_outstanding_summary(stall),
-            "services": ServiceAnalytics.get_service_summary(start_date, end_date, stall),
-            "inventory": InventoryAnalytics.get_inventory_summary(stall),
+            "revenue": revenue,
+            "collections": collections,
+            "outstanding": outstanding,
+            "services": services,
+            "inventory": inventory,
         }
 
 
