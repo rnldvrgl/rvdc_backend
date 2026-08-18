@@ -174,7 +174,7 @@ REST_FRAMEWORK = {
         "rest_framework.filters.SearchFilter",
         "rest_framework.filters.OrderingFilter",
     ],
-    "DEFAULT_PAGINATION_CLASS": "config.pagination.CustomPageNumberPagination",
+    "DEFAULT_PAGINATION_CLASS": "config.pagination.HybridPagination",
     "PAGE_SIZE": 10,
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
