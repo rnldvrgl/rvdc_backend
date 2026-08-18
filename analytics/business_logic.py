@@ -11,7 +11,7 @@ This module provides comprehensive analytics and reporting functionality for:
 - Client analytics (customer behavior, top clients)
 """
 
-from datetime import timedelta
+from datetime import timedelta, datetime, time
 from decimal import Decimal
 
 from django.db.models import (
