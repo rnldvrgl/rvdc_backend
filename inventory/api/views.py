@@ -2899,7 +2899,7 @@ class StockRequestViewSet(viewsets.ReadOnlyModelViewSet):
 
         requests_qs = StockRequest.objects.select_for_update().filter(
             id__in=ids, status="pending"
-        ).select_related("item", "stall", "appliance_item", "service_item", "requested_by")
+        )
 
         approved_count = 0
         for sr in requests_qs:

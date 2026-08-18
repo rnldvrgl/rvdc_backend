@@ -2,7 +2,14 @@ from django.urls import reverse
 from rest_framework.test import APITestCase, APIClient
 from rest_framework import status
 from django.contrib.auth import get_user_model
-from inventory.models import Stall, ProductCategory, Item, StockRoomStock
+from inventory.models import (
+    Stall,
+    ProductCategory,
+    Item,
+    StockRoomStock,
+    StockRequest,
+    DirectStockRequestBatch,
+)
 import unittest
 
 User = get_user_model()
@@ -203,3 +210,30 @@ class InventoryTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         # Endpoint returns a list of groups (empty when no item=null rows exist)
         self.assertIsInstance(response.data, list)
+
+    def test_batch_approve_direct_stock_requests(self):
+        print("\nRunning: test_batch_approve_direct_stock_requests")
+        batch = DirectStockRequestBatch.objects.create(
+            notes="Batch approval regression test",
+            requested_by=self.admin_user,
+            status="pending",
+        )
+        stock_request = StockRequest.objects.create(
+            item=self.item,
+            stall=self.stall,
+            requested_quantity="2.00",
+            status="pending",
+            source="direct",
+            batch=batch,
+            requested_by=self.admin_user,
+        )
+
+        url = "/api/inventory/stock-requests/batch-approve/"
+        response = self.client.post(url, {"ids": [stock_request.id]}, format="json")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["approved_count"], 1)
+        stock_request.refresh_from_db()
+        batch.refresh_from_db()
+        self.assertEqual(stock_request.status, "approved")
+        self.assertEqual(batch.status, "completed")
