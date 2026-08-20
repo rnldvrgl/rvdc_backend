@@ -226,36 +226,51 @@ CORS_ALLOWED_ORIGIN_REGEXES = _csv_env("CORS_ALLOWED_ORIGIN_REGEXES")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# ------------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 # CACHING
 # ------------------------------------------------------------------------------
 
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "rvdc-cache",
-        "TIMEOUT": 300,
+# Prefer Redis cache when a Redis URL is supplied (development/production).
+REDIS_URL = config("REDIS_URL", default="")
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": REDIS_URL,
+            "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
+            "TIMEOUT": 300,
+        }
     }
-}
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "rvdc-cache",
+            "TIMEOUT": 300,
+        }
+    }
 
-# ------------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 # CHANNEL LAYERS (WebSocket support)
+# Use Redis-backed channel layer when REDIS_URL is provided, otherwise
+# fall back to an in-memory channel layer for local/dev environments.
 # ------------------------------------------------------------------------------
 
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [config("REDIS_URL", default="redis://redis:6379/0")],
-        },
+if REDIS_URL:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [REDIS_URL],
+            },
+        }
     }
-}
-
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer",  # ← no Redis dependency,
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer",
+        }
     }
-}
 
 # Celery
 CELERY_BROKER_URL = config(

@@ -41,6 +41,8 @@ from schedules.models import Schedule
 from services.models import Service, ServicePayment
 from users.models import CustomUser
 from utils.soft_delete import SoftDeleteViewSetMixin
+from django.utils.decorators import method_decorator
+from django.views.decorators.cache import cache_page
 
 
 def get_date_range(request):
@@ -793,7 +795,26 @@ class AnalyticsViewSet(ViewSet):
         start_date, end_date = get_date_range_from_request(request)
         stall = get_stall_from_request(request)
 
+        # Use explicit cache keys so we can selectively invalidate dashboard snapshots
+        from analytics.cache import make_dashboard_cache_key
+        from django.core.cache import cache
+
+        start_key = start_date.isoformat()
+        end_key = end_date.isoformat()
+        stall_id = getattr(stall, "id", None)
+
+        cache_key = make_dashboard_cache_key(start_key, end_key, stall_id)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached, status=status.HTTP_200_OK)
+
         data = DashboardAnalytics.get_dashboard_summary(start_date, end_date, stall)
+        try:
+            cache.set(cache_key, data, timeout=300)
+        except Exception:
+            # fail silently if cache backend errors
+            pass
+
         return Response(data, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["get"], url_path="business-insights")

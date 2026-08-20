@@ -25,6 +25,7 @@ from utils.permissions import IsAdminOrManager
 from utils.filters.options import get_stall_options
 from utils.filters.role_filters import get_role_based_filter_response
 from utils.soft_delete import SoftDeleteViewSetMixin
+from config.pagination import CustomCursorPagination
 
 
 class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
@@ -36,6 +37,8 @@ class SalesTransactionViewSet(SoftDeleteViewSetMixin, viewsets.ModelViewSet):
     ).order_by(Coalesce("transaction_date", TruncDate("created_at")).desc(), "-created_at")
     serializer_class = SalesTransactionSerializer
     permission_classes = [IsAuthenticated]
+    # Use cursor pagination by default for large transaction lists (pilot)
+    pagination_class = CustomCursorPagination
     filter_backends = [
         DjangoFilterBackend,
         filters.SearchFilter,
