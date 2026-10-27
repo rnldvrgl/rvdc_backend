@@ -4,8 +4,10 @@ import hashlib
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
+from datetime import date, datetime
 from decimal import Decimal
 
 from analytics.business_logic import DashboardAnalytics
@@ -16,19 +18,88 @@ logger = logging.getLogger(__name__)
 
 CACHE_TTL = int(os.getenv("AI_INSIGHTS_CACHE_SECONDS", "900"))  # 15 min for AI results
 FALLBACK_CACHE_TTL = 60  # retry the AI soon, but don't hammer a rate-limited API
+CACHE_VERSION = "v2"  # bump when the prompt or response shape changes
 
 # Providers that can run without an API key (local or private gateway).
 KEYLESS_PROVIDERS = {"ollama"}
 OPENCLAW_PROVIDERS = {"openclaw", "crestodian"}
 VALID_PRIORITIES = {"high", "medium", "low"}
+MAX_RECOMMENDATIONS = 4
+
+ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
 
 
+# ---------------------------------------------------------------------------
+# Formatting helpers (dates and currency are cleaned here, not left to the AI)
+# ---------------------------------------------------------------------------
+def _to_date(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _format_date(value):
+    d = _to_date(value)
+    return f"{d:%B} {d.day}, {d.year}" if d else None
+
+
+def _period_label(start_date, end_date):
+    start, end = _to_date(start_date), _to_date(end_date)
+    if start and end:
+        if start == end:
+            return _format_date(start)
+        if start.year == end.year:
+            return f"{start:%B} {start.day} – {end:%B} {end.day}, {end.year}"
+        return f"{_format_date(start)} – {_format_date(end)}"
+    if start:
+        return f"From {_format_date(start)}"
+    if end:
+        return f"Up to {_format_date(end)}"
+    return None
+
+
+def _replace_iso_date(match):
+    try:
+        d = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return match.group(0)
+    return f"{d:%B} {d.day}, {d.year}"
+
+
+def _humanize_text(value):
+    """Make AI text safe to show: readable dates and Philippine peso signs."""
+    text = ISO_DATE_RE.sub(_replace_iso_date, str(value))
+    return text.replace("$", "₱")
+
+
+def _build_key_metrics(snapshot):
+    """Exact numbers for the dashboard card, taken from data (never from the AI)."""
+    revenue = snapshot.get("revenue", {}) or {}
+    outstanding = snapshot.get("outstanding", {}) or {}
+    return {
+        "total_revenue": _as_float(revenue.get("total_revenue")),
+        "net_income": _as_float(revenue.get("net_income")),
+        "collection_rate": _as_float(revenue.get("payment_collection_rate")),
+        "outstanding": _as_float(outstanding.get("total_outstanding")),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
 def generate_business_insights(start_date=None, end_date=None, stall=None):
     """Build business insights from dashboard metrics and optional AI provider."""
     snapshot = DashboardAnalytics.get_dashboard_summary(start_date, end_date, stall)
 
     # Key includes the snapshot, so new data produces a fresh result.
-    cache_key = "ai_insights:" + hashlib.sha256(
+    cache_key = f"ai_insights:{CACHE_VERSION}:" + hashlib.sha256(
         json.dumps(
             {
                 "s": str(start_date),
@@ -51,7 +122,10 @@ def generate_business_insights(start_date=None, end_date=None, stall=None):
     else:
         result = _build_fallback_insights(snapshot)
         ttl = FALLBACK_CACHE_TTL
+
     result["snapshot"] = snapshot
+    result["metrics"] = _build_key_metrics(snapshot)
+    result["period_label"] = _period_label(start_date, end_date)
 
     _cache_set(cache_key, result, ttl)
     return result
@@ -72,6 +146,9 @@ def _cache_set(key, value, ttl):
         logger.warning("AI insights: cache write failed", exc_info=True)
 
 
+# ---------------------------------------------------------------------------
+# AI provider
+# ---------------------------------------------------------------------------
 def _provider_config(provider):
     """Return (base_url, model, extra_headers) for the selected provider."""
     extra_headers = {}
@@ -101,6 +178,27 @@ def _provider_config(provider):
     return base_url.rstrip("/"), model, extra_headers
 
 
+SYSTEM_PROMPT = (
+    "You are a business analyst for RVDC, a repair, sales, and service shop in the Philippines. "
+    "Your reader is the shop owner, who wants a quick, plain-language read, not a report. "
+    "Use only the provided facts. "
+    "Return JSON only with this shape: "
+    "{\"headline\": string, \"summary\": string, "
+    "\"recommendations\": [{\"title\": string, \"reason\": string, \"action\": string, \"priority\": \"high\"|\"medium\"|\"low\"}], "
+    "\"risks\": [string], \"opportunities\": [string], \"confidence\": \"High\"|\"Medium\"|\"Low\"}. "
+    "Rules: "
+    "1) All money is Philippine peso. Write amounts with the ₱ sign, never $ or USD. "
+    "2) Use short figures such as ₱2.4M, ₱802K or ₱1,250 instead of long exact amounts, and round percentages to whole numbers. "
+    "3) Write dates like September 27, 2026. Never write dates like 2026-09-27. "
+    "4) Keep it short. headline: 8 words or fewer. summary: one sentence, 20 words or fewer. "
+    "At most 3 recommendations, ordered by priority; each title 6 words or fewer, "
+    "reason 14 words or fewer, action 14 words or fewer and starting with a verb. "
+    "At most 3 risks and 3 opportunities, each 10 words or fewer. "
+    "5) Use plain words. No jargon, no repeating the same number in several places. "
+    "Focus on sales growth, collections, inventory, and service throughput."
+)
+
+
 def _call_ai_provider(snapshot, start_date, end_date, stall):
     provider = os.getenv("AI_INSIGHTS_PROVIDER", "openai").strip().lower()
     api_key = os.getenv("AI_INSIGHTS_API_KEY")
@@ -113,25 +211,18 @@ def _call_ai_provider(snapshot, start_date, end_date, stall):
     base_url, model, extra_headers = _provider_config(provider)
     timeout = float(os.getenv("AI_INSIGHTS_TIMEOUT", "30"))
 
-    system_prompt = (
-        "You are a business analyst for RVDC, a repair, sales, and service business. "
-        "Use only provided facts. Return JSON only with this shape: "
-        "{\"headline\": string, \"summary\": string, \"recommendations\": [{\"title\": string, \"reason\": string, \"action\": string, \"priority\": \"high\"|\"medium\"|\"low\"}], \"risks\": [string], \"opportunities\": [string], \"confidence\": string}. "
-        "Be specific, practical, and focused on sales growth, collections, inventory, and service throughput."
-    )
-
     payload = {
         "model": model,
         "temperature": 0.25,
         "messages": [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": json.dumps(
                     {
-                        "start_date": str(start_date) if start_date else None,
-                        "end_date": str(end_date) if end_date else None,
+                        "period": _period_label(start_date, end_date),
                         "stall": getattr(stall, "name", None),
+                        "currency": "Philippine peso (₱)",
                         "dashboard": snapshot,
                     },
                     default=str,
@@ -189,6 +280,9 @@ def _call_ai_provider(snapshot, start_date, end_date, stall):
     return normalized
 
 
+# ---------------------------------------------------------------------------
+# Rules-based fallback
+# ---------------------------------------------------------------------------
 def _build_fallback_insights(snapshot):
     revenue = snapshot.get("revenue", {})
     outstanding = snapshot.get("outstanding", {})
@@ -316,7 +410,7 @@ def _build_fallback_insights(snapshot):
         "source": "rules",
         "headline": headline,
         "summary": summary or "No critical issues detected in selected period.",
-        "recommendations": recommendations[:5],
+        "recommendations": recommendations[:MAX_RECOMMENDATIONS],
         "risks": risks[:3],
         "opportunities": opportunities[:3],
         "confidence": "medium",
@@ -325,6 +419,9 @@ def _build_fallback_insights(snapshot):
     }
 
 
+# ---------------------------------------------------------------------------
+# Response cleaning
+# ---------------------------------------------------------------------------
 def _normalize_response(payload):
     recommendations = []
     for item in payload.get("recommendations", []) or []:
@@ -335,9 +432,9 @@ def _normalize_response(payload):
             priority = "medium"
         recommendations.append(
             {
-                "title": str(item.get("title", "Recommendation")),
-                "reason": str(item.get("reason", "")),
-                "action": str(item.get("action", "")),
+                "title": _humanize_text(item.get("title", "Recommendation")),
+                "reason": _humanize_text(item.get("reason", "")),
+                "action": _humanize_text(item.get("action", "")),
                 "priority": priority,
             }
         )
@@ -345,13 +442,13 @@ def _normalize_response(payload):
     if not recommendations:
         return None
 
-    risks = [str(item) for item in payload.get("risks", []) or [] if item]
-    opportunities = [str(item) for item in payload.get("opportunities", []) or [] if item]
+    risks = [_humanize_text(item) for item in payload.get("risks", []) or [] if item]
+    opportunities = [_humanize_text(item) for item in payload.get("opportunities", []) or [] if item]
 
     return {
-        "headline": str(payload.get("headline") or payload.get("summary") or "Business insights"),
-        "summary": str(payload.get("summary") or ""),
-        "recommendations": recommendations[:5],
+        "headline": _humanize_text(payload.get("headline") or payload.get("summary") or "Business insights"),
+        "summary": _humanize_text(payload.get("summary") or ""),
+        "recommendations": recommendations[:MAX_RECOMMENDATIONS],
         "risks": risks[:3],
         "opportunities": opportunities[:3],
         "confidence": str(payload.get("confidence") or "medium"),
