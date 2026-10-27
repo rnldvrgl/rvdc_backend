@@ -23,6 +23,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/log:/host-logs
       - /srv/rvdc_backend/go2rtc:/go2rtc-config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     deploy:
       resources:
@@ -37,6 +39,9 @@ services:
       resources:
         limits:
           memory: 512M
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   celery-beat:
     env_file:

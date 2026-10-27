@@ -1,47 +1,117 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
 from decimal import Decimal
 
 from analytics.business_logic import DashboardAnalytics
+from django.core.cache import cache
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
+
+CACHE_TTL = int(os.getenv("AI_INSIGHTS_CACHE_SECONDS", "900"))  # 15 min for AI results
+FALLBACK_CACHE_TTL = 60  # retry the AI soon, but don't hammer a rate-limited API
+
+# Providers that can run without an API key (local or private gateway).
+KEYLESS_PROVIDERS = {"ollama"}
+OPENCLAW_PROVIDERS = {"openclaw", "crestodian"}
+VALID_PRIORITIES = {"high", "medium", "low"}
 
 
 def generate_business_insights(start_date=None, end_date=None, stall=None):
     """Build business insights from dashboard metrics and optional AI provider."""
     snapshot = DashboardAnalytics.get_dashboard_summary(start_date, end_date, stall)
 
-    provider_payload = _call_ai_provider(snapshot, start_date, end_date, stall)
-    if provider_payload:
-        provider_payload["snapshot"] = snapshot
-        return provider_payload
+    # Key includes the snapshot, so new data produces a fresh result.
+    cache_key = "ai_insights:" + hashlib.sha256(
+        json.dumps(
+            {
+                "s": str(start_date),
+                "e": str(end_date),
+                "stall": getattr(stall, "pk", None),
+                "snap": snapshot,
+            },
+            default=str,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
 
-    fallback = _build_fallback_insights(snapshot)
-    fallback["snapshot"] = snapshot
-    return fallback
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    result = _call_ai_provider(snapshot, start_date, end_date, stall)
+    if result:
+        ttl = CACHE_TTL
+    else:
+        result = _build_fallback_insights(snapshot)
+        ttl = FALLBACK_CACHE_TTL
+    result["snapshot"] = snapshot
+
+    _cache_set(cache_key, result, ttl)
+    return result
+
+
+def _cache_get(key):
+    try:
+        return cache.get(key)
+    except Exception:  # a cache outage must never break the dashboard
+        logger.warning("AI insights: cache read failed", exc_info=True)
+        return None
+
+
+def _cache_set(key, value, ttl):
+    try:
+        cache.set(key, value, ttl)
+    except Exception:
+        logger.warning("AI insights: cache write failed", exc_info=True)
+
+
+def _provider_config(provider):
+    """Return (base_url, model, extra_headers) for the selected provider."""
+    extra_headers = {}
+
+    if provider == "ollama":
+        base_url = os.getenv("AI_INSIGHTS_BASE_URL", "http://host.docker.internal:11434/v1")
+        model = os.getenv("AI_INSIGHTS_MODEL", "llama3.1:8b")
+    elif provider in OPENCLAW_PROVIDERS:
+        # OpenClaw treats `model` as an agent target (e.g. "openclaw:main").
+        # To pick the backing LLM, send it in the x-openclaw-model header.
+        base_url = os.getenv("AI_INSIGHTS_BASE_URL", "http://host.docker.internal:18789/v1")
+        model = os.getenv("AI_INSIGHTS_MODEL", "openclaw:main")
+        backend_model = os.getenv("AI_INSIGHTS_BACKEND_MODEL")
+        if backend_model:
+            extra_headers["x-openclaw-model"] = backend_model
+    elif provider in {"gemini", "google"}:
+        base_url = os.getenv(
+            "AI_INSIGHTS_BASE_URL",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        )
+        model = os.getenv("AI_INSIGHTS_MODEL", "gemini-3.5-flash-lite")
+    else:
+        # Any other OpenAI-compatible provider (OpenAI, Groq, OpenRouter, ...).
+        base_url = os.getenv("AI_INSIGHTS_BASE_URL", "https://api.openai.com/v1")
+        model = os.getenv("AI_INSIGHTS_MODEL", "gpt-4o-mini")
+
+    return base_url.rstrip("/"), model, extra_headers
 
 
 def _call_ai_provider(snapshot, start_date, end_date, stall):
     provider = os.getenv("AI_INSIGHTS_PROVIDER", "openai").strip().lower()
     api_key = os.getenv("AI_INSIGHTS_API_KEY")
 
-    if provider == "openai" and not api_key:
+    needs_key = provider not in KEYLESS_PROVIDERS and provider not in OPENCLAW_PROVIDERS
+    if needs_key and not api_key:
+        logger.warning("AI insights: AI_INSIGHTS_API_KEY is not set for provider '%s'", provider)
         return None
 
-    if provider in {"ollama"}:
-        base_url = os.getenv("AI_INSIGHTS_BASE_URL", "http://host.docker.internal:11434/v1").rstrip("/")
-        model = os.getenv("AI_INSIGHTS_MODEL", "llama3.1:8b")
-    elif provider in {"openclaw", "crestodian"}:
-        base_url = os.getenv("AI_INSIGHTS_BASE_URL", "http://127.0.0.1:18789/v1").rstrip("/")
-        model = os.getenv("AI_INSIGHTS_MODEL", "openai/gpt-5.6")
-    else:
-        base_url = os.getenv("AI_INSIGHTS_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-        model = os.getenv("AI_INSIGHTS_MODEL", "gpt-4o-mini")
-
-    timeout = float(os.getenv("AI_INSIGHTS_TIMEOUT", "20"))
+    base_url, model, extra_headers = _provider_config(provider)
+    timeout = float(os.getenv("AI_INSIGHTS_TIMEOUT", "30"))
 
     system_prompt = (
         "You are a business analyst for RVDC, a repair, sales, and service business. "
@@ -70,7 +140,7 @@ def _call_ai_provider(snapshot, start_date, end_date, stall):
         ],
     }
 
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", **extra_headers}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
@@ -84,21 +154,32 @@ def _call_ai_provider(snapshot, start_date, end_date, stall):
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
-    except (urllib.error.URLError, TimeoutError, ValueError):
+    except urllib.error.HTTPError as exc:  # must come before URLError (it is a subclass)
+        try:
+            body = exc.read()[:300].decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        logger.warning("AI insights: HTTP %s from %s (model %s): %s", exc.code, provider, model, body)
+        return None
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        logger.warning("AI insights: request to %s failed: %s", provider, exc)
         return None
 
     try:
         data = json.loads(raw)
-        content = data["choices"][0]["message"]["content"]
+        content = data["choices"][0]["message"]["content"] or ""
         parsed = _extract_json_object(content)
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+    except (KeyError, IndexError, TypeError, AttributeError, json.JSONDecodeError) as exc:
+        logger.warning("AI insights: unparseable response from %s: %s", provider, exc)
         return None
 
     if not isinstance(parsed, dict):
+        logger.warning("AI insights: %s did not return a JSON object", provider)
         return None
 
     normalized = _normalize_response(parsed)
     if not normalized:
+        logger.warning("AI insights: response from %s had no usable recommendations", provider)
         return None
 
     normalized["source"] = "ai"
@@ -129,6 +210,10 @@ def _build_fallback_insights(snapshot):
     new_clients = int(revenue.get("new_clients", 0) or 0)
     active_services = int(services.get("active_services", 0) or 0)
 
+    # A collection rate of 0 usually means "no data", so only treat it as weak
+    # when it is a real, non-zero number below the target.
+    weak_collection = bool(payment_collection_rate) and payment_collection_rate < 90
+
     recommendations = []
     risks = []
     opportunities = []
@@ -145,7 +230,7 @@ def _build_fallback_insights(snapshot):
         risks.append("Inventory gaps may be blocking sales on products customers already want.")
         opportunities.append("Reorder and bundle top items to lift repeat sales.")
 
-    if total_outstanding > 0 or payment_collection_rate and payment_collection_rate < 90:
+    if total_outstanding > 0 or weak_collection:
         recommendations.append(
             {
                 "title": "Tighten collection follow-up",
@@ -211,7 +296,7 @@ def _build_fallback_insights(snapshot):
         )
 
     headline = "Business looks stable"
-    if no_stock_items or total_outstanding > 0 or payment_collection_rate < 90:
+    if no_stock_items or total_outstanding > 0 or weak_collection:
         headline = "Business needs follow-up on stock and cash flow"
     if net_income < 0:
         headline = "Business is losing money right now"
@@ -242,23 +327,26 @@ def _build_fallback_insights(snapshot):
 
 def _normalize_response(payload):
     recommendations = []
-    for item in payload.get("recommendations", []):
+    for item in payload.get("recommendations", []) or []:
         if not isinstance(item, dict):
             continue
+        priority = str(item.get("priority", "medium")).strip().lower()
+        if priority not in VALID_PRIORITIES:
+            priority = "medium"
         recommendations.append(
             {
                 "title": str(item.get("title", "Recommendation")),
                 "reason": str(item.get("reason", "")),
                 "action": str(item.get("action", "")),
-                "priority": str(item.get("priority", "medium")),
+                "priority": priority,
             }
         )
 
     if not recommendations:
         return None
 
-    risks = [str(item) for item in payload.get("risks", []) if item]
-    opportunities = [str(item) for item in payload.get("opportunities", []) if item]
+    risks = [str(item) for item in payload.get("risks", []) or [] if item]
+    opportunities = [str(item) for item in payload.get("opportunities", []) or [] if item]
 
     return {
         "headline": str(payload.get("headline") or payload.get("summary") or "Business insights"),

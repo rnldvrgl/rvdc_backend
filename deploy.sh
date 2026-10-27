@@ -78,7 +78,7 @@ step "Step 0: Running pre-flight checks..."
 
 [ -f "${ENV_FILE}" ] || { err "Env file not found: ${ENV_FILE}"; exit 1; }
 command -v docker >/dev/null 2>&1 || { err "Docker not installed"; exit 1; }
-command -v docker compose >/dev/null 2>&1 || { err "docker compose missing"; exit 1; }
+docker compose version >/dev/null 2>&1 || { err "docker compose missing"; exit 1; }
 cd "${PROJECT_DIR}" || { err "Cannot cd to ${PROJECT_DIR}"; exit 1; }
 
 success "Pre-flight checks passed"
@@ -171,7 +171,7 @@ sleep 5
 # Check if database is ready
 RETRIES=30
 echo -ne "${GRAY}[$(timestamp)]${NC} ${CYAN}${ICON_CLOCK}${NC} Checking database health"
- until ${COMPOSE} exec -T db pg_isready -U "${POSTGRES_USER:-rvdc_owner}" -d "${POSTGRES_DB:-rvdc_db}" > /dev/null 2>&1 || [ $RETRIES -eq 0 ]; do
+until ${COMPOSE} exec -T db pg_isready -U "${POSTGRES_USER:-rvdc_owner}" -d "${POSTGRES_DB:-rvdc_db}" > /dev/null 2>&1 || [ $RETRIES -eq 0 ]; do
     echo -n "."
     sleep 1
     RETRIES=$((RETRIES - 1))
@@ -197,6 +197,18 @@ log "Waiting for API to initialize..."
 sleep 5
 
 success "API container started"
+echo ""
+
+# =============================================================================
+# Step 6b: Start background workers (celery + celery-beat)
+# =============================================================================
+# These use the same image and .env.production as the API. Without this step
+# they keep running the old image/env until someone recreates them by hand.
+step "Step 6b: ${ICON_CODE} Starting background workers (celery, celery-beat)..."
+
+${COMPOSE} up -d celery celery-beat
+
+success "Background workers started"
 echo ""
 
 # =============================================================================
@@ -296,6 +308,21 @@ else
 fi
 
 echo ""
+log "Checking AI insights configuration (key is never printed)..."
+AI_PROVIDER=$(${COMPOSE} exec -T api printenv AI_INSIGHTS_PROVIDER 2>/dev/null | tr -d '\r' || true)
+AI_MODEL=$(${COMPOSE} exec -T api printenv AI_INSIGHTS_MODEL 2>/dev/null | tr -d '\r' || true)
+AI_KEY_SET=$(${COMPOSE} exec -T api sh -c '[ -n "$AI_INSIGHTS_API_KEY" ] && echo yes || echo no' 2>/dev/null | tr -d '\r' || true)
+
+if [ -n "${AI_PROVIDER}" ]; then
+    success "AI insights: provider=${AI_PROVIDER} model=${AI_MODEL:-default} key_set=${AI_KEY_SET:-no}"
+    if [ "${AI_PROVIDER}" != "ollama" ] && [ "${AI_PROVIDER}" != "openclaw" ] && [ "${AI_KEY_SET}" != "yes" ]; then
+        warning "AI_INSIGHTS_API_KEY is empty - insights will use the rules-based fallback"
+    fi
+else
+    warning "AI_INSIGHTS_PROVIDER not set - insights will use the default provider (or fallback)"
+fi
+
+echo ""
 log "Container status:"
 ${COMPOSE} ps
 
@@ -317,6 +344,8 @@ echo -e "  ${GREEN}•${NC} Database: ${CYAN}localhost:5432${NC}"
 echo ""
 header "Useful commands:"
 echo -e "  ${GREEN}•${NC} View logs: ${YELLOW}docker compose logs -f api${NC}"
+echo -e "  ${GREEN}•${NC} Worker logs: ${YELLOW}docker compose logs -f celery${NC}"
+echo -e "  ${GREEN}•${NC} AI insights logs: ${YELLOW}docker compose logs -f api | grep \"AI insights\"${NC}"
 echo -e "  ${GREEN}•${NC} Check status: ${YELLOW}docker compose ps${NC}"
 echo -e "  ${GREEN}•${NC} Restart API: ${YELLOW}docker compose restart api${NC}"
 echo -e "  ${GREEN}•${NC} Shell access: ${YELLOW}docker compose exec api bash${NC}"

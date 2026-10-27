@@ -39,11 +39,11 @@ services:
     env_file:
       - .env.production
     volumes:
-      - /srv/rvdc_backend/staticfiles:/usr/src/app/staticfiles
-      - /srv/rvdc_backend/media:/usr/src/app/media
+      - ${DATA_DIR:-/srv/rvdc_backend}/staticfiles:/usr/src/app/staticfiles
+      - ${DATA_DIR:-/srv/rvdc_backend}/media:/usr/src/app/media
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/log:/host-logs
-      - /srv/rvdc_backend/go2rtc:/go2rtc-config
+      - ${DATA_DIR:-/srv/rvdc_backend}/go2rtc:/go2rtc-config
     restart: unless-stopped
 
   celery-beat:
